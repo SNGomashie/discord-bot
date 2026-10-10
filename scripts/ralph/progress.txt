@@ -27,6 +27,7 @@
 - CS2 profile parsing: `parse_profile` raises PrivateProfileError for any `privacy_mode` other than "public" (missing/null = public), ApiError without steam64_id. Faceit level comes from `ranks.faceit` (not `faceit_level`). `rating` holds aim/positioning/utility/clutch/opening/ct_leetify/t_leetify. Recent matches: entries without id are skipped, `outcome` outside win/loss/tie -> None, `score` must be a 2-item list; sorted newest first by finished_at (undated last, stable).
 - CS2 Steam IDs: `parse_steam_id` (cs2/steam.py) caps input at `MAX_STEAM_INPUT_LENGTH` (200, raw text before strip) — reuse it as the `app_commands.Range` max on `/link steam`. Vanity URLs raise `InvalidSteamIdError(VANITY_URL_MESSAGE)`; everything else uses the default message. Host match is case-insensitive; query strings/extra path segments are rejected.
 - CS2 client (cs2/client.py): `LeetifyClient(api_key, base_url, fetch, timeout_s)`; `fetch(url, headers) -> FetchResponse(status, body)` is injectable (tests use a `StubFetch`), default is a lazy aiohttp session closed by `aclose()`. `asyncio.timeout` wraps every fetch, so injected fetches are bounded too. Errors are raised `from None` with default messages and logs only show the path/status, so the key can't leak. `/v3/profile/matches` is expected to return a JSON list of match details (parsed with `parse_match`, bad entries skipped, newest first); unverified until the capture script runs.
+- CS2 links (cs2/store.py): `LinkStore` Protocol + `SqliteLinkStore(path)`; one short-lived sqlite3 connection per call (wrapped in `contextlib.closing`, since `with conn` only commits), sync `_get/_set/_remove/_all_links` helpers run via `asyncio.to_thread`. Parent dir + schema are created lazily on first call, so constructing the store does no I/O.
 
 ## 2026-10-10 - US-001
 - Added aiohttp dependency (uv add); Config gains leetify_api_key, cs2_channel_id, cs2_poll_seconds, data_dir (all defaulted).
@@ -61,3 +62,7 @@
 - Added `cs2/client.py`: `StatsProvider` Protocol, `LeetifyClient` (only HTTP module), `FetchResponse`, `FetchFn`. Endpoints /v3/profile, /v3/profile/matches, /v2/matches/{quoted id}; Bearer header only when key set; 10 s timeout; 404/403/429/other mapping; non-JSON / wrong-shape bodies -> ApiError.
 - Files: src/ninja_bot/cs2/client.py, tests/test_cs2_client.py
 - Learnings: the matches endpoint body is a list (not an object), so `get_recent_matches` checks for a list while profile/match require objects. Default aiohttp fetch is tested by monkeypatching `aiohttp.ClientSession`.
+
+## 2026-10-10 - US-007
+- Added `cs2/store.py` (`LinkStore` Protocol, `SqliteLinkStore` on stdlib sqlite3; `INSERT OR REPLACE` for set, no uniqueness on steam64_id) and `tests/test_cs2_store.py` (round trip, replace, shared Steam ID, remove, missing user, persistence across instances, dir auto-creation, to_thread recorder).
+- Learnings: sqlite3's connection context manager commits but doesn't close; use `closing(...)` plus `with conn`.
