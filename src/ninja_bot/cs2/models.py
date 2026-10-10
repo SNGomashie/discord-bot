@@ -23,6 +23,13 @@ class PlayerNotFoundError(Cs2Error):
     default_message = "Leetify doesn't know that player. Make sure they have a Leetify account."
 
 
+class MatchNotFoundError(Cs2Error):
+    default_message = (
+        "Leetify has no match with that id. "
+        "Check the id, or leave `match` empty for the latest match."
+    )
+
+
 class PrivateProfileError(Cs2Error):
     default_message = "That Leetify profile is private, so its stats can't be shown."
 

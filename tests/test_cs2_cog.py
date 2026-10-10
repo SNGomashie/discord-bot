@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -25,13 +26,14 @@ from ninja_bot.cogs.cs2 import (
     not_linked_message,
 )
 from ninja_bot.config import load_config
-from ninja_bot.cs2.client import LeetifyClient
+from ninja_bot.cs2.client import FetchResponse, LeetifyClient
 from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
     InvalidSteamIdError,
     Match,
+    MatchNotFoundError,
     NoMatchesError,
     NotLinkedError,
     PlayerNotFoundError,
@@ -663,6 +665,21 @@ async def test_scoreboard_rate_limited(match: Match, fixture_profile: Profile) -
     interaction.followup.send.assert_awaited_once_with(RateLimitedError.default_message)
     assert "try again later" in RateLimitedError.default_message
     assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_scoreboard_unknown_match_id() -> None:
+    fetch_urls: list[str] = []
+
+    async def fetch(url: str, headers: Mapping[str, str]) -> FetchResponse:
+        fetch_urls.append(url)
+        return FetchResponse(404, "")
+
+    store = MemoryLinkStore({USER_ID: FIXTURE_STEAM_ID})
+    cog = Cs2(LeetifyClient(fetch=fetch), store, UserCooldown(COOLDOWN_SECONDS, FakeClock()))
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction, None, "nonsense")
+    interaction.followup.send.assert_awaited_once_with(MatchNotFoundError.default_message)
+    assert any("/v2/matches/nonsense" in url for url in fetch_urls)
 
 
 async def test_scoreboard_unexpected_error_is_generic(

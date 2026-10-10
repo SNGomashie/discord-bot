@@ -13,7 +13,9 @@ import aiohttp
 
 from ninja_bot.cs2.models import (
     ApiError,
+    Cs2Error,
     Match,
+    MatchNotFoundError,
     PlayerNotFoundError,
     PrivateProfileError,
     Profile,
@@ -83,7 +85,8 @@ class LeetifyClient:
         return _newest_first(matches)
 
     async def get_match(self, game_id: str) -> Match:
-        return parse_match(await self._get_object(f"/v2/matches/{quote(game_id, safe='')}"))
+        path = f"/v2/matches/{quote(game_id, safe='')}"
+        return parse_match(await self._get_object(path, not_found=MatchNotFoundError))
 
     async def aclose(self) -> None:
         """Close the lazily created aiohttp session (no-op with an injected fetch)."""
@@ -92,14 +95,22 @@ class LeetifyClient:
             self._session = None
 
     async def _get_object(
-        self, path: str, params: Mapping[str, str] | None = None
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        not_found: type[Cs2Error] = PlayerNotFoundError,
     ) -> dict[str, Any]:
-        body = await self._get(path, params)
+        body = await self._get(path, params, not_found)
         if not isinstance(body, dict):
             raise ApiError()
         return body
 
-    async def _get(self, path: str, params: Mapping[str, str] | None = None) -> Any:
+    async def _get(
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        not_found: type[Cs2Error] = PlayerNotFoundError,
+    ) -> Any:
         url = self._base_url + path
         if params:
             url += "?" + urlencode(params)
@@ -115,7 +126,7 @@ class LeetifyClient:
         except (aiohttp.ClientError, OSError) as exc:
             log.warning("Leetify request failed: %s (%s)", path, type(exc).__name__)
             raise ApiError() from None
-        _raise_for_status(response.status, path)
+        _raise_for_status(response.status, path, not_found)
         try:
             return json.loads(response.body)
         except ValueError:
@@ -131,12 +142,14 @@ class LeetifyClient:
             return FetchResponse(response.status, await response.text())
 
 
-def _raise_for_status(status: int, path: str) -> None:
+def _raise_for_status(
+    status: int, path: str, not_found: type[Cs2Error] = PlayerNotFoundError
+) -> None:
     if 200 <= status < 300:
         return
     log.warning("Leetify returned HTTP %d: %s", status, path)
     if status == 404:
-        raise PlayerNotFoundError()
+        raise not_found()
     if status == 403:
         raise PrivateProfileError()
     if status == 429:

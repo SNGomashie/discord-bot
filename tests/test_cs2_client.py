@@ -11,6 +11,7 @@ from ninja_bot.cs2.client import DEFAULT_BASE_URL, FetchResponse, LeetifyClient,
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
+    MatchNotFoundError,
     PlayerNotFoundError,
     PrivateProfileError,
     RateLimitedError,
@@ -116,28 +117,37 @@ async def test_custom_base_url_trailing_slash() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "error"),
+    ("status", "error", "match_error"),
     [
-        (404, PlayerNotFoundError),
-        (403, PrivateProfileError),
-        (429, RateLimitedError),
-        (500, ApiError),
-        (502, ApiError),
-        (401, ApiError),
-        (301, ApiError),
+        (404, PlayerNotFoundError, MatchNotFoundError),
+        (403, PrivateProfileError, PrivateProfileError),
+        (429, RateLimitedError, RateLimitedError),
+        (500, ApiError, ApiError),
+        (502, ApiError, ApiError),
+        (401, ApiError, ApiError),
+        (301, ApiError, ApiError),
     ],
 )
-async def test_status_mapping(status: int, error: type[Cs2Error]) -> None:
+async def test_status_mapping(
+    status: int, error: type[Cs2Error], match_error: type[Cs2Error]
+) -> None:
     client = _client(StubFetch(status=status, body=PROFILE_JSON))
-    for call in (
-        client.get_profile(STEAM_ID),
-        client.get_recent_matches(STEAM_ID),
-        client.get_match("m1"),
+    for call, expected in (
+        (client.get_profile(STEAM_ID), error),
+        (client.get_recent_matches(STEAM_ID), error),
+        (client.get_match("m1"), match_error),
     ):
-        with pytest.raises(error) as info:
+        with pytest.raises(expected) as info:
             await call
-        assert type(info.value) is error
+        assert type(info.value) is expected
         assert SECRET not in str(info.value)
+
+
+async def test_unknown_match_has_match_message() -> None:
+    with pytest.raises(MatchNotFoundError) as info:
+        await _client(StubFetch(status=404)).get_match("nope")
+    assert info.value.message == MatchNotFoundError.default_message
+    assert "match" in info.value.message
 
 
 @pytest.mark.parametrize("body", ["not json", "", "[1, 2", "<html>oops</html>"])
