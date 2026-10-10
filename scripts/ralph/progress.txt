@@ -4,7 +4,7 @@
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
 - yt-dlp has no type stubs; mypy override for `yt_dlp` / `yt_dlp.*` is in pyproject.toml.
 - Media errors: subclass MediaError and set `default_message`; `.message` is the user-facing text (safe to send to Discord).
-- DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size.
+- DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size. Clipped plans get no size filter at all (yt-dlp filesize is for the whole video).
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
@@ -15,3 +15,8 @@
 - Clipped downloads: `build_ydl_options` adds `download_ranges` (yt_dlp.utils.download_range_func, imported lazily via `_download_ranges`) + `force_keyframes_at_cuts` only when `plan.clip` is set; it raises ValueError for an unresolved clip. The range callable can be invoked in tests as `fn({"duration": n}, None)` without network.
 - Cog clip flow: `handle_download(interaction, url, kind, start=None, end=None)` parses URL and clip in one try block before defer (ephemeral on MediaError); `plan_download(..., clip=clip)` errors go through the followup MediaError path; success embed uses `plan.clip`, error embeds never show a clip. Param descriptions are `locale_str` — use `str(param.description)` in tests.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
+
+## 2026-10-10 - US-001
+- `format_selector` omits the filesize/filesize_approx filters when `plan.clip` is set; unclipped output unchanged. Docstring explains why.
+- Files: src/ninja_bot/media/planning.py, tests/test_media_planning.py, tests/test_media_downloader.py
+- Learnings: `test_build_options_with_clip` compared clipped vs unclipped options minus clip keys; "format" now legitimately differs for mp4 clips.

@@ -98,10 +98,19 @@ def plan_download(
 
 
 def format_selector(plan: DownloadPlan, height: int) -> str:
-    """yt-dlp format string: height <= `height`, size within the limit, prefer mp4/m4a."""
+    """yt-dlp format string: height <= `height`, size within the limit, prefer mp4/m4a.
+
+    Clipped plans skip the size filter: yt-dlp's filesize describes the whole
+    video, so it would reject short clips of long videos. The downloader checks
+    the real size of the clipped file after download instead.
+    """
     if plan.kind != "mp4":
         raise ValueError("format_selector is only for mp4 plans")
-    size = f"[filesize<=?{plan.limit_bytes}][filesize_approx<=?{plan.limit_bytes}]"
+    size = (
+        ""
+        if plan.clip is not None
+        else f"[filesize<=?{plan.limit_bytes}][filesize_approx<=?{plan.limit_bytes}]"
+    )
     video = f"bv*[height<={height}]"
     best = f"b[height<={height}]"
     return "/".join(

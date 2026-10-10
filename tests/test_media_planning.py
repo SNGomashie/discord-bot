@@ -129,6 +129,21 @@ def test_format_selector(height: int) -> None:
     )
 
 
+@pytest.mark.parametrize("height", HEIGHT_LADDER)
+def test_format_selector_with_clip_has_no_size_filter(height: int) -> None:
+    plan = DownloadPlan(
+        kind="mp4", limit_bytes=1000, height_ladder=HEIGHT_LADDER, clip=Clip(10, 20)
+    )
+    selector = format_selector(plan, height)
+    assert "filesize" not in selector
+    assert selector == (
+        f"bv*[height<={height}][ext=mp4]+ba[ext=m4a]"
+        f"/bv*[height<={height}]+ba"
+        f"/b[height<={height}][ext=mp4]"
+        f"/b[height<={height}]"
+    )
+
+
 def test_format_selector_rejects_mp3_plan() -> None:
     with pytest.raises(ValueError):
         format_selector(DownloadPlan(kind="mp3", limit_bytes=1000, audio_bitrate_kbps=64), 240)

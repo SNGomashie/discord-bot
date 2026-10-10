@@ -98,8 +98,16 @@ def test_build_options_with_clip(plan: DownloadPlan, height: int | None, tmp_pat
     ranges = list(options["download_ranges"]({"duration": 300}, None))
     assert ranges == [{"start_time": 90.5, "end_time": 165.0}]
     unclipped = build_ydl_options(replace(plan, clip=None), height, tmp_path)
-    clip_keys = {"download_ranges", "force_keyframes_at_cuts"}
-    assert {k: v for k, v in options.items() if k not in clip_keys} == unclipped
+    # The format differs for mp4 clips (no whole-video size filter).
+    clip_keys = {"download_ranges", "force_keyframes_at_cuts", "format"}
+    assert {k: v for k, v in options.items() if k not in clip_keys} == {
+        k: v for k, v in unclipped.items() if k != "format"
+    }
+    if height is not None:
+        assert options["format"] == format_selector(plan, height)
+        assert "filesize" not in options["format"]
+    else:
+        assert options["format"] == unclipped["format"]
 
 
 def test_build_options_rejects_unresolved_clip(tmp_path: Path) -> None:
