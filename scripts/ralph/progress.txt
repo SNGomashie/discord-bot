@@ -30,3 +30,7 @@
 - `build_ydl_options` adds `download_ranges` + `force_keyframes_at_cuts: True` for clipped mp3/mp4 plans; no-clip options unchanged. Unresolved clip (end_s None) -> ValueError.
 - Tests in tests/test_media_downloader.py: options with/without clip for both kinds, range callable yields start/end, clipped mp4 ladder step-down + cleanup.
 - Real cut accuracy (ffmpeg re-encode at keyframes) needs manual check with a live download.
+
+## 2026-10-10 - US-004
+- `build_embed(info, kind, clip=None)` adds a `Clip` field (after Duration) via new `format_clip(clip)` in embed.py: `1:30 → 2:45 (1:15)`; length uses `format_timestamp` so fractional clips keep tenths. Open end (unresolved clip) renders `1:30 → end`.
+- Duration field still shows full video length; no-clip embed unchanged. Tests in tests/test_media_embed.py.
