@@ -1,0 +1,153 @@
+{
+  "project": "ninja-discord-bot",
+  "branchName": "ralph/download-command",
+  "description": "/download slash command - fetch a video as mp3/mp4 with yt-dlp and post it with an info embed, fitting the server upload limit",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Dependencies, config and infrastructure",
+      "description": "As a developer, I need the downloader dependency, ffmpeg and a duration setting in place so later stories can build on them.",
+      "acceptanceCriteria": [
+        "Add yt-dlp as a runtime dependency via `uv add yt-dlp` (pyproject.toml and uv.lock updated)",
+        "Add [[tool.mypy.overrides]] for module yt_dlp.* with ignore_missing_imports = true so mypy strict passes",
+        "Add ffmpeg to the apt packages in Dockerfile.dev",
+        "Config in src/ninja_bot/config.py gains `max_duration_seconds: int` read from MAX_DURATION_SECONDS, default 3600; non-integer or non-positive values raise ConfigError",
+        "Document MAX_DURATION_SECONDS in .env.example",
+        "Tests in tests/test_config.py cover the default, a custom value, and an invalid value",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Media models and URL validation",
+      "description": "As a developer, I need typed models and URL validation so the rest of the feature works with clean data.",
+      "acceptanceCriteria": [
+        "New package src/ninja_bot/media/ (with __init__.py) containing models.py",
+        "`MediaKind = Literal[\"mp3\", \"mp4\"]`",
+        "Frozen dataclass VideoInfo: title, uploader (str|None), duration_s (int|None), thumbnail (str|None), webpage_url, view_count (int|None), upload_date (datetime.date|None), is_live (bool), is_playlist (bool)",
+        "`parse_info(raw: dict[str, Any]) -> VideoInfo` maps yt-dlp info dict keys (title, uploader, duration, thumbnail, webpage_url, view_count, upload_date as YYYYMMDD, is_live, _type == 'playlist') and tolerates missing keys",
+        "`format_duration(seconds: int | None) -> str` returns m:ss or h:mm:ss (65 -> '1:05', 3725 -> '1:02:05', None -> 'Unknown')",
+        "Exception classes in models.py: MediaError (base), InvalidUrlError, UnsupportedMediaError, TooLargeError, DownloadError; each carries a short user-facing message",
+        "`validate_url(text: str) -> str` in src/ninja_bot/media/planning.py strips whitespace, accepts only http/https URLs with a host, else raises InvalidUrlError",
+        "Unit tests: parse_info (full, minimal, playlist, live), format_duration, validate_url (valid, ftp://, no scheme, empty, whitespace-padded)",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Download planning that fits the upload limit",
+      "description": "As a user, I want the bot to automatically pick a quality that fits Discord's upload limit so my download isn't rejected for size.",
+      "acceptanceCriteria": [
+        "Pure function `plan_download(info, kind, limit_bytes, max_duration_s) -> DownloadPlan` in src/ninja_bot/media/planning.py",
+        "DownloadPlan is a frozen dataclass exposing kind, limit_bytes, and either audio_bitrate_kbps (mp3) or an ordered height_ladder (mp4)",
+        "Raises UnsupportedMediaError when info.is_live, info.is_playlist, duration_s is None, or duration_s > max_duration_s",
+        "mp3: picks the highest bitrate from [192, 128, 96, 64] kbps where duration_s * kbps * 1000 / 8 <= limit_bytes; raises TooLargeError if even 64 kbps does not fit",
+        "mp4: height_ladder is [1080, 720, 480, 360, 240]; helper `format_selector(plan, height) -> str` returns a yt-dlp format string capping height, filtering by filesize<=limit / filesize_approx<=limit, merging video+audio and preferring mp4/m4a",
+        "mp4: raises TooLargeError up front only if the lowest rung cannot plausibly fit, using a documented conservative minimum-bitrate constant for 240p",
+        "Unit tests: each rejection case, bitrate selection at boundaries, TooLargeError for a very long mp3 at a small limit, format_selector output for each height",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Info embed builder",
+      "description": "As a user, I want an embed showing the video's key details alongside the file so I can see what was posted.",
+      "acceptanceCriteria": [
+        "`build_embed(info: VideoInfo, kind: MediaKind) -> discord.Embed` in src/ninja_bot/media/embed.py",
+        "Title is info.title (truncated to 256 chars) and links to info.webpage_url",
+        "Fields: Uploader, Duration (via format_duration), Views (thousands-separated), Uploaded (YYYY-MM-DD); fields with missing data are omitted",
+        "Thumbnail set only when info.thumbnail is present",
+        "Footer shows the chosen format ('MP3' or 'MP4')",
+        "Respects Discord limits (title <= 256, field values <= 1024) even for very long titles/uploader names",
+        "Unit tests: full info, minimal info (title + url only), very long title, both kinds",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "yt-dlp downloader wrapper",
+      "description": "As a developer, I need one isolated class that talks to yt-dlp so the rest of the code can be tested with a fake.",
+      "acceptanceCriteria": [
+        "`Downloader` Protocol in src/ninja_bot/media/downloader.py with `async fetch_info(url) -> VideoInfo` and `async download(url, plan, workdir: Path) -> Path`",
+        "YtDlpDownloader is the only module importing yt_dlp; blocking calls run through asyncio.to_thread",
+        "fetch_info uses extract_info(url, download=False) with noplaylist=True, quiet=True, no_warnings=True, then parse_info; yt-dlp DownloadError becomes our DownloadError with a friendly message",
+        "Pure `build_ydl_options(plan, height, workdir)` returns options: mp3 uses 'bestaudio/best' + FFmpegExtractAudio postprocessor (preferredcodec mp3, preferredquality = plan bitrate); mp4 uses format_selector(...) with merge_output_format mp4; both set outtmpl inside workdir, noplaylist True, quiet True",
+        "download walks the mp4 height ladder (or the single mp3 bitrate), checks the real output file size against plan.limit_bytes, steps down one rung when too big, deletes leftover partial files between attempts, and raises TooLargeError when nothing fits",
+        "Unit tests (no network) for build_ydl_options for both kinds and for the ladder/step-down logic, using an injected stub for the yt-dlp call and temp files of known size",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "/download slash command (core flow)",
+      "description": "As a server member, I want to run /download url:<link> format:<mp3|mp4> and get the file plus an embed in the channel.",
+      "acceptanceCriteria": [
+        "src/ninja_bot/cogs/media.py defines a Media cog with app_commands command `download(url: str, format)`; `format` is optional, a dropdown of choices mp3 and mp4, default mp4",
+        "Cog takes a Downloader (default YtDlpDownloader) and max_duration_s via constructor so tests inject a fake; setup(bot) builds it from bot.config.max_duration_seconds",
+        "Flow: validate_url -> interaction.response.defer(thinking=True) -> fetch_info -> plan_download using interaction.guild.filesize_limit (fallback 10 * 1024 * 1024 without a guild) -> download into a tempfile.TemporaryDirectory -> interaction.followup.send(embed=build_embed(...), file=discord.File(path))",
+        "validate_url failure is answered with an ephemeral message before deferring",
+        "Each MediaError subtype after deferring is answered via followup with a clear friendly message; TooLargeError and UnsupportedMediaError replies include the embed when info is available; unexpected exceptions are logged and answered with a generic message that leaks no internals",
+        "Temp directory removed in every outcome (success and each error path)",
+        "'ninja_bot.cogs.media' added to EXTENSIONS in src/ninja_bot/bot.py",
+        "Tests with a fake Downloader and fake Interaction cover: success mp4 (default), success mp3, invalid URL, each MediaError subtype, unexpected exception, guild limit vs no-guild fallback, temp dir cleanup",
+        "Add a note to progress.txt: 'needs manual check in Discord test server' (not verifiable by Ralph)",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "/download concurrency limit and cooldown",
+      "description": "As the owner, I want downloads throttled so the homelab LXC isn't overloaded by concurrent or repeated requests.",
+      "acceptanceCriteria": [
+        "The Media cog holds an asyncio.Semaphore(1) so only one download runs at a time; the semaphore is acquired after defer and released in every outcome",
+        "/download has a 30-second per-user cooldown via app_commands.checks.cooldown(1, 30)",
+        "A cog-level app command error handler catches CommandOnCooldown and replies ephemerally with the remaining seconds; other errors are logged and answered with a generic message",
+        "Tests: a second concurrent request waits until the first finishes (use asyncio events with the fake Downloader); the cooldown handler replies with the remaining time",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Documentation",
+      "description": "As the owner, I want the docs to describe the new feature, its system dependencies and its upkeep.",
+      "acceptanceCriteria": [
+        "CLAUDE.md architecture section lists src/ninja_bot/media/ (models, planning, embed, downloader) and cogs/media.py",
+        "README.md documents /download usage, MAX_DURATION_SECONDS, the ffmpeg requirement (apt install ffmpeg on the Debian 13 prod LXC) and a manual test checklist (short mp3, short mp4, over-limit video, bogus URL, private video, playlist link)",
+        "README.md notes yt-dlp upkeep: `uv lock --upgrade-package yt-dlp` when extractors break",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
