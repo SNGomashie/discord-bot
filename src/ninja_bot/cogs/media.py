@@ -11,6 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ninja_bot.media.clip import Clip, parse_clip
 from ninja_bot.media.downloader import Downloader, YtDlpDownloader
 from ninja_bot.media.embed import build_embed
 from ninja_bot.media.models import (
@@ -63,38 +64,58 @@ class Media(commands.Cog):
 
     @app_commands.command(name="download", description="Download a video as mp3 or mp4")
     @app_commands.checks.cooldown(1, COOLDOWN_SECONDS)
-    @app_commands.describe(url="Link to the video", format="File format (default mp4)")
+    @app_commands.describe(
+        url="Link to the video",
+        format="File format (default mp4)",
+        start="Clip start, e.g. 1:30, 90 or 1m30s (optional)",
+        end="Clip end, e.g. 2:45, 165 or 2m45s (optional, needs start)",
+    )
     async def download(
-        self, interaction: discord.Interaction, url: str, format: MediaKind = "mp4"
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        format: MediaKind = "mp4",
+        start: str | None = None,
+        end: str | None = None,
     ) -> None:
-        await self.handle_download(interaction, url, format)
+        await self.handle_download(interaction, url, format, start, end)
 
     async def handle_download(
-        self, interaction: discord.Interaction, url: str, kind: MediaKind
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        kind: MediaKind,
+        start: str | None = None,
+        end: str | None = None,
     ) -> None:
         try:
             clean_url = validate_url(url)
+            clip = parse_clip(start, end)
         except MediaError as exc:
             await interaction.response.send_message(exc.message, ephemeral=True)
             return
 
         await interaction.response.defer(thinking=True)
         async with self.semaphore:
-            await self._download_deferred(interaction, clean_url, kind)
+            await self._download_deferred(interaction, clean_url, kind, clip)
 
     async def _download_deferred(
-        self, interaction: discord.Interaction, clean_url: str, kind: MediaKind
+        self,
+        interaction: discord.Interaction,
+        clean_url: str,
+        kind: MediaKind,
+        clip: Clip | None,
     ) -> None:
         info: VideoInfo | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="ninja-dl-") as tmp:
                 info = await self.downloader.fetch_info(clean_url)
                 plan = plan_download(
-                    info, kind, upload_limit(interaction.guild), self.max_duration_s
+                    info, kind, upload_limit(interaction.guild), self.max_duration_s, clip=clip
                 )
                 path = await self.downloader.download(clean_url, plan, Path(tmp))
                 await interaction.followup.send(
-                    embed=build_embed(info, kind), file=discord.File(path)
+                    embed=build_embed(info, kind, plan.clip), file=discord.File(path)
                 )
         except MediaError as exc:
             embed = error_embed(exc, info, kind)

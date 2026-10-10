@@ -13,6 +13,7 @@
 - Clip times: `media/clip.py` parses/format timestamps; `InvalidClipError` messages are user-facing. `format_timestamp` (float, tenths) vs `format_duration` (int, models.py).
 - plan_download with a clip: `plan.clip` is always resolved (concrete `end_s`); size estimates use `math.ceil(clip length)` since `estimated_size_bytes` takes int seconds.
 - Clipped downloads: `build_ydl_options` adds `download_ranges` (yt_dlp.utils.download_range_func, imported lazily via `_download_ranges`) + `force_keyframes_at_cuts` only when `plan.clip` is set; it raises ValueError for an unresolved clip. The range callable can be invoked in tests as `fn({"duration": n}, None)` without network.
+- Cog clip flow: `handle_download(interaction, url, kind, start=None, end=None)` parses URL and clip in one try block before defer (ephemeral on MediaError); `plan_download(..., clip=clip)` errors go through the followup MediaError path; success embed uses `plan.clip`, error embeds never show a clip. Param descriptions are `locale_str` — use `str(param.description)` in tests.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -34,3 +35,8 @@
 ## 2026-10-10 - US-004
 - `build_embed(info, kind, clip=None)` adds a `Clip` field (after Duration) via new `format_clip(clip)` in embed.py: `1:30 → 2:45 (1:15)`; length uses `format_timestamp` so fractional clips keep tenths. Open end (unresolved clip) renders `1:30 → end`.
 - Duration field still shows full video length; no-clip embed unchanged. Tests in tests/test_media_embed.py.
+
+## 2026-10-10 - US-005
+- `/download` gains optional `start`/`end` string options (describe text with example formats). `handle_download` calls `parse_clip` before deferring; invalid clip -> ephemeral reply, no semaphore/download. Clip passed to `plan_download`; success embed built with `plan.clip`.
+- Tests in tests/test_media_cog.py: params optional strings, no clip, start only, start+end, clip under cap on long video, end only / end<=start / garbage (ephemeral before defer), start beyond video (followup), clip too long (error embed without Clip field).
+- needs manual check in Discord test server (option UI, real clipped mp3/mp4 upload).

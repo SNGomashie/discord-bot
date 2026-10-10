@@ -16,8 +16,10 @@ from ninja_bot.cogs.media import (
     cooldown_message,
     upload_limit,
 )
+from ninja_bot.media.clip import Clip
 from ninja_bot.media.models import (
     DownloadError,
+    InvalidClipError,
     InvalidUrlError,
     MediaError,
     TooLargeError,
@@ -101,6 +103,15 @@ def test_download_command_format_choices() -> None:
     assert [c.value for c in param.choices] == ["mp3", "mp4"]
     assert not param.required
     assert param.default == "mp4"
+
+
+@pytest.mark.parametrize("name", ["start", "end"])
+def test_download_command_clip_params_are_optional_strings(name: str) -> None:
+    param = Media.download._params[name]
+    assert not param.required
+    assert param.default is None
+    assert param.type is discord.AppCommandOptionType.string
+    assert ":" in str(param.description)  # example formats
 
 
 def test_upload_limit() -> None:
@@ -368,3 +379,117 @@ async def test_other_command_error_is_generic_and_logged(
     interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE, ephemeral=True)
     interaction.response.send_message.assert_not_awaited()
     assert any(r.exc_info for r in caplog.records)
+
+
+def embed_field(embed: discord.Embed, name: str) -> str | None:
+    return next((f.value for f in embed.fields if f.name == name), None)
+
+
+async def test_no_clip_has_no_clip_field() -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+
+    await Media.download.callback(Media(downloader, 3600), interaction, URL)
+
+    assert downloader.plans[0].clip is None
+    _, kwargs = followup_kwargs(interaction)
+    assert embed_field(kwargs["embed"], "Clip") is None
+
+
+async def test_start_only_clips_to_end_of_video() -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+
+    await Media.download.callback(Media(downloader, 3600), interaction, URL, "mp3", start="0:15")
+
+    assert downloader.plans[0].kind == "mp3"
+    assert downloader.plans[0].clip == Clip(15, 60)
+    _, kwargs = followup_kwargs(interaction)
+    assert embed_field(kwargs["embed"], "Clip") == "0:15 → 1:00 (0:45)"
+    assert embed_field(kwargs["embed"], "Duration") == "1:00"
+
+
+async def test_start_and_end_clip_reaches_downloader() -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+
+    await Media(downloader, 3600).handle_download(interaction, URL, "mp4", "10", "20.5")
+
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    assert downloader.plans[0].clip == Clip(10, 20.5)
+    _, kwargs = followup_kwargs(interaction)
+    assert kwargs["file"].filename == "video.mp4"
+    assert embed_field(kwargs["embed"], "Clip") == "0:10 → 0:20.5 (0:10.5)"
+
+
+async def test_clip_under_cap_on_longer_video_is_allowed() -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+
+    await Media(downloader, max_duration_s=30).handle_download(
+        interaction, URL, "mp3", "0:10", "0:30"
+    )
+
+    assert downloader.plans[0].clip == Clip(10, 30)
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [(None, "1:00"), ("", "1:00"), ("0:30", "0:10"), ("0:10", "0:10"), ("abc", None)],
+)
+async def test_invalid_clip_replies_ephemeral_before_defer(
+    start: str | None, end: str | None
+) -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+    cog = Media(downloader, 3600)
+    await cog.semaphore.acquire()  # an invalid clip must not wait for the semaphore
+
+    await asyncio.wait_for(cog.handle_download(interaction, URL, "mp4", start, end), timeout=1)
+
+    interaction.response.send_message.assert_awaited_once()
+    message = interaction.response.send_message.await_args.args[0]
+    assert interaction.response.send_message.await_args.kwargs == {"ephemeral": True}
+    assert isinstance(message, str) and message
+    interaction.response.defer.assert_not_awaited()
+    interaction.followup.send.assert_not_awaited()
+    assert downloader.fetched == []
+
+
+async def test_end_without_start_message() -> None:
+    interaction = make_interaction()
+
+    await Media(FakeDownloader(), 3600).handle_download(interaction, URL, "mp4", None, "1:00")
+
+    message = interaction.response.send_message.await_args.args[0]
+    assert "start time too" in message
+
+
+async def test_start_beyond_video_is_followup_error() -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+
+    await Media(downloader, 3600).handle_download(interaction, URL, "mp4", "2:00")
+
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    args, kwargs = followup_kwargs(interaction)
+    assert "past the end of the video" in args[0]
+    assert "1:00" in args[0]
+    assert "embed" not in kwargs
+    assert downloader.plans == []
+
+
+async def test_clip_too_long_error_embed_has_no_clip() -> None:
+    downloader = FakeDownloader()
+    interaction = make_interaction()
+
+    await Media(downloader, max_duration_s=10).handle_download(interaction, URL, "mp3", "0:05")
+
+    args, kwargs = followup_kwargs(interaction)
+    assert "clip" in args[0].lower()
+    assert embed_field(kwargs["embed"], "Clip") is None
+    assert downloader.plans == []
+
+
+def test_invalid_clip_error_is_media_error() -> None:
+    assert issubclass(InvalidClipError, MediaError)
