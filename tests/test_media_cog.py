@@ -17,6 +17,7 @@ from ninja_bot.cogs.media import (
     upload_limit,
 )
 from ninja_bot.media.clip import MAX_TIMESTAMP_LENGTH, Clip
+from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.media.models import (
     DownloadError,
     InvalidClipError,
@@ -344,34 +345,129 @@ def test_cooldown_message(retry_after: float, expected: str) -> None:
     assert cooldown_message(retry_after).endswith(f"in {expected}.")
 
 
-async def test_download_has_per_user_cooldown() -> None:
-    check = Media.download.checks[0]
-    now = discord.utils.utcnow()
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_download_has_no_builtin_cooldown_check() -> None:
+    assert Media.download.checks == []
+
+
+def test_user_cooldown_allows_first_use() -> None:
+    assert UserCooldown(30, FakeClock()).try_acquire(1) == 0.0
+
+
+def test_user_cooldown_blocks_with_remaining_time() -> None:
+    clock = FakeClock()
+    cooldown = UserCooldown(30, clock)
+    cooldown.try_acquire(1)
+
+    clock.now += 12.5
+    assert cooldown.try_acquire(1) == pytest.approx(17.5)
+    # A blocked attempt doesn't restart the cooldown.
+    clock.now += 17.5
+    assert cooldown.try_acquire(1) == 0.0
+
+
+def test_user_cooldown_refund_clears_user() -> None:
+    cooldown = UserCooldown(30, FakeClock())
+    cooldown.try_acquire(1)
+
+    cooldown.refund(1)
+    cooldown.refund(2)  # unknown user is fine
+
+    assert cooldown.try_acquire(1) == 0.0
+
+
+def test_user_cooldown_users_are_independent() -> None:
+    cooldown = UserCooldown(30, FakeClock())
+    cooldown.try_acquire(1)
+
+    assert cooldown.try_acquire(2) == 0.0
+    assert cooldown.try_acquire(1) > 0
+
+
+def make_user_interaction(user_id: int = 1) -> MagicMock:
     interaction = make_interaction()
-    interaction.user.id = 1
-    interaction.created_at = now
-    other = make_interaction()
-    other.user.id = 2
-    other.created_at = now
-
-    assert await check(interaction)
-    with pytest.raises(app_commands.CommandOnCooldown) as exc_info:
-        await check(interaction)
-    assert exc_info.value.cooldown.per == 30
-    assert await check(other)
+    interaction.user.id = user_id
+    return interaction
 
 
-async def test_cooldown_error_replies_ephemeral_with_remaining_time() -> None:
-    interaction = make_interaction()
-    interaction.response.is_done = MagicMock(return_value=False)
-    error = app_commands.CommandOnCooldown(app_commands.Cooldown(1, 30), retry_after=12.3)
+def make_cooldown_cog(downloader: FakeDownloader) -> tuple[Media, UserCooldown, FakeClock]:
+    clock = FakeClock()
+    cooldown = UserCooldown(30, clock)
+    return Media(downloader, 3600, cooldown), cooldown, clock
 
-    await Media(FakeDownloader(), 3600).cog_app_command_error(interaction, error)
 
-    interaction.response.send_message.assert_awaited_once_with(
-        cooldown_message(12.3), ephemeral=True
-    )
-    assert "13 seconds" in cooldown_message(12.3)
+@pytest.mark.parametrize(
+    ("url", "start", "end"),
+    [("nope", None, None), (URL, "abc", None), (URL, None, "1:00"), (URL, "2:00", "1:00")],
+)
+async def test_invalid_input_does_not_consume_cooldown(
+    url: str, start: str | None, end: str | None
+) -> None:
+    cog, cooldown, _ = make_cooldown_cog(FakeDownloader())
+
+    await cog.handle_download(make_user_interaction(), url, "mp4", start, end)
+
+    assert cooldown.try_acquire(1) == 0.0
+
+
+async def test_success_consumes_cooldown() -> None:
+    downloader = FakeDownloader()
+    cog, _, clock = make_cooldown_cog(downloader)
+    await cog.handle_download(make_user_interaction(), URL, "mp4")
+
+    clock.now += 12.3
+    blocked = make_user_interaction()
+    await cog.handle_download(blocked, URL, "mp4")
+
+    blocked.response.send_message.assert_awaited_once_with(cooldown_message(17.7), ephemeral=True)
+    blocked.response.defer.assert_not_awaited()
+    assert len(downloader.fetched) == 1
+    assert "18 seconds" in cooldown_message(17.7)
+
+
+@pytest.mark.parametrize(
+    "downloader",
+    [
+        FakeDownloader(info_error=InvalidUrlError()),
+        FakeDownloader(download_error=DownloadError()),
+        FakeDownloader(download_error=RuntimeError("boom")),
+        FakeDownloader(info=dataclasses.replace(INFO, duration_s=99999)),
+    ],
+)
+async def test_failure_refunds_cooldown(downloader: FakeDownloader) -> None:
+    cog, cooldown, _ = make_cooldown_cog(downloader)
+
+    await cog.handle_download(make_user_interaction(), URL, "mp4")
+
+    assert downloader.fetched == [URL]
+    assert cooldown.try_acquire(1) == 0.0
+
+
+async def test_failed_post_refunds_cooldown() -> None:
+    cog, cooldown, _ = make_cooldown_cog(FakeDownloader())
+    interaction = make_user_interaction()
+    interaction.followup.send.side_effect = [RuntimeError("send failed"), None]
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    assert cooldown.try_acquire(1) == 0.0
+
+
+async def test_cooldown_is_per_user_in_cog() -> None:
+    downloader = FakeDownloader()
+    cog, _, _ = make_cooldown_cog(downloader)
+
+    await cog.handle_download(make_user_interaction(1), URL, "mp4")
+    await cog.handle_download(make_user_interaction(2), URL, "mp4")
+
+    assert len(downloader.fetched) == 2
 
 
 async def test_other_command_error_is_generic_and_logged(

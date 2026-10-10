@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ninja_bot.media.clip import MAX_TIMESTAMP_LENGTH, Clip, parse_clip
+from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.media.downloader import Downloader, YtDlpDownloader
 from ninja_bot.media.embed import build_embed
 from ninja_bot.media.models import (
@@ -56,14 +57,20 @@ def cooldown_message(retry_after: float) -> str:
 
 
 class Media(commands.Cog):
-    def __init__(self, downloader: Downloader, max_duration_s: int) -> None:
+    def __init__(
+        self,
+        downloader: Downloader,
+        max_duration_s: int,
+        cooldown: UserCooldown | None = None,
+    ) -> None:
         self.downloader = downloader
         self.max_duration_s = max_duration_s
+        # Taken only after the input is valid and refunded unless a file is posted.
+        self.cooldown = cooldown if cooldown is not None else UserCooldown(COOLDOWN_SECONDS)
         # One download at a time keeps the homelab LXC from being overloaded.
         self.semaphore = asyncio.Semaphore(1)
 
     @app_commands.command(name="download", description="Download a video as mp3 or mp4")
-    @app_commands.checks.cooldown(1, COOLDOWN_SECONDS)
     @app_commands.describe(
         url="Link to the video",
         format="File format (default mp4)",
@@ -95,9 +102,20 @@ class Media(commands.Cog):
             await interaction.response.send_message(exc.message, ephemeral=True)
             return
 
-        await interaction.response.defer(thinking=True)
-        async with self.semaphore:
-            await self._download_deferred(interaction, clean_url, kind, clip)
+        user_id = interaction.user.id
+        retry_after = self.cooldown.try_acquire(user_id)
+        if retry_after > 0:
+            await interaction.response.send_message(cooldown_message(retry_after), ephemeral=True)
+            return
+
+        posted = False
+        try:
+            await interaction.response.defer(thinking=True)
+            async with self.semaphore:
+                posted = await self._download_deferred(interaction, clean_url, kind, clip)
+        finally:
+            if not posted:
+                self.cooldown.refund(user_id)
 
     async def _download_deferred(
         self,
@@ -105,7 +123,8 @@ class Media(commands.Cog):
         clean_url: str,
         kind: MediaKind,
         clip: Clip | None,
-    ) -> None:
+    ) -> bool:
+        """Fetch, download and post the file; return whether the file was posted."""
         info: VideoInfo | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="ninja-dl-") as tmp:
@@ -117,6 +136,7 @@ class Media(commands.Cog):
                 await interaction.followup.send(
                     embed=build_embed(info, kind, plan.clip), file=discord.File(path)
                 )
+                return True
         except MediaError as exc:
             embed = error_embed(exc, info, kind)
             if embed is None:
@@ -126,15 +146,13 @@ class Media(commands.Cog):
         except Exception:
             log.exception("Unexpected error downloading %s", clean_url)
             await interaction.followup.send(GENERIC_ERROR_MESSAGE)
+        return False
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
-        if isinstance(error, app_commands.CommandOnCooldown):
-            message = cooldown_message(error.retry_after)
-        else:
-            log.error("App command error in Media cog", exc_info=error)
-            message = GENERIC_ERROR_MESSAGE
+        log.error("App command error in Media cog", exc_info=error)
+        message = GENERIC_ERROR_MESSAGE
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:

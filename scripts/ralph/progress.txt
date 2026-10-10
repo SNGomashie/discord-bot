@@ -8,7 +8,7 @@
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
-- App command checks (e.g. cooldown) are bypassed by `.callback`; test them via `Command.checks[i](interaction)` — the cooldown check needs a real `interaction.created_at` (discord.utils.utcnow()). Cooldown state lives on the class-level command, so use distinct user ids per test.
+- /download cooldown is `UserCooldown` (media/cooldown.py, injectable clock) on the cog instance, not an app_commands check: `handle_download` takes it after URL/clip validation and refunds in a `finally` unless `_download_deferred` returns True (file posted). Tests inject `Media(downloader, 3600, UserCooldown(30, FakeClock()))`.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 - Clip times: `media/clip.py` parses/format timestamps; `InvalidClipError` messages are user-facing. `format_timestamp` (float, tenths) vs `format_duration` (int, models.py).
 - plan_download with a clip: `plan.clip` is always resolved (concrete `end_s`); size estimates use `math.ceil(clip length)` since `estimated_size_bytes` takes int seconds.
@@ -47,3 +47,8 @@
 - `download` raises a clear DownloadError (and logs the extensions at INFO) when only non-matching media files appear; the "produced no file" message stays for truly empty results.
 - Files: src/ninja_bot/media/downloader.py, tests/test_media_downloader.py
 - Needs manual check: a real webm-only source is remuxed to mp4 (requires ffmpeg).
+
+## 2026-10-10 - US-006
+- New `UserCooldown` (try_acquire/refund, injectable clock). Removed the `@app_commands.checks.cooldown` decorator and the `CommandOnCooldown` branch; `handle_download` validates first, then takes the cooldown, and refunds it when no file was posted (MediaError, unexpected exception, failed send, cancellation).
+- Files: src/ninja_bot/media/cooldown.py, src/ninja_bot/cogs/media.py, tests/test_media_cog.py
+- Learnings: `_download_deferred` now returns whether the file was posted; the refund lives in handle_download's `finally` so it also covers defer failures.
