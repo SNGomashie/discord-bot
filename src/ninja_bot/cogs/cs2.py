@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 GENERIC_ERROR_MESSAGE = "Something went wrong while fetching CS2 stats. Please try again later."
 COOLDOWN_SECONDS = 10.0
+LINK_COOLDOWN_SECONDS = 15.0
+ALREADY_LINKED_MESSAGE = "You're already linked to that Steam account."
 UNLINKED_MESSAGE = "Your Steam account is no longer linked."
 NOTHING_TO_UNLINK_MESSAGE = "You don't have a linked Steam account."
 MAX_MATCH_ID_LENGTH = 64
@@ -75,11 +77,16 @@ class Cs2(commands.Cog):
         stats: StatsProvider,
         links: LinkStore,
         cooldown: UserCooldown | None = None,
+        link_cooldown: UserCooldown | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
         # Used by the stats commands; taken after input is valid, refunded unless posted.
         self.cooldown = cooldown if cooldown is not None else UserCooldown(COOLDOWN_SECONDS)
+        # Separate from the stats cooldown; never refunded once Leetify was called.
+        self.link_cooldown = (
+            link_cooldown if link_cooldown is not None else UserCooldown(LINK_COOLDOWN_SECONDS)
+        )
 
     async def cog_unload(self) -> None:
         if isinstance(self.stats, LeetifyClient):
@@ -125,6 +132,20 @@ class Cs2(commands.Cog):
             steam64_id = parse_steam_id(steam)
         except Cs2Error as exc:
             await interaction.response.send_message(exc.message, ephemeral=True)
+            return
+
+        try:
+            current = await self.links.get(interaction.user.id)
+        except Exception as exc:
+            await self._reply_lookup_error(interaction, exc)
+            return
+        if current == steam64_id:
+            await interaction.response.send_message(ALREADY_LINKED_MESSAGE, ephemeral=True)
+            return
+
+        retry_after = self.link_cooldown.try_acquire(interaction.user.id)
+        if retry_after > 0:
+            await interaction.response.send_message(cooldown_message(retry_after), ephemeral=True)
             return
 
         # Leetify can be slow; defer so Discord doesn't time out the interaction.
@@ -279,4 +300,6 @@ class Cs2(commands.Cog):
 async def setup(bot: NinjaBot) -> None:
     client = LeetifyClient(bot.config.leetify_api_key)
     store = SqliteLinkStore(Path(bot.config.data_dir) / "cs2.sqlite3")
-    await bot.add_cog(Cs2(client, store, UserCooldown(COOLDOWN_SECONDS)))
+    await bot.add_cog(
+        Cs2(client, store, UserCooldown(COOLDOWN_SECONDS), UserCooldown(LINK_COOLDOWN_SECONDS))
+    )

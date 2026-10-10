@@ -10,9 +10,11 @@ from discord import app_commands
 from ninja_bot.bot import EXTENSIONS
 from ninja_bot.cogs import cs2 as cs2_cog
 from ninja_bot.cogs.cs2 import (
+    ALREADY_LINKED_MESSAGE,
     COOLDOWN_SECONDS,
     GENERIC_ERROR_MESSAGE,
     INVALID_MATCH_ID_MESSAGE,
+    LINK_COOLDOWN_SECONDS,
     MAX_MATCH_ID_LENGTH,
     NOTHING_TO_UNLINK_MESSAGE,
     UNLINKED_MESSAGE,
@@ -113,6 +115,14 @@ class MemoryLinkStore:
 
     async def all_links(self) -> dict[int, str]:
         return dict(self.links)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 def make_interaction(user_id: int = USER_ID) -> MagicMock:
@@ -256,6 +266,108 @@ async def test_link_unexpected_error_is_generic_and_logged(
     assert "Unexpected error linking" in caplog.text
 
 
+def link_cog(
+    links: dict[int, str] | None = None, **stats_kwargs: Any
+) -> tuple[Cs2, FakeStats, MemoryLinkStore, FakeClock]:
+    clock = FakeClock()
+    stats = FakeStats(**stats_kwargs)
+    store = MemoryLinkStore(links)
+    cog = Cs2(
+        stats,
+        store,
+        UserCooldown(COOLDOWN_SECONDS, clock),
+        UserCooldown(LINK_COOLDOWN_SECONDS, clock),
+    )
+    return cog, stats, store, clock
+
+
+async def test_link_invalid_input_does_not_take_cooldown() -> None:
+    cog, stats, store, _ = link_cog()
+    await cog.handle_link(make_interaction(), "not an id")
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+
+
+async def test_link_repeat_inside_window_is_throttled() -> None:
+    cog, stats, store, clock = link_cog()
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    await cog.links.remove(USER_ID)
+    clock.now += LINK_COOLDOWN_SECONDS - 5
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {}
+    assert reply(interaction) == ((cooldown_message(5),), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+
+
+async def test_link_after_window_works() -> None:
+    cog, stats, store, clock = link_cog()
+    other = "76561198000000999"
+    await cog.handle_link(make_interaction(), other)
+    clock.now += LINK_COOLDOWN_SECONDS
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [other, STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+    assert followup_reply(interaction) == ((linked_message("Ninja"),), {"ephemeral": True})
+
+
+async def test_link_already_linked_same_id_skips_api_and_cooldown() -> None:
+    cog, stats, store, _ = link_cog({USER_ID: STEAM_ID})
+    interaction = make_interaction()
+    await cog.handle_link(interaction, f"https://steamcommunity.com/profiles/{STEAM_ID}")
+    assert stats.profile_calls == []
+    assert reply(interaction) == ((ALREADY_LINKED_MESSAGE,), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    # No cooldown was taken, so relinking another id right away works.
+    other = "76561198000000999"
+    await cog.handle_link(make_interaction(), other)
+    assert stats.profile_calls == [other]
+    assert store.links == {USER_ID: other}
+
+
+async def test_link_relinks_different_id() -> None:
+    cog, stats, store, _ = link_cog({USER_ID: "76561198000000999"})
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+    assert followup_reply(interaction) == ((linked_message("Ninja"),), {"ephemeral": True})
+
+
+async def test_link_failed_lookup_holds_cooldown() -> None:
+    cog, stats, store, _ = link_cog(error=PlayerNotFoundError())
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {}
+    assert reply(interaction) == (
+        (cooldown_message(LINK_COOLDOWN_SECONDS),),
+        {"ephemeral": True},
+    )
+
+
+async def test_link_cooldown_is_separate_from_stats_cooldown() -> None:
+    cog, _, _, _ = link_cog()
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    assert cog.cooldown.try_acquire(USER_ID) == 0.0
+    assert cog.link_cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_link_store_lookup_error_is_generic(caplog: pytest.LogCaptureFixture) -> None:
+    cog, stats, store, _ = link_cog()
+    store.get = AsyncMock(side_effect=RuntimeError("disk"))  # type: ignore[method-assign]
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == []
+    assert reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    # The cooldown was not taken.
+    assert cog.link_cooldown.try_acquire(USER_ID) == 0.0
+
+
 async def test_unlink_removes_existing_link() -> None:
     cog, _, store = make_cog(store=MemoryLinkStore({USER_ID: STEAM_ID, 7: STEAM_ID}))
     interaction = make_interaction()
@@ -352,6 +464,8 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     assert isinstance(cog.links, SqliteLinkStore)
     assert cog.links._path == tmp_path / "cs2.sqlite3"
     assert cog.cooldown.per_seconds == COOLDOWN_SECONDS == 10.0
+    assert cog.link_cooldown.per_seconds == LINK_COOLDOWN_SECONDS == 15
+    assert cog.link_cooldown is not cog.cooldown
 
 
 async def test_cog_unload_closes_client() -> None:
@@ -371,14 +485,6 @@ FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
 # The fixture profile/match player "alpha"; STEAM_ID ("bravo") is also in the match.
 FIXTURE_STEAM_ID = "76561198000000000"
 OTHER_USER_ID = 7
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 @pytest.fixture
