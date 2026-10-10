@@ -1,0 +1,239 @@
+# PRD: CS2 scoreboard (`/link`, `/scoreboard`, `/profile`)
+
+## Introduction
+
+Add a CS2 stats feature to the bot, in the spirit of the Leetify Discord bot but richer: instead of one stat and some generated text, `/scoreboard` posts a full match embed with both teams' scoreboards, fun awards, a Leetify-style breakdown for the player who asked, match highlights and recent form. All text is computed locally from numbers (no LLM calls). Data comes from the Leetify public API (`https://api-public.cs-prod.leetify.com`). Each friend links their SteamID64 once with `/link`.
+
+This is the first of two PRDs. This one delivers linking, `/scoreboard` and `/profile`. The second PRD (`ralph/cs2-squad`) adds `/leaderboard`, trends and automatic posting of new matches.
+
+## Goals
+
+- A linked user runs `/scoreboard` and gets their latest match as one embed: score, both teams (K/D/A, ADR, HS%, Leetify rating), awards, their breakdown, highlights and form.
+- `/profile` shows a player's Leetify rating breakdown (aim, positioning, utility, clutch, opening) and recent form.
+- Players are linked once per Discord user and the link survives restarts.
+- Every embed stays inside Discord limits for a full 10-player match with long names and missing data.
+- All logic lives in pure functions or small services; the cog stays thin and everything is testable without Discord or the network.
+
+## User Stories
+
+### US-001: Dependencies and configuration
+**Description:** As the owner, I want the CS2 settings and the HTTP dependency in place so later stories can build on them.
+
+**Acceptance Criteria:**
+- [ ] `aiohttp` is added as a direct dependency with `uv add aiohttp` (`pyproject.toml` and `uv.lock` updated)
+- [ ] `Config` in `config.py` gains fields with defaults so existing constructors keep working: `leetify_api_key: str | None = None`, `cs2_channel_id: int | None = None`, `cs2_poll_seconds: int = 300`, `data_dir: str = "data"`
+- [ ] `load_config` reads `LEETIFY_API_KEY` (empty or unset means `None`), `CS2_CHANNEL_ID` (optional positive int), `CS2_POLL_SECONDS` (positive int, default 300, via `_parse_positive_int`) and `DATA_DIR` (default `data`)
+- [ ] An invalid `CS2_CHANNEL_ID` or `CS2_POLL_SECONDS` (zero, negative, non-numeric) raises `ConfigError` naming the variable
+- [ ] `.env.example` lists the four new variables with empty/default values and a one-line comment each (no real key)
+- [ ] Unit tests in `tests/test_config.py` for defaults, valid values, empty key and each invalid case
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-002: CS2 error types and data models
+**Description:** As a developer, I need typed models and user-safe errors for the CS2 feature.
+
+**Acceptance Criteria:**
+- [ ] New package `src/ninja_bot/cs2/` with `__init__.py`
+- [ ] `cs2/models.py` defines `Cs2Error(Exception)` with a `default_message` class attribute and a user-safe `.message` (same shape as `MediaError` in `media/models.py`), and subclasses `PlayerNotFoundError`, `PrivateProfileError`, `RateLimitedError`, `ApiError`, `InvalidSteamIdError`, `NotLinkedError`, `NoMatchesError`, each with a friendly `default_message`
+- [ ] Frozen dataclasses with `None` for any value the API may omit: `PlayerMatchStats` (steam64_id, name, team_number, kills, deaths, assists, hs_kills, damage, rounds, mvps, leetify_rating, accuracy_head, flash_assists, trade_kills, multi-kill counts 2k-5k, rounds_survived, reaction_time_ms, preaim, accuracy, spray_accuracy, friendly shots hit), `Match` (id, map_name, finished_at, team_scores, players), `RecentMatch` (id, finished_at, map_name, outcome, leetify_rating, score), `Profile` (steam64_id, name, winrate, total_matches, ratings aim/positioning/utility/clutch/opening, ranks, recent_matches)
+- [ ] `PlayerMatchStats` exposes derived properties: `kd_ratio`, `adr` (damage per round, `None` when rounds is 0 or unknown) and `hs_percent` (headshot kills / kills, `None` when kills is 0)
+- [ ] `Match` exposes `teams()` returning the two teams ordered by team number, each sorted by Leetify rating then kills descending (players with no rating last)
+- [ ] Unit tests for the derived properties (zero rounds, zero kills, missing values) and for `Match.teams()` ordering
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-003: Parse match responses
+**Description:** As a developer, I want `parse_match` to turn a Leetify match response into a `Match` so the rest of the code never touches raw JSON.
+
+**Acceptance Criteria:**
+- [ ] `parse_match(raw: dict) -> Match` in `cs2/models.py` maps `MatchDetailsResponse` (`id`, `finished_at`, `map_name`, `team_scores`, `stats[]`) using tolerant helpers in the style of `_opt_str` / `_opt_int` / `_opt_float` in `media/models.py`
+- [ ] Per-player field names are mapped from the Leetify spec (`total_kills`, `total_deaths`, `total_assists`, `total_hs_kills`, `total_damage`, `rounds_count`, `leetify_rating`, `initial_team_number`, `multi2k`..`multi5k`, `flash_assist`, `reaction_time`, `preaim`, etc.)
+- [ ] Match-level `accuracy` values are decimals (0.5446) and are normalised to percentages (54.46) so they match profile units; values already above 1.0 are left alone
+- [ ] Missing, `null` or wrongly typed values become `None` and never raise; a player entry without a `steam64_id` is skipped
+- [ ] A response without a usable `id` or with no players raises `ApiError`
+- [ ] A hand-written fixture `tests/fixtures/leetify/match.json` (10 players, built from the Leetify swagger spec) is used by the tests
+- [ ] Unit tests cover the full fixture, a minimal match, `null` fields, wrong types, unit normalisation and the error cases
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-004: Parse profile responses
+**Description:** As a developer, I want `parse_profile` to turn a Leetify profile response into a `Profile`.
+
+**Acceptance Criteria:**
+- [ ] `parse_profile(raw: dict) -> Profile` in `cs2/models.py` maps `name`, `steam64_id`, `winrate` (fraction, kept as a fraction), `total_matches`, `rating` (aim, positioning, utility, clutch, opening, ct/t), `ranks` (premier, faceit level, leetify) and `recent_matches` (newest first)
+- [ ] `privacy_mode` values other than public raise `PrivateProfileError`
+- [ ] Missing or `null` sections become `None` / empty tuples and never raise; a response with no `steam64_id` raises `ApiError`
+- [ ] Fixture `tests/fixtures/leetify/profile.json` built from the spec; unit tests for the full fixture, a minimal profile, missing sections and the private case
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-005: Steam ID parsing
+**Description:** As a user, I want to give my Steam profile URL or ID when linking so I don't have to look up a number.
+
+**Acceptance Criteria:**
+- [ ] `cs2/steam.py` has `parse_steam_id(text: str) -> str` that accepts a 17-digit SteamID64 starting with `7656119`, or a `steamcommunity.com/profiles/<id>` URL (with or without scheme, `www.` and trailing slash)
+- [ ] Vanity URLs (`/id/<name>`), other hosts, empty and non-numeric input raise `InvalidSteamIdError`; the vanity-URL message tells the user to open their Steam profile and copy the 17-digit number from the `/profiles/` URL
+- [ ] Input longer than 200 characters is rejected before any parsing; regexes use `re.ASCII` (unicode digits are rejected)
+- [ ] Unit tests for each accepted form and each rejection, parametrized
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-006: Leetify client
+**Description:** As a developer, I want a Leetify client behind a Protocol so the cog and tests never touch the network.
+
+**Acceptance Criteria:**
+- [ ] `cs2/client.py` defines a `StatsProvider` Protocol with `async get_profile(steam64_id) -> Profile`, `async get_recent_matches(steam64_id) -> list[Match]` and `async get_match(game_id) -> Match`
+- [ ] `LeetifyClient` is the only module doing HTTP. It takes the API key (optional), a base URL (default `https://api-public.cs-prod.leetify.com`) and an injectable `fetch` callable (default uses `aiohttp.ClientSession` created lazily and closed by an `aclose()` method) so tests never use the network
+- [ ] The key is sent as `Authorization: Bearer <key>` only when set; it is never logged or included in error messages
+- [ ] Endpoints: `GET /v3/profile?steam64_id=`, `GET /v3/profile/matches?steam64_id=`, `GET /v2/matches/{gameId}`; the game id is URL-quoted
+- [ ] A request timeout (10 s) is applied; timeouts and connection errors become `ApiError`
+- [ ] Status mapping: 404 -> `PlayerNotFoundError`, 403 -> `PrivateProfileError`, 429 -> `RateLimitedError`, other non-2xx -> `ApiError`; non-JSON or non-object bodies -> `ApiError`
+- [ ] Unit tests with a stub `fetch` for every endpoint, every status mapping, timeout, bad JSON, and that the key does not appear in any error message
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-007: Link store
+**Description:** As a user, I want my Steam link remembered so I only run `/link` once.
+
+**Acceptance Criteria:**
+- [ ] `cs2/store.py` defines a `LinkStore` Protocol with `async get(discord_id: int) -> str | None`, `async set(discord_id, steam64_id) -> None`, `async remove(discord_id) -> bool` and `async all_links() -> dict[int, str]`
+- [ ] `SqliteLinkStore(path)` implements it with stdlib `sqlite3`; every blocking call goes through `asyncio.to_thread`; the parent directory is created if missing; the schema is created on first use
+- [ ] A `links(discord_id INTEGER PRIMARY KEY, steam64_id TEXT NOT NULL)` table; `set` replaces an existing link; two Discord users may link the same Steam ID (no uniqueness constraint)
+- [ ] `remove` returns `True` if a link was deleted, `False` otherwise
+- [ ] Unit tests on `tmp_path`: round trip, replace, remove, missing user, data survives a new store instance on the same file, directory auto-creation (use small sync helpers where ruff ASYNC240 complains)
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-008: Scoreboard formatting helpers
+**Description:** As a developer, I need pure formatting helpers so embeds are readable and stay within Discord limits.
+
+**Acceptance Criteria:**
+- [ ] `cs2/formatting.py` has `format_team_table(players, max_chars=1000) -> str` that returns a monospace code block with one row per player: truncated name, K/D/A, ADR, HS%, Leetify rating, and a star on the player with the most MVPs/best rating; missing values render as `-`
+- [ ] Names are truncated to 12 characters with `…`; backticks and newlines in names are stripped so they cannot break the code block
+- [ ] If the table would exceed `max_chars`, rows are dropped from the bottom and a `+N more` line is added; the result is always `<= max_chars`
+- [ ] `form_strip(recent)` returns the last up-to-5 results as emoji (win, loss, tie, unknown) plus the average Leetify rating, and handles an empty list
+- [ ] `format_rating(value)` shows signed Leetify ratings with 2 decimals (`+0.05`, `-0.03`, `-` for `None`)
+- [ ] Unit tests cover 5 and 10 player tables, long/odd names, missing values, the length cap, and the form strip
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-009: Fun awards
+**Description:** As a user, I want playful awards for each match so the scoreboard has personality.
+
+**Acceptance Criteria:**
+- [ ] `cs2/awards.py` has a frozen `Award(title, steam64_id, name, detail)` and `compute_awards(match, limit=5) -> list[Award]`
+- [ ] Awards implemented: Headhunter (best HS% with at least 5 kills), Utility Wizard (most flash assists, minimum 1), Trader (most trade kills, minimum 2), Ace Hunter (most 3k+ rounds, minimum 1), Lightning Reflexes (lowest reaction time), Ghost (highest rounds-survived percentage), Whiffer (lowest accuracy, minimum 10 kills worth of data), Friendly Fire Hazard (most friendly shots hit, minimum 3)
+- [ ] Each award goes to at most one player; ties are broken by higher kills, then name; a player can win at most 2 awards; categories whose data is missing for everyone are skipped
+- [ ] Results are ordered by a fixed priority list and truncated to `limit`
+- [ ] Each `detail` is a short human string with the number (e.g. `62% headshots`)
+- [ ] Unit tests for each award, ties, a player hitting the 2-award cap, missing data, an empty-player match, and the `limit`
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-010: Match scoreboard embed
+**Description:** As a user, I want one embed with the whole match so I can see how everyone played.
+
+**Acceptance Criteria:**
+- [ ] `cs2/embed.py` has `build_match_embed(match, awards, focus_steam_id=None, profile=None) -> discord.Embed`
+- [ ] Title is `<Map> - <score A>:<score B>`; the embed colour is green when the focus player's team won, red when it lost, grey otherwise; a timestamp comes from `finished_at` when present
+- [ ] Two inline-false fields hold each team's table from `format_team_table` (team names `Team A` / `Team B`, the focus player's team is labelled `Your team`)
+- [ ] An `Awards` field lists the awards one per line; omitted when there are none
+- [ ] When `focus_steam_id` is in the match, a `<name>` field shows their K/D/A, ADR, HS%, rating, preaim, reaction time and multi-kills; when `profile` is also given, a `Leetify breakdown` field shows aim / positioning / utility / clutch / opening, and the form strip is added
+- [ ] Every field value is `<= 1024` characters, there are at most 25 fields and the total embed length is `<= 6000` for a 10-player match with 32-character names and all optional data present (verified in a test using `len(embed)`)
+- [ ] Optional parts are omitted, never rendered as empty fields or `None`
+- [ ] Unit tests for the full fixture, a minimal match, focus player missing from the match, win/loss/tie colours and the limits
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-011: Cog skeleton with `/link` and `/unlink`
+**Description:** As a user, I want to link and unlink my Steam account.
+
+**Acceptance Criteria:**
+- [ ] `cogs/cs2.py` defines `Cs2(bot_dependencies...)` taking a `StatsProvider`, a `LinkStore` and a `UserCooldown` (from `media/cooldown.py`, 10 s) by injection; `setup(bot)` builds `LeetifyClient(bot.config.leetify_api_key)` and `SqliteLinkStore(Path(bot.config.data_dir) / "cs2.sqlite3")`
+- [ ] `"ninja_bot.cogs.cs2"` is added to `EXTENSIONS` in `bot.py`; the cog closes the client in `cog_unload`
+- [ ] `/link steam:<str>` calls `handle_link`: parses with `parse_steam_id`, verifies the profile exists by calling `get_profile`, stores the link, and replies **ephemerally** with the player's Leetify name; errors (`Cs2Error`) are shown ephemerally with `exc.message`
+- [ ] `/unlink` calls `handle_unlink`, replies ephemerally whether a link was removed or none existed
+- [ ] The `steam` option has a max length of 200 and a description; unexpected exceptions are logged and answered with a generic ephemeral message; `cog_app_command_error` falls back the same way as in `cogs/media.py`
+- [ ] Unit tests with a fake `StatsProvider` / in-memory `LinkStore` and a `MagicMock` interaction: success, invalid id, unknown player, private profile, API error, generic error, unlink with and without a link, the option metadata, and `setup` registering the cog
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-012: `/scoreboard` command
+**Description:** As a user, I want `/scoreboard` to show a player's latest match as a full embed.
+
+**Acceptance Criteria:**
+- [ ] `/scoreboard [player: discord.Member] [match: str]` calls `handle_scoreboard`; `player` defaults to the caller; `match` is an optional Leetify game id (max length 64) to show a specific match
+- [ ] The target must be linked, otherwise an ephemeral `NotLinkedError` message that tells the caller to run `/link` (or tells them which user is not linked)
+- [ ] Order: validate input and look up the link, take the cooldown, `defer(thinking=True)`, fetch the match (`get_match` when an id is given, else the first of `get_recent_matches`; an empty list raises `NoMatchesError`) and the profile, compute awards, post `build_match_embed(...)` with the target as the focus player
+- [ ] If the profile fetch fails with a `Cs2Error` the scoreboard is still posted without the breakdown
+- [ ] The cooldown is refunded when nothing was posted; all sends on the deferred path use a `_send_safely`-style wrapper that swallows `discord.HTTPException`
+- [ ] Errors: `Cs2Error` -> its `message`, `RateLimitedError` mentions trying again later; anything else is logged and gets the generic message
+- [ ] Unit tests with fakes: own latest match, another member, explicit match id, not linked (self and other), no matches, profile failure fallback, rate limited, generic error, cooldown taken and refunded, and the embed passed to `followup.send`
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-013: `/profile` command
+**Description:** As a user, I want `/profile` to show a player's rating breakdown and recent form.
+
+**Acceptance Criteria:**
+- [ ] `build_profile_embed(profile) -> discord.Embed` in `cs2/embed.py`: title is the player name, fields for ranks (only those present), winrate and match count, the five Leetify ratings (aim, positioning, utility, clutch, opening) with `rating_bar`-style visual bars from `formatting.py`, and the recent form strip; missing data is omitted; all Discord limits respected
+- [ ] `rating_bar(value, max_value)` in `cs2/formatting.py` returns a fixed-width bar and clamps out-of-range and `None` values
+- [ ] `/profile [player: discord.Member]` calls `handle_profile` with the same link lookup, cooldown, defer and error handling as `/scoreboard`
+- [ ] Unit tests for `rating_bar`, the embed (full, minimal, limits) and `handle_profile` (success, not linked, API errors, cooldown refund)
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-014: Fixture capture script and documentation
+**Description:** As the owner, I want to verify my fixtures against the real API and have the feature documented.
+
+**Acceptance Criteria:**
+- [ ] `scripts/capture_leetify.py <steam64_id>` fetches a real profile and its latest match with `LEETIFY_API_KEY` from the environment, replaces `steam64_id` and `name` values with placeholders, and writes the results to `data/leetify-capture/` (gitignored); it never prints the key and refuses to run without `ENVIRONMENT=dev`
+- [ ] README gets a `/scoreboard` section: commands, `LEETIFY_API_KEY` and where to get it (leetify.com/app/developer), the optional variables, the `data/` directory (prod needs it to be writable and persistent), and a manual test checklist; `docs/deployment.md` gets the new variables in its settings table (`LEETIFY_API_KEY`, `CS2_CHANNEL_ID`, `CS2_POLL_SECONDS`, `DATA_DIR`) and a note that `data/` now holds `cs2.sqlite3` and must be backed up (link, scoreboard, profile, private profile, unlinked user, mobile layout)
+- [ ] `CLAUDE.md` architecture list gains the `cs2/` package and `cogs/cs2.py` with one line per module
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+## Functional Requirements
+
+- FR-1: `/link` stores one SteamID64 per Discord user, persisted in `data/cs2.sqlite3`, and replaces an earlier link.
+- FR-2: `/scoreboard` shows the caller's (or a chosen member's) latest match, or a match by Leetify game id.
+- FR-3: The match embed shows both teams, awards, and, for the focus player, a breakdown, highlights and form.
+- FR-4: `/profile` shows ranks, winrate, the five Leetify ratings and recent form.
+- FR-5: Every user-facing failure (not linked, private profile, unknown player, rate limit, API down) is a friendly ephemeral message and never a stack trace.
+- FR-6: Slash commands only. Link and error replies are ephemeral; scoreboards and profiles are public.
+- FR-7: The API key is optional, is never logged or printed, and is sent only as a Bearer header.
+- FR-8: No new Discord intents are requested.
+
+## Non-Goals
+
+- No `/leaderboard`, trends, squad comparisons or automatic posting of new matches (second PRD, `ralph/cs2-squad`).
+- No LLM or generated prose; awards are rule-based.
+- No demo parsing, FACEIT or other data sources.
+- No Steam vanity-URL resolution (needs a separate Steam Web API key).
+- No images or generated charts; embeds and text only.
+- No change to deployment or prod configuration.
+
+## Design Considerations
+
+- Scoreboard tables are monospace code blocks inside embed fields so columns line up; they have to survive mobile Discord, so rows are kept short (about 40 characters wide).
+- Reuse `UserCooldown` from `media/cooldown.py`, the `Cog` + `handle_*` split, the `_send_safely` idea and the `cog_app_command_error` fallback from `cogs/media.py`, and the field-limit constants and `_truncate` approach from `media/embed.py`.
+- Keep the Leetify-specific JSON handling in `cs2/models.py` and `cs2/client.py` so another provider could implement `StatsProvider` later.
+
+## Technical Considerations
+
+- Fixtures are hand-written from the public swagger spec (`https://api-public.cs-prod.leetify.com/swagger.json`) so Ralph can run with no API key. Field names and units have not been confirmed against a real response. The owner runs `scripts/capture_leetify.py` once after US-014, diffs the real shape against the fixtures, and fixes the parsers in a follow-up if anything differs.
+- The spec mixes units (profile accuracy is a percentage, match accuracy is a decimal); normalise in the parsers.
+- Leetify may take a while to show a finished match, and profiles can be private. Both map to friendly errors.
+- SQLite is accessed only through `asyncio.to_thread`; the DB path is `<DATA_DIR>/cs2.sqlite3`.
+- Ralph must not read or print `.env`. Only the manual checks need a real key.
+
+## Success Metrics
+
+- `./scripts/check.sh` passes on the branch after every story.
+- `scripts/smoke.py` lists `/link`, `/unlink`, `/scoreboard` and `/profile` on the dev bot.
+- A manual `/scoreboard` against the dev bot with a real linked account renders a complete embed without errors on desktop and mobile.
+
+## Open Questions
+
+- Do the real Leetify responses match the fixtures (field names, nullability, units)? Answered by the capture script after this branch is built.
+- Should `/profile` and `/scoreboard` be rate-limited per guild as well as per user if the free API tier is too tight? Revisit after real use.
