@@ -49,6 +49,10 @@ class StatsProvider(Protocol):
 
     async def get_match(self, game_id: str) -> Match: ...
 
+    # Wrappers (such as a cache around another provider) must delegate this to the
+    # provider they wrap, so unloading the cog still releases its resources.
+    async def aclose(self) -> None: ...
+
 
 class LeetifyClient:
     """Leetify public API client; the only CS2 module doing HTTP."""

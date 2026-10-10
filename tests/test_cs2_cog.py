@@ -84,6 +84,7 @@ class FakeStats:
         self.profile_calls: list[str] = []
         self.recent_calls: list[str] = []
         self.match_calls: list[str] = []
+        self.close_calls = 0
 
     async def get_profile(self, steam64_id: str) -> Profile:
         self.profile_calls.append(steam64_id)
@@ -102,6 +103,9 @@ class FakeStats:
         if self.match_error is not None:
             raise self.match_error
         return next(m for m in self.matches if m.id == game_id)
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
 
 
 class MemoryLinkStore:
@@ -487,9 +491,11 @@ async def test_cog_unload_closes_client() -> None:
     client.aclose.assert_awaited_once()
 
 
-async def test_cog_unload_with_fake_provider_is_noop() -> None:
-    cog, _, _ = make_cog()
+async def test_cog_unload_closes_any_provider_once() -> None:
+    stats = FakeStats()
+    cog = Cs2(stats, MemoryLinkStore())
     await cog.cog_unload()
+    assert stats.close_calls == 1
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"

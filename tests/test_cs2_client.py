@@ -235,6 +235,17 @@ async def test_aclose_without_session_is_noop() -> None:
     await client.aclose()
 
 
+async def test_aclose_with_injected_fetch_is_noop() -> None:
+    fetch = StubFetch(body=MATCH_JSON)
+    client = _client(fetch)
+    await client.get_match("m1")
+    await client.aclose()
+    await client.aclose()
+    assert client._session is None
+    await client.get_match("m1")
+    assert len(fetch.calls) == 2
+
+
 async def test_default_fetch_creates_and_closes_session(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 

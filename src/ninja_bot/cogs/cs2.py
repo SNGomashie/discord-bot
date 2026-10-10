@@ -90,8 +90,7 @@ class Cs2(commands.Cog):
         )
 
     async def cog_unload(self) -> None:
-        if isinstance(self.stats, LeetifyClient):
-            await self.stats.aclose()
+        await self.stats.aclose()
 
     @app_commands.command(name="link", description="Link your Steam account for CS2 stats")
     @app_commands.describe(
