@@ -30,6 +30,7 @@
 - CS2 links (cs2/store.py): `LinkStore` Protocol + `SqliteLinkStore(path)`; one short-lived sqlite3 connection per call (wrapped in `contextlib.closing`, since `with conn` only commits), sync `_get/_set/_remove/_all_links` helpers run via `asyncio.to_thread`. Parent dir + schema are created lazily on first call, so constructing the store does no I/O.
 - CS2 formatting (cs2/formatting.py): `format_team_table` renders a header + one row per player inside ``` with fixed widths (`_ROW_FORMAT`); `clean_name` strips backticks/non-printables and truncates to 12 with `…` (reuse it anywhere a player name goes into a code block). Star = most MVPs, then best rating (none if both unknown everywhere). Over `max_chars` it drops rows from the bottom + `+N more`; raises ValueError if even the header doesn't fit. `format_rating` gives `+0.05`/`-` and never `-0.00`. `form_strip` shows the newest 5 newest-first (🟩🟥🟨⬜) + ` avg +x.xx` (omitted without ratings); empty -> `NO_RECENT_MATCHES`.
 - CS2 awards (cs2/awards.py): `compute_awards` walks `_CATEGORIES` (fixed priority order) and picks one winner per category with `min` on (signed value, -kills, casefolded name); players already at `MAX_AWARDS_PER_PLAYER` (2) are excluded so the next best wins. Stops at `limit`. Award.name falls back to steam64_id. Whiffer = lowest accuracy among players with >= 10 kills; Ghost = rounds_survived / rounds.
+- CS2 match embed (cs2/embed.py): `build_match_embed` only shows the focus player's field/breakdown/form when they're in `match.players`; `match_outcome(match, player)` drives the colour (green/red/light_grey). Team tables are inline=False fields with `format_team_table(max_chars=FIELD_VALUE_LIMIT)`; `_add_field` skips blank values, so optional parts vanish. Breakdown formats aim/positioning/utility as 0-100 ints and clutch/opening with `format_rating` (unit guess from the hand-written fixture). Title score is `team_scores` in team-number order (= `Match.teams()` order).
 
 ## 2026-10-10 - US-001
 - Added aiohttp dependency (uv add); Config gains leetify_api_key, cs2_channel_id, cs2_poll_seconds, data_dir (all defaulted).
@@ -77,3 +78,8 @@
 ## 2026-10-10 - US-009
 - Added `src/ninja_bot/cs2/awards.py` (`Award`, `compute_awards`, 8 categories as `_Category(title, value, lower_is_better, detail)`) and `tests/test_cs2_awards.py` (each award + thresholds, ties, 2-award cap, missing data, empty match, priority order + limit, name fallback).
 - Learnings: the cap means later categories can be skipped when only capped players qualify; test fixtures need distinct winners per category to cover the full priority list.
+
+## 2026-10-10 - US-010
+- Added `cs2/embed.py`: `build_match_embed`, `match_outcome`, `format_player_stats`, `format_breakdown`; tests in tests/test_cs2_embed.py (full fixture, minimal match, focus missing, win/loss/tie colours, awards, limits with 10 players x 32-char names: `len(embed) <= 6000`).
+- Learnings: field order is Team A/B (or `Your team`), Awards (inline=False), then focus name, `Leetify breakdown`, `Recent form` (inline). No-team-score matches get just the map name as title.
+- Needs manual check: embed renders well on desktop and mobile Discord (code-block widths, emoji in form strip).
