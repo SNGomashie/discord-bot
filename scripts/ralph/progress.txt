@@ -36,6 +36,7 @@
 - Scripts in scripts/ are not covered by check.sh mypy (files = src); test them by loading via importlib (see tests/test_capture_leetify.py) and run `MYPYPATH=src uv run mypy --strict scripts/<file>.py`.
 - CS2 /profile (cogs/cs2.py, cs2/embed.py): `handle_scoreboard`/`handle_profile` share `_reply_lookup_error` (pre-defer ephemeral replies; logs "Unexpected error looking up a CS2 link") and `_run_with_cooldown(interaction, work)` (cooldown -> defer -> `work()` returning True if posted, refund otherwise). New stats commands: resolve the link, then pass a `_<name>_deferred` lambda. `build_profile_embed` fields: Ranks, Winrate, Matches (inline), Ratings (code block of `rating_bar`s; aim/positioning/utility out of `SCORE_MAX` 100, clutch/opening out of `SIGNED_RATING_MAX` 0.2, a unit guess), Recent form. `rating_bar` treats None/NaN/negatives as empty and clamps above max.
 - CS2 newest-first: use `newest_first(items)` from cs2/models.py (generic over anything with `finished_at: datetime | None`, returns a list, stable, undated last, no sentinel so it never compares aware vs naive). Don't write another sort.
+- CS2 /scoreboard fetches run concurrently via `Cs2._fetch_match_and_profile` (two tasks; await match then profile, so a match error wins; `finally` cancels both and `gather(..., return_exceptions=True)` drains them so nothing is left running or unretrieved). Concurrency tests use `GatedStats` (FakeStats + `asyncio.Event` started/gate per call) and `gated_cog` in tests/test_cs2_cog.py.
 - CS2 names in embed text outside code blocks (award lines, field names, embed titles, cog messages) go through `escape_name` (cs2/formatting.py); names inside code blocks use `clean_name`. `escape_markdown` already doubles backslashes but only escapes *complete* `[x](y)` links, so `escape_name` escapes leftover `[ ] ( )` after it (odd backslash run = already escaped). Never pre-escape before `escape_markdown` (it would double your backslashes). Use `ignore_links=False` so URLs get the same treatment.
 
 ## 2026-10-10 - US-001
@@ -75,4 +76,11 @@
 - Used for award names, the focus-player field name and the profile embed title (now max 32 chars instead of 256) in cs2/embed.py, and in `linked_message`/`not_linked_message` in cogs/cs2.py. Team tables keep `clean_name`.
 - Files: src/ninja_bot/cs2/formatting.py, src/ninja_bot/cs2/embed.py, src/ninja_bot/cogs/cs2.py, tests/test_cs2_formatting.py, tests/test_cs2_embed.py (hostile award/field-name/title tests; `test_profile_embed_limits` now expects the 32-char escaped title), tests/test_cs2_cog.py.
 - Needs manual check: link a test account whose Leetify name contains `[x](https://…)` or `**` and confirm `/scoreboard` and `/profile` show it literally.
+---
+
+## 2026-10-10 - US-007
+- `/scoreboard` now fetches the match and the profile at the same time (`_fetch_match_and_profile`, tasks + cancel/drain in `finally`). Error behaviour unchanged: match `Cs2Error` message wins and cancels a slow profile; profile `Cs2Error` drops the breakdown; unexpected errors give the generic message.
+- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py (`GatedStats`, `gated_cog`, `wait_started`; concurrency tests for latest and explicit match, slow-profile cancel, profile errors while match in flight, both failing leaves no tasks).
+- Learnings: `asyncio.timeout(1)` around the "both started" wait turns a sequential regression into a fast failure instead of a hang.
+- Needs manual check: `/scoreboard` still posts the same embed in Discord.
 ---

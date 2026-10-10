@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable
@@ -244,8 +245,7 @@ class Cs2(commands.Cog):
     ) -> bool:
         """Fetch and post the scoreboard; True only if the embed was posted."""
         try:
-            match = await self._fetch_match(steam64_id, game_id)
-            profile = await self._fetch_profile_or_none(steam64_id)
+            match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
             embed = build_match_embed(match, compute_awards(match), steam64_id, profile)
         except Cs2Error as exc:
             await _send_safely(interaction.followup.send(exc.message))
@@ -269,6 +269,20 @@ class Cs2(commands.Cog):
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
             return False
         return await _send_safely(interaction.followup.send(embed=embed))
+
+    async def _fetch_match_and_profile(
+        self, steam64_id: str, game_id: str | None
+    ) -> tuple[Match, Profile | None]:
+        """Fetch both at once; a match error wins and the other request is cancelled."""
+        match_task = asyncio.create_task(self._fetch_match(steam64_id, game_id))
+        profile_task = asyncio.create_task(self._fetch_profile_or_none(steam64_id))
+        try:
+            return await match_task, await profile_task
+        finally:
+            # No-op for finished tasks; gather retrieves every outcome so nothing is logged.
+            match_task.cancel()
+            profile_task.cancel()
+            await asyncio.gather(match_task, profile_task, return_exceptions=True)
 
     async def _fetch_match(self, steam64_id: str, game_id: str | None) -> Match:
         if game_id is not None:

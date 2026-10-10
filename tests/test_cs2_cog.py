@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,8 +27,9 @@ from ninja_bot.cogs.cs2 import (
     not_linked_message,
 )
 from ninja_bot.config import load_config
+from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.client import FetchResponse, LeetifyClient
-from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD
+from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD, build_match_embed
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
@@ -707,6 +709,130 @@ async def test_scoreboard_unexpected_profile_error_is_generic(
     interaction = make_interaction()
     await cog.handle_scoreboard(interaction)
     interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE)
+
+
+class GatedStats(FakeStats):
+    """FakeStats whose match and profile calls block until their gate is opened."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.match_started = asyncio.Event()
+        self.profile_started = asyncio.Event()
+        self.match_gate = asyncio.Event()
+        self.profile_gate = asyncio.Event()
+        self.profile_cancelled = False
+
+    async def get_recent_matches(self, steam64_id: str) -> list[Match]:
+        self.match_started.set()
+        await self.match_gate.wait()
+        return await super().get_recent_matches(steam64_id)
+
+    async def get_match(self, game_id: str) -> Match:
+        self.match_started.set()
+        await self.match_gate.wait()
+        return await super().get_match(game_id)
+
+    async def get_profile(self, steam64_id: str) -> Profile:
+        self.profile_started.set()
+        try:
+            await self.profile_gate.wait()
+        except asyncio.CancelledError:
+            self.profile_cancelled = True
+            raise
+        return await super().get_profile(steam64_id)
+
+
+def gated_cog(match: Match, profile: Profile, **stats_kwargs: Any) -> tuple[Cs2, GatedStats]:
+    stats = GatedStats(profile, matches=[match], **stats_kwargs)
+    store = MemoryLinkStore({USER_ID: FIXTURE_STEAM_ID})
+    cog, _, _ = make_cog(stats, store, UserCooldown(COOLDOWN_SECONDS, FakeClock()))
+    return cog, stats
+
+
+async def wait_started(stats: GatedStats) -> None:
+    async with asyncio.timeout(1):
+        await stats.match_started.wait()
+        await stats.profile_started.wait()
+
+
+@pytest.mark.parametrize("match_id", [None, "explicit"])
+async def test_scoreboard_fetches_match_and_profile_concurrently(
+    match: Match, fixture_profile: Profile, match_id: str | None
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile)
+    interaction = make_interaction()
+    game_id = match.id if match_id else None
+    task = asyncio.create_task(cog.handle_scoreboard(interaction, None, game_id))
+    # Both requests are in flight before either is allowed to finish.
+    await wait_started(stats)
+    interaction.followup.send.assert_not_awaited()
+    stats.profile_gate.set()
+    stats.match_gate.set()
+    await task
+
+    # Same embed as the sequential version.
+    expected = build_match_embed(match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile)
+    assert posted_embed(interaction).to_dict() == expected.to_dict()
+
+
+async def test_scoreboard_match_error_cancels_slow_profile(
+    match: Match, fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile, match_error=RateLimitedError())
+    interaction = make_interaction()
+    task = asyncio.create_task(cog.handle_scoreboard(interaction))
+    await wait_started(stats)
+    stats.match_gate.set()  # the profile gate never opens
+    async with asyncio.timeout(1):
+        await task
+    interaction.followup.send.assert_awaited_once_with(RateLimitedError.default_message)
+    assert stats.profile_cancelled
+    assert stats.profile_calls == []
+    assert caplog.text == ""
+
+
+async def test_scoreboard_profile_cs2_error_with_concurrent_match_posts(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile, error=PrivateProfileError())
+    interaction = make_interaction()
+    task = asyncio.create_task(cog.handle_scoreboard(interaction))
+    await wait_started(stats)
+    stats.profile_gate.set()  # profile fails first, match is still in flight
+    await asyncio.sleep(0)
+    stats.match_gate.set()
+    await task
+    embed = posted_embed(interaction)
+    assert BREAKDOWN_FIELD not in field_names(embed)
+    assert "alpha" in field_names(embed)
+
+
+async def test_scoreboard_unexpected_profile_error_with_concurrent_match(
+    match: Match, fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile, error=RuntimeError("boom"))
+    interaction = make_interaction()
+    task = asyncio.create_task(cog.handle_scoreboard(interaction))
+    await wait_started(stats)
+    stats.profile_gate.set()
+    await asyncio.sleep(0)
+    stats.match_gate.set()
+    await task
+    interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE)
+    assert "Unexpected error building a CS2 scoreboard" in caplog.text
+
+
+async def test_scoreboard_match_and_profile_both_fail_leaves_no_tasks(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, _, _ = scoreboard_cog(
+        match, fixture_profile, error=RuntimeError("profile"), match_error=ApiError()
+    )
+    interaction = make_interaction()
+    before = asyncio.all_tasks()
+    await cog.handle_scoreboard(interaction)
+    interaction.followup.send.assert_awaited_once_with(ApiError.default_message)
+    assert asyncio.all_tasks() == before
 
 
 async def test_scoreboard_cooldown_blocks_second_use(
