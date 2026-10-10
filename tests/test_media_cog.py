@@ -16,7 +16,7 @@ from ninja_bot.cogs.media import (
     cooldown_message,
     upload_limit,
 )
-from ninja_bot.media.clip import Clip
+from ninja_bot.media.clip import MAX_TIMESTAMP_LENGTH, Clip
 from ninja_bot.media.models import (
     DownloadError,
     InvalidClipError,
@@ -112,6 +112,13 @@ def test_download_command_clip_params_are_optional_strings(name: str) -> None:
     assert param.default is None
     assert param.type is discord.AppCommandOptionType.string
     assert ":" in str(param.description)  # example formats
+
+
+@pytest.mark.parametrize("name", ["start", "end"])
+def test_download_command_clip_params_have_max_length(name: str) -> None:
+    payload = Media.download._params[name].to_dict()
+    assert payload["max_length"] == MAX_TIMESTAMP_LENGTH == 32
+    assert not payload["required"]
 
 
 def test_upload_limit() -> None:

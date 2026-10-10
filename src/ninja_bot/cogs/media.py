@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ninja_bot.media.clip import Clip, parse_clip
+from ninja_bot.media.clip import MAX_TIMESTAMP_LENGTH, Clip, parse_clip
 from ninja_bot.media.downloader import Downloader, YtDlpDownloader
 from ninja_bot.media.embed import build_embed
 from ninja_bot.media.models import (
@@ -75,8 +75,8 @@ class Media(commands.Cog):
         interaction: discord.Interaction,
         url: str,
         format: MediaKind = "mp4",
-        start: str | None = None,
-        end: str | None = None,
+        start: app_commands.Range[str, 0, MAX_TIMESTAMP_LENGTH] | None = None,
+        end: app_commands.Range[str, 0, MAX_TIMESTAMP_LENGTH] | None = None,
     ) -> None:
         await self.handle_download(interaction, url, format, start, end)
 
