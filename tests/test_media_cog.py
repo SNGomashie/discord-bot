@@ -9,9 +9,13 @@ import discord
 import pytest
 from discord import app_commands
 
+from ninja_bot.cogs import media as media_cog
 from ninja_bot.cogs.media import (
+    BUSY_MESSAGE,
     DEFAULT_UPLOAD_LIMIT_BYTES,
     GENERIC_ERROR_MESSAGE,
+    QUEUE_TIMEOUT_SECONDS,
+    QUEUED_MESSAGE,
     Media,
     cooldown_message,
     upload_limit,
@@ -86,6 +90,7 @@ def make_interaction(guild_limit: int | None = GUILD_LIMIT) -> MagicMock:
     interaction.response.send_message = AsyncMock()
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
     if guild_limit is None:
         interaction.guild = None
     else:
@@ -312,6 +317,10 @@ async def test_second_request_waits_for_first() -> None:
     assert downloader.fetched == [URL]
     assert not second.done()
 
+    # Only the waiting request is told it is queued.
+    second_interaction.edit_original_response.assert_awaited_once_with(content=QUEUED_MESSAGE)
+    first_interaction.edit_original_response.assert_not_awaited()
+
     downloader.release.set()
     await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
 
@@ -320,14 +329,103 @@ async def test_second_request_waits_for_first() -> None:
     assert downloader.max_active == 1
     first_interaction.followup.send.assert_awaited_once()
     second_interaction.followup.send.assert_awaited_once()
+    assert not cog.semaphore.locked()
 
 
-async def test_semaphore_released_after_error() -> None:
-    cog = Media(FakeDownloader(download_error=RuntimeError("boom")), 3600)
+async def test_no_queued_message_when_idle() -> None:
+    interaction = make_interaction()
+    cog = Media(FakeDownloader(), 3600)
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    interaction.edit_original_response.assert_not_awaited()
+
+
+def test_queue_timeout_is_five_minutes() -> None:
+    assert QUEUE_TIMEOUT_SECONDS == 300
+
+
+async def test_queue_timeout_gives_up_and_refunds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(media_cog, "QUEUE_TIMEOUT_SECONDS", 0.01)
+    downloader = FakeDownloader()
+    cog, cooldown, _ = make_cooldown_cog(downloader)
+    await cog.semaphore.acquire()  # another download is running
+    interaction = make_user_interaction()
+
+    await asyncio.wait_for(cog.handle_download(interaction, URL, "mp4"), timeout=1)
+
+    interaction.edit_original_response.assert_awaited_once_with(content=QUEUED_MESSAGE)
+    interaction.followup.send.assert_awaited_once_with(BUSY_MESSAGE)
+    assert downloader.fetched == []
+    assert cooldown.try_acquire(1) == 0.0
+    # The running download still holds the semaphore; nothing extra was taken.
+    cog.semaphore.release()
+    assert not cog.semaphore.locked()
+
+
+@pytest.mark.parametrize(
+    "downloader",
+    [
+        FakeDownloader(download_error=RuntimeError("boom")),
+        FakeDownloader(download_error=DownloadError()),
+        FakeDownloader(),
+    ],
+)
+async def test_semaphore_released_after_download(downloader: FakeDownloader) -> None:
+    cog = Media(downloader, 3600)
 
     await cog.handle_download(make_interaction(), URL, "mp4")
 
     assert not cog.semaphore.locked()
+
+
+def http_exception() -> discord.HTTPException:
+    return discord.HTTPException(MagicMock(status=401, reason="Unauthorized"), "expired token")
+
+
+async def test_followup_http_exception_is_logged_and_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    downloader = FakeDownloader()
+    cog, cooldown, _ = make_cooldown_cog(downloader)
+    interaction = make_user_interaction()
+    interaction.followup.send.side_effect = http_exception()
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    interaction.followup.send.assert_awaited_once()
+    assert any(r.exc_info and r.exc_info[0] is discord.HTTPException for r in caplog.records)
+    assert not exists(downloader.workdirs[0])
+    assert not cog.semaphore.locked()
+    assert cooldown.try_acquire(1) == 0.0  # the file was never posted
+
+
+async def test_error_followup_http_exception_is_swallowed() -> None:
+    downloader = FakeDownloader(download_error=DownloadError())
+    cog = Media(downloader, 3600)
+    interaction = make_interaction()
+    interaction.followup.send.side_effect = http_exception()
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    interaction.followup.send.assert_awaited_once()
+    assert not exists(downloader.workdirs[0])
+
+
+async def test_queued_edit_and_busy_http_exceptions_are_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(media_cog, "QUEUE_TIMEOUT_SECONDS", 0.01)
+    cog = Media(FakeDownloader(), 3600)
+    await cog.semaphore.acquire()
+    interaction = make_interaction()
+    interaction.edit_original_response.side_effect = http_exception()
+    interaction.followup.send.side_effect = http_exception()
+
+    await asyncio.wait_for(cog.handle_download(interaction, URL, "mp4"), timeout=1)
+
+    interaction.edit_original_response.assert_awaited_once()
+    interaction.followup.send.assert_awaited_once_with(BUSY_MESSAGE)
 
 
 async def test_semaphore_not_acquired_for_invalid_url() -> None:

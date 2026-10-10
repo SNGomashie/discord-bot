@@ -18,6 +18,7 @@
 - Durations: `VideoInfo.duration_s` (int, truncated) is for display and the whole-video cap; `duration_exact_s` (float | None) is for clip resolution. `_opt_float` in models.py rejects bools/NaN/inf/overflowing ints; `_opt_int` builds on it.
 - mp4 ladder: `height_ladder(info.video_heights)` in planning.py maps HEIGHT_LADDER rungs to the largest available height <= rung, deduped; `()` heights = full HEIGHT_LADDER. `VideoInfo.video_heights` comes from `formats[*].height` where vcodec != "none".
 - mp4 options always include `FFmpegVideoRemuxer` (`preferedformat: "mp4"`, yt-dlp's spelling). If no `.{kind}` file appears but other new media files (`_MEDIA_SUFFIXES`) do, `download` logs them and raises DownloadError naming the wrong extension; `.part` files don't count.
+- /download queue: `_wait_for_slot` edits the original response to QUEUED_MESSAGE when the semaphore is held and waits up to `QUEUE_TIMEOUT_SECONDS` (module constant; tests monkeypatch `ninja_bot.cogs.media.QUEUE_TIMEOUT_SECONDS`). handle_download releases the semaphore itself (no `async with`). Every send/edit on the deferred path goes through `_send_safely` (logs + swallows discord.HTTPException, returns success). Fake interactions need `edit_original_response = AsyncMock()`.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -52,3 +53,9 @@
 - New `UserCooldown` (try_acquire/refund, injectable clock). Removed the `@app_commands.checks.cooldown` decorator and the `CommandOnCooldown` branch; `handle_download` validates first, then takes the cooldown, and refunds it when no file was posted (MediaError, unexpected exception, failed send, cancellation).
 - Files: src/ninja_bot/media/cooldown.py, src/ninja_bot/cogs/media.py, tests/test_media_cog.py
 - Learnings: `_download_deferred` now returns whether the file was posted; the refund lives in handle_download's `finally` so it also covers defer failures.
+
+## 2026-10-10 - US-007
+- Queued requests get a "queued behind another download" edit; the semaphore wait is bounded by `QUEUE_TIMEOUT_SECONDS = 300` (timeout → BUSY_MESSAGE followup, cooldown refunded, no download). Semaphore is released in a `finally`. All followup/edit calls on the deferred path use `_send_safely`, so an HTTPException (expired token) is logged and swallowed; a failed file post counts as not posted (cooldown refunded).
+- Files: src/ninja_bot/cogs/media.py, tests/test_media_cog.py
+- Learnings: `discord.HTTPException(MagicMock(status=401, reason="x"), "msg")` builds a test exception without a real response.
+- Needs manual check: the queued message appears in Discord while another download runs.

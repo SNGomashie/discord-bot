@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import tempfile
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,10 @@ log = logging.getLogger(__name__)
 DEFAULT_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024
 GENERIC_ERROR_MESSAGE = "Something went wrong while downloading that. Please try again later."
 COOLDOWN_SECONDS = 30.0
+# How long a request may wait for the running download before giving up.
+QUEUE_TIMEOUT_SECONDS = 300.0
+QUEUED_MESSAGE = "Queued behind another download, yours starts as soon as it finishes."
+BUSY_MESSAGE = "The bot is busy right now, try again in a few minutes."
 
 
 def upload_limit(guild: discord.Guild | None) -> int:
@@ -54,6 +59,16 @@ def cooldown_message(retry_after: float) -> str:
     seconds = max(1, math.ceil(retry_after))
     unit = "second" if seconds == 1 else "seconds"
     return f"Slow down! You can use /download again in {seconds} {unit}."
+
+
+async def _send_safely(send: Awaitable[object]) -> bool:
+    """Await a Discord send/edit; log and swallow HTTP errors (e.g. an expired token)."""
+    try:
+        await send
+    except discord.HTTPException:
+        log.warning("Could not send /download response", exc_info=True)
+        return False
+    return True
 
 
 class Media(commands.Cog):
@@ -111,11 +126,29 @@ class Media(commands.Cog):
         posted = False
         try:
             await interaction.response.defer(thinking=True)
-            async with self.semaphore:
+            if not await self._wait_for_slot(interaction):
+                return
+            try:
                 posted = await self._download_deferred(interaction, clean_url, kind, clip)
+            finally:
+                self.semaphore.release()
         finally:
             if not posted:
                 self.cooldown.refund(user_id)
+
+    async def _wait_for_slot(self, interaction: discord.Interaction) -> bool:
+        """Acquire the download semaphore, telling the user if they are queued.
+
+        Returns False (after telling the user) if the wait exceeds QUEUE_TIMEOUT_SECONDS.
+        """
+        if self.semaphore.locked():
+            await _send_safely(interaction.edit_original_response(content=QUEUED_MESSAGE))
+        try:
+            await asyncio.wait_for(self.semaphore.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            await _send_safely(interaction.followup.send(BUSY_MESSAGE))
+            return False
+        return True
 
     async def _download_deferred(
         self,
@@ -133,19 +166,20 @@ class Media(commands.Cog):
                     info, kind, upload_limit(interaction.guild), self.max_duration_s, clip=clip
                 )
                 path = await self.downloader.download(clean_url, plan, Path(tmp))
-                await interaction.followup.send(
-                    embed=build_embed(info, kind, plan.clip), file=discord.File(path)
+                return await _send_safely(
+                    interaction.followup.send(
+                        embed=build_embed(info, kind, plan.clip), file=discord.File(path)
+                    )
                 )
-                return True
         except MediaError as exc:
             embed = error_embed(exc, info, kind)
             if embed is None:
-                await interaction.followup.send(exc.message)
+                await _send_safely(interaction.followup.send(exc.message))
             else:
-                await interaction.followup.send(exc.message, embed=embed)
+                await _send_safely(interaction.followup.send(exc.message, embed=embed))
         except Exception:
             log.exception("Unexpected error downloading %s", clean_url)
-            await interaction.followup.send(GENERIC_ERROR_MESSAGE)
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
         return False
 
     async def cog_app_command_error(
