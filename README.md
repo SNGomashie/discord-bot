@@ -11,7 +11,7 @@ Personal Discord bot for a private server. See CLAUDE.md for architecture and co
 ## /download
 `/download url:<link> format:<mp3|mp4>` fetches a video with yt-dlp and posts the file plus an info embed. `format` defaults to mp4. The bot picks the best quality that fits the server's upload limit (10 MiB without a guild), rejects live streams, playlists and videos longer than `MAX_DURATION_SECONDS` (default 3600). One download runs at a time, with a 30-second per-user cooldown.
 
-**System dependency:** ffmpeg (audio extraction and video merging). It is in `Dockerfile.dev`; on the Debian 13 prod LXC run `apt install ffmpeg`.
+**System dependencies:** ffmpeg (audio extraction and video merging) and **deno** (JavaScript runtime yt-dlp needs for YouTube; without it downloads fail with `HTTP Error 403`). Both are in `Dockerfile.dev`. On the Debian 13 prod LXC run `apt install ffmpeg unzip curl` and install deno (`curl -fsSL https://deno.land/install.sh | sh`, then put `~/.deno/bin` on the service's PATH). yt-dlp is installed with its `[default]` extra, which provides `yt-dlp-ejs`.
 
 **yt-dlp upkeep:** sites change often. When extractors break, run `uv lock --upgrade-package yt-dlp`, then `uv sync`, `./scripts/check.sh`, and redeploy.
 

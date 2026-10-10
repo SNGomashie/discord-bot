@@ -31,3 +31,7 @@ Dev work and Ralph run in the container from `Dockerfile.dev` (Debian 13, Python
 
 ## Commits
 Conventional Commits (`type: subject`), small and focused. Story ID goes in the body.
+
+## yt-dlp gotchas
+- YouTube needs a JS runtime (deno) and `yt-dlp-ejs` (via the `yt-dlp[default]` extra); otherwise downloads 403. Check with `uv run yt-dlp -v -F <url>` and look for `JS runtimes:`.
+- Upgrade regularly: `uv lock --upgrade-package yt-dlp`.
