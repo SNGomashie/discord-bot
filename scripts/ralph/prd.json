@@ -38,7 +38,7 @@
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
