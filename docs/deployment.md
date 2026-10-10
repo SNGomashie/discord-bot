@@ -148,6 +148,7 @@ ENVIRONMENT=prod
 DISCORD_TOKEN=<prod bot token>
 # GUILD_ID intentionally unset in prod: commands sync globally.
 MAX_DURATION_SECONDS=3600
+LEETIFY_API_KEY=<leetify api key>
 ```
 
 Use the **prod** token only here, never in the dev container or on your workstation.
@@ -186,7 +187,7 @@ systemctl status ninja-bot
 journalctl -u ninja-bot -f       # live logs
 ```
 
-The bot logs to stdout, so journald keeps the logs. The unit's `WorkingDirectory` matters: the bot loads `.env` from there and keeps persistent data in `data/` relative to it. `data/` is gitignored and survives `git pull`; nothing uses it yet.
+The bot logs to stdout, so journald keeps the logs. The unit's `WorkingDirectory` matters: the bot loads `.env` from there and keeps persistent data in `data/` relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3` (Discord-to-Steam links for `/scoreboard` and `/profile`), so it must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again. If you set `DATA_DIR`, the same applies to that directory.
 
 ### 3.6 Verify
 
@@ -246,6 +247,10 @@ Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.
 | `DISCORD_TOKEN` | dev token | prod token | Required. The bot token from step 1 |
 | `GUILD_ID` | test server ID | unset | Required in dev. When set, commands sync to that server only |
 | `MAX_DURATION_SECONDS` | optional | optional | Longest video/clip `/download` accepts. Default `3600` |
+| `LEETIFY_API_KEY` | optional | recommended | Leetify public API key for `/link`, `/scoreboard`, `/profile` ([leetify.com/app/developer](https://leetify.com/app/developer)). Empty = requests go unauthenticated |
+| `CS2_CHANNEL_ID` | optional | optional | Reserved for automatic CS2 match posts; validated but not used yet |
+| `CS2_POLL_SECONDS` | optional | optional | Reserved for automatic CS2 match posts (poll interval). Default `300`; not used yet |
+| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`). Default `data` (relative to `WorkingDirectory`) |
 | `TEST_CHANNEL_ID` | optional | unused | In `.env.example` but not read by any code yet |
 
 ## 6. Troubleshooting

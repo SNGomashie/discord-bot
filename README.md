@@ -34,6 +34,31 @@ Full walkthrough in **[docs/deployment.md](docs/deployment.md)**: creating the D
 - [ ] `start` beyond the video length → friendly error mentioning the video length
 - [ ] Short clip from a video longer than `MAX_DURATION_SECONDS` → downloads fine
 
+## /scoreboard (CS2)
+CS2 stats from the [Leetify](https://leetify.com) public API:
+- `/link steam:<id or link>` links your Discord account to your SteamID64 (17 digits) or a `steamcommunity.com/profiles/<id>` URL. Vanity `/id/<name>` URLs are not accepted. `/unlink` removes the link. Both replies are only visible to you.
+- `/scoreboard [player] [match]` posts the full scoreboard of your (or `player`'s) latest match, or of a specific Leetify match id: both team tables, fun awards, the focus player's stats, Leetify breakdown and recent form.
+- `/profile [player]` posts ranks, winrate, Leetify rating bars and recent form.
+
+`/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. Players need a public Leetify profile.
+
+**Settings** (see [`.env.example`](.env.example) and the [settings reference](docs/deployment.md#5-settings-reference)):
+- `LEETIFY_API_KEY`: get one at [leetify.com/app/developer](https://leetify.com/app/developer). Optional in config (without it requests are sent unauthenticated), but recommended.
+- `CS2_CHANNEL_ID` and `CS2_POLL_SECONDS` (default 300): reserved for automatically posting new matches; parsed and validated, but not used by any code yet.
+- `DATA_DIR` (default `data`): links are stored in `<DATA_DIR>/cs2.sqlite3`. In prod this directory must be writable by the service user and persistent (and backed up), or everyone has to `/link` again.
+
+**Checking the test fixtures:** the Leetify fixtures in `tests/fixtures/leetify/` are hand-written from the API docs. Run `uv run python scripts/capture_leetify.py <steam64_id>` (dev only, needs `LEETIFY_API_KEY`) to save the real profile, matches list and latest match, with Steam IDs and names replaced by placeholders, to `data/leetify-capture/` (gitignored), then compare field names and units with the fixtures.
+
+**Manual test checklist** (dev bot in the test server):
+- [ ] `/link` with a SteamID64, then with a profile URL → ephemeral confirmation; vanity URL → ephemeral hint
+- [ ] `/scoreboard` → embed of your latest match (team tables, awards, your stats, breakdown, form)
+- [ ] `/scoreboard player:@friend` and `/scoreboard match:<id>` → that player's / that match's scoreboard
+- [ ] `/profile` and `/profile player:@friend` → ranks, winrate, rating bars, form
+- [ ] Private Leetify profile → friendly "private profile" reply
+- [ ] Unlinked user (`/scoreboard player:@someone-unlinked`) → "not linked" reply
+- [ ] Mobile layout: team tables and rating bars stay readable on the Discord phone app
+- [ ] `/unlink` twice → removed, then "You don't have a linked Steam account."
+
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).
 ```
