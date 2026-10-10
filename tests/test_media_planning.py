@@ -16,6 +16,7 @@ from ninja_bot.media.planning import (
     MIN_240P_BITRATE_KBPS,
     DownloadPlan,
     format_selector,
+    height_ladder,
     plan_download,
     validate_url,
 )
@@ -247,3 +248,34 @@ def test_plan_download_clip_exact_duration_too_short() -> None:
 def test_plan_download_clip_falls_back_to_truncated_duration() -> None:
     plan = plan_download(replace(INFO, duration_s=100), "mp4", 25 * MB, 3600, clip=Clip(50, None))
     assert plan.clip == Clip(50, 100)
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [
+        ((), HEIGHT_LADDER),
+        ((240, 360, 480, 720, 1080), (1080, 720, 480, 360, 240)),
+        ((144, 240, 360, 480, 720, 1080, 1440, 2160), (1080, 720, 480, 360, 240)),
+        ((144, 360, 480), (480, 360, 144)),
+        ((360, 720), (720, 360)),
+        ((144,), (144,)),
+        ((100, 200), (200,)),
+        ((1440, 2160), (1440,)),
+        ((2160,), (2160,)),
+        ((300, 1440), (300,)),
+    ],
+)
+def test_height_ladder(available: tuple[int, ...], expected: tuple[int, ...]) -> None:
+    assert height_ladder(available) == expected
+
+
+def test_plan_download_mp4_uses_available_heights() -> None:
+    plan = plan_download(replace(INFO, video_heights=(144, 360, 480)), "mp4", 25 * MB, 3600)
+    assert plan.height_ladder == (480, 360, 144)
+    plan = plan_download(replace(INFO, video_heights=(2160,)), "mp4", 25 * MB, 3600)
+    assert plan.height_ladder == (2160,)
+
+
+def test_plan_download_mp3_ignores_heights() -> None:
+    plan = plan_download(replace(INFO, video_heights=(144, 360)), "mp3", 25 * MB, 3600)
+    assert plan.height_ladder == ()

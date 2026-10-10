@@ -95,7 +95,29 @@ def plan_download(
 
     if estimated_size_bytes(duration, MIN_240P_BITRATE_KBPS) > limit_bytes:
         raise TooLargeError("That video is too long to fit this server's upload limit.")
-    return DownloadPlan(kind=kind, limit_bytes=limit_bytes, height_ladder=HEIGHT_LADDER, clip=clip)
+    return DownloadPlan(
+        kind=kind,
+        limit_bytes=limit_bytes,
+        height_ladder=height_ladder(info.video_heights),
+        clip=clip,
+    )
+
+
+def height_ladder(available: tuple[int, ...]) -> tuple[int, ...]:
+    """Rungs of HEIGHT_LADDER mapped to the heights the video really has.
+
+    Each rung becomes the largest available height <= it; rungs that map to the
+    same height are walked once. Unknown heights keep the full ladder, and a
+    video with only heights above every rung gets its smallest height.
+    """
+    if not available:
+        return HEIGHT_LADDER
+    ladder: list[int] = []
+    for rung in HEIGHT_LADDER:
+        fitting = [h for h in available if h <= rung]
+        if fitting and max(fitting) not in ladder:
+            ladder.append(max(fitting))
+    return tuple(ladder) or (min(available),)
 
 
 def format_selector(plan: DownloadPlan, height: int) -> str:

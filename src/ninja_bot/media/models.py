@@ -54,6 +54,8 @@ class VideoInfo:
     is_playlist: bool
     # yt-dlp's duration as reported (may be fractional); duration_s is truncated for display.
     duration_exact_s: float | None = None
+    # Distinct heights of the video (non audio-only) formats, ascending; () when unknown.
+    video_heights: tuple[int, ...] = ()
 
 
 def parse_info(raw: dict[str, Any]) -> VideoInfo:
@@ -69,6 +71,7 @@ def parse_info(raw: dict[str, Any]) -> VideoInfo:
         is_live=bool(raw.get("is_live")),
         is_playlist=raw.get("_type") == "playlist",
         duration_exact_s=_opt_float(raw.get("duration")),
+        video_heights=_video_heights(raw.get("formats")),
     )
 
 
@@ -105,6 +108,20 @@ def _opt_float(value: Any) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
+
+
+def _video_heights(formats: Any) -> tuple[int, ...]:
+    """Distinct positive int heights of formats that have video, ascending."""
+    if not isinstance(formats, list):
+        return ()
+    heights: set[int] = set()
+    for fmt in formats:
+        if not isinstance(fmt, dict) or fmt.get("vcodec") == "none":
+            continue
+        height = fmt.get("height")
+        if isinstance(height, int) and not isinstance(height, bool) and height > 0:
+            heights.add(height)
+    return tuple(sorted(heights))
 
 
 def _parse_date(value: Any) -> datetime.date | None:
