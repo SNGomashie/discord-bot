@@ -9,7 +9,7 @@ Builds on the CS2 scoreboard feature (`tasks/prd-cs2-scoreboard.md`, branch `ral
 
 Data still comes from the Leetify public API, and everything is rule-based (no LLM calls).
 
-**Prerequisite:** `ralph/cs2-scoreboard` is merged to `main`. This PRD reuses its `cs2/` package (models, `StatsProvider`, `LinkStore`/`SqliteLinkStore`, `formatting.py`, `awards.py`, `embed.py`) and `cogs/cs2.py`, and the config fields `cs2_channel_id`, `cs2_poll_seconds`, `data_dir`. Create the new branch from the updated `main`.
+**Prerequisite:** `ralph/cs2-scoreboard` **and** `ralph/cs2-hardening` (`tasks/prd-cs2-hardening.md`, the code-review fixes; it adds `aclose` to `StatsProvider`, `MatchNotFoundError` and `newest_first`) are merged to `main`. This PRD reuses its `cs2/` package (models, `StatsProvider`, `LinkStore`/`SqliteLinkStore`, `formatting.py`, `awards.py`, `embed.py`) and `cogs/cs2.py`, and the config fields `cs2_channel_id`, `cs2_poll_seconds`, `data_dir`. Create the new branch from the updated `main`.
 
 ## Goals
 
@@ -78,9 +78,9 @@ Data still comes from the Leetify public API, and everything is rule-based (no L
 
 **Acceptance Criteria:**
 - [ ] `cs2/cache.py` has a generic `TtlCache[K, V](ttl_seconds, clock=time.monotonic, max_size=128)` with `get(key) -> V | None`, `set(key, value)` and `clear()`; expired entries are dropped on access, and the oldest entry is evicted when `max_size` is exceeded
-- [ ] `CachedStatsProvider(inner: StatsProvider, ttl_seconds=300, clock=time.monotonic)` implements `StatsProvider`, caching `get_profile` per Steam ID only; `get_recent_matches` and `get_match` pass through uncached; errors are never cached
+- [ ] `CachedStatsProvider(inner: StatsProvider, ttl_seconds=300, clock=time.monotonic)` implements `StatsProvider`, caching `get_profile` per Steam ID only; `get_recent_matches` and `get_match` pass through uncached; errors are never cached; its `aclose()` delegates to the inner provider's `aclose()` (the `StatsProvider` protocol has `aclose` after the hardening PRD)
 - [ ] `setup` in `cogs/cs2.py` wraps the `LeetifyClient` in `CachedStatsProvider`
-- [ ] Unit tests with a fake clock: hit, expiry, eviction, error not cached, pass-through methods, and that two different Steam IDs do not collide
+- [ ] Unit tests with a fake clock: hit, expiry, eviction, error not cached, pass-through methods, `aclose` delegation, and that two different Steam IDs do not collide
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
