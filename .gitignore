@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+data/
+# Ralph run state (prd.json is committed per feature branch; archives are not)
+scripts/ralph/archive/
+scripts/ralph/.last-branch
