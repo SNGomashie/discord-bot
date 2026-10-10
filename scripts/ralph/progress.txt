@@ -11,6 +11,7 @@
 - App command checks (e.g. cooldown) are bypassed by `.callback`; test them via `Command.checks[i](interaction)` — the cooldown check needs a real `interaction.created_at` (discord.utils.utcnow()). Cooldown state lives on the class-level command, so use distinct user ids per test.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 - Clip times: `media/clip.py` parses/format timestamps; `InvalidClipError` messages are user-facing. `format_timestamp` (float, tenths) vs `format_duration` (int, models.py).
+- plan_download with a clip: `plan.clip` is always resolved (concrete `end_s`); size estimates use `math.ceil(clip length)` since `estimated_size_bytes` takes int seconds.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -18,3 +19,8 @@
 - parse_timestamp: three anchored regexes (plain seconds, colon h:mm:ss / m:ss, units h/m/s in order). Decimals only on the seconds part; m:ss minutes are unbounded (`90:00` ok), minutes < 60 only when hours are present. Seconds part accepts 1-2 digits (`1:5` = 65s).
 - parse_clip treats blank strings as missing (Discord can send "").
 - format_timestamp rounds to tenths before splitting so 59.96 -> `1:00`, not `0:60`.
+
+## 2026-10-10 - US-002
+- Added `resolve_clip(clip, duration_s)` to media/clip.py (start past end -> error with video length; None/overlong end clamped; < 1s -> error).
+- `DownloadPlan.clip` + `plan_download(..., clip=None)`: with a clip, the max-duration cap and all size estimates use the clip length (ceil to whole seconds); "That clip is too long" message. No-clip path unchanged.
+- Tests in tests/test_media_clip.py and tests/test_media_planning.py.

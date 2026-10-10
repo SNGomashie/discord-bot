@@ -1,6 +1,12 @@
 import pytest
 
-from ninja_bot.media.clip import Clip, format_timestamp, parse_clip, parse_timestamp
+from ninja_bot.media.clip import (
+    Clip,
+    format_timestamp,
+    parse_clip,
+    parse_timestamp,
+    resolve_clip,
+)
 from ninja_bot.media.models import InvalidClipError, MediaError
 
 
@@ -135,3 +141,29 @@ def test_clip_is_frozen() -> None:
 )
 def test_format_timestamp(seconds: float, expected: str) -> None:
     assert format_timestamp(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("clip", "expected"),
+    [
+        (Clip(10, None), Clip(10, 600)),
+        (Clip(10, 20.5), Clip(10, 20.5)),
+        (Clip(10, 900), Clip(10, 600)),
+        (Clip(0, 600), Clip(0, 600)),
+        (Clip(599, None), Clip(599, 600)),
+    ],
+)
+def test_resolve_clip(clip: Clip, expected: Clip) -> None:
+    assert resolve_clip(clip, 600) == expected
+
+
+@pytest.mark.parametrize("start", [600, 601, 5000])
+def test_resolve_clip_start_past_end(start: float) -> None:
+    with pytest.raises(InvalidClipError, match="10:00"):
+        resolve_clip(Clip(start, None), 600)
+
+
+@pytest.mark.parametrize("clip", [Clip(599.5, None), Clip(10, 10.5), Clip(599.5, 900)])
+def test_resolve_clip_shorter_than_one_second(clip: Clip) -> None:
+    with pytest.raises(InvalidClipError, match="1 second"):
+        resolve_clip(clip, 600)

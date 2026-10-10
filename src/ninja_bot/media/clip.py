@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ninja_bot.media.models import InvalidClipError
+from ninja_bot.media.models import InvalidClipError, format_duration
 
 _SECONDS_RE = re.compile(r"\d+(?:\.\d+)?")
 _COLON_RE = re.compile(r"(?:(\d+):)?(\d+):(\d{1,2}(?:\.\d+)?)")
@@ -51,6 +51,18 @@ def parse_clip(start: str | None, end: str | None) -> Clip | None:
     if end_s <= start_s:
         raise InvalidClipError("The end time must be after the start time.")
     return Clip(start_s, end_s)
+
+
+def resolve_clip(clip: Clip, duration_s: int) -> Clip:
+    """Fit `clip` to a video of `duration_s` seconds, giving it a concrete end."""
+    if clip.start_s >= duration_s:
+        raise InvalidClipError(
+            f"The start time is past the end of the video ({format_duration(duration_s)} long)."
+        )
+    end_s = duration_s if clip.end_s is None else min(clip.end_s, duration_s)
+    if end_s - clip.start_s < 1:
+        raise InvalidClipError("The clip must be at least 1 second long.")
+    return Clip(clip.start_s, end_s)
 
 
 def format_timestamp(seconds: float) -> str:
