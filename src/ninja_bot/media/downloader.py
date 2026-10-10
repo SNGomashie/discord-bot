@@ -17,6 +17,11 @@ RunFn = Callable[[str, dict[str, Any]], None]
 
 _BASE_OPTIONS: dict[str, Any] = {"noplaylist": True, "quiet": True, "no_warnings": True}
 
+# Finished media files yt-dlp might leave behind (not .part/.ytdl temp files).
+_MEDIA_SUFFIXES = frozenset(
+    {".mp4", ".webm", ".mkv", ".mov", ".flv", ".m4a", ".mp3", ".opus", ".ogg", ".aac", ".wav"}
+)
+
 
 class Downloader(Protocol):
     async def fetch_info(self, url: str) -> VideoInfo: ...
@@ -47,6 +52,8 @@ def build_ydl_options(plan: DownloadPlan, height: int | None, workdir: Path) -> 
             raise ValueError("mp4 download needs a height")
         options["format"] = format_selector(plan, height)
         options["merge_output_format"] = "mp4"
+        # A single-file best format can still be webm/mkv; remux it into mp4.
+        options["postprocessors"] = [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}]
     if plan.clip is not None:
         if plan.clip.end_s is None:
             raise ValueError("clip must be resolved (end_s set) before downloading")
@@ -125,8 +132,15 @@ class YtDlpDownloader:
             if output is not None and output.stat().st_size <= plan.limit_bytes:
                 _remove_new_files(workdir, before, keep=output)
                 return output
+            unexpected = _unexpected_suffixes(workdir, before) if output is None else []
             _remove_new_files(workdir, before)
             if output is None:
+                if unexpected:
+                    log.info("%s produced %s instead of .%s", url, ", ".join(unexpected), plan.kind)
+                    raise DownloadError(
+                        f"The download produced a {unexpected[0]} file instead of"
+                        f" .{plan.kind}, so I couldn't post it."
+                    )
                 raise DownloadError("The download finished but produced no file.")
             log.info("%s at height %s is too large, stepping down", url, height)
         raise TooLargeError("Even the lowest quality is too large for this server's upload limit.")
@@ -136,6 +150,12 @@ def _find_output(workdir: Path, before: set[Path], plan: DownloadPlan) -> Path |
     new = [p for p in workdir.iterdir() if p not in before and p.is_file()]
     matches = [p for p in new if p.suffix == f".{plan.kind}"]
     return max(matches, key=lambda p: p.stat().st_size, default=None)
+
+
+def _unexpected_suffixes(workdir: Path, before: set[Path]) -> list[str]:
+    """Sorted suffixes of new media files (used when none match the plan's extension)."""
+    new = [p for p in workdir.iterdir() if p not in before and p.is_file()]
+    return sorted({p.suffix for p in new if p.suffix in _MEDIA_SUFFIXES})
 
 
 def _remove_new_files(workdir: Path, before: set[Path], keep: Path | None = None) -> None:

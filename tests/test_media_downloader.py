@@ -64,6 +64,7 @@ def test_build_options_mp3(tmp_path: Path) -> None:
     assert options["noplaylist"] is True
     assert options["quiet"] is True
     assert "merge_output_format" not in options
+    assert all(pp["key"] != "FFmpegVideoRemuxer" for pp in options["postprocessors"])
 
 
 def test_build_options_mp4(tmp_path: Path) -> None:
@@ -73,7 +74,7 @@ def test_build_options_mp4(tmp_path: Path) -> None:
     assert Path(options["outtmpl"]).parent == tmp_path
     assert options["noplaylist"] is True
     assert options["quiet"] is True
-    assert "postprocessors" not in options
+    assert options["postprocessors"] == [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}]
 
 
 def test_build_options_without_clip_has_no_ranges(tmp_path: Path) -> None:
@@ -218,3 +219,34 @@ async def test_download_no_output_file(tmp_path: Path) -> None:
 
     with pytest.raises(DownloadError):
         await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+
+
+async def test_download_wrong_extension_only(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    run = StubRun([500], ext="webm")
+    with caplog.at_level("INFO", logger="ninja_bot.media.downloader"):
+        with pytest.raises(DownloadError) as exc_info:
+            await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+    assert ".webm" in exc_info.value.message
+    assert ".mp4" in exc_info.value.message
+    assert "produced no file" not in exc_info.value.message
+    assert ".webm" in caplog.text
+    assert len(run.calls) == 1
+    assert files(tmp_path) == []
+
+
+async def test_download_no_output_file_message(tmp_path: Path) -> None:
+    def run(url: str, options: dict[str, Any]) -> None:
+        (tmp_path / "video.webm.part").write_bytes(b"partial")
+
+    with pytest.raises(DownloadError) as exc_info:
+        await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+    assert "produced no file" in exc_info.value.message
+
+
+async def test_download_mp4_output_succeeds(tmp_path: Path) -> None:
+    run = StubRun([500], ext="mp4")
+    path = await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+    assert path == tmp_path / "video.mp4"
+    assert files(tmp_path) == [path]

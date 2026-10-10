@@ -17,6 +17,7 @@
 - Timestamp input: `MAX_TIMESTAMP_LENGTH` (clip.py) caps input before int()/float() and is the `app_commands.Range[str, 0, N]` max on start/end. Clip regexes use re.ASCII so Unicode digits are rejected. Range params expose the bound via `param.to_dict()["max_length"]` (CommandParameter stores it as `max_value`).
 - Durations: `VideoInfo.duration_s` (int, truncated) is for display and the whole-video cap; `duration_exact_s` (float | None) is for clip resolution. `_opt_float` in models.py rejects bools/NaN/inf/overflowing ints; `_opt_int` builds on it.
 - mp4 ladder: `height_ladder(info.video_heights)` in planning.py maps HEIGHT_LADDER rungs to the largest available height <= rung, deduped; `()` heights = full HEIGHT_LADDER. `VideoInfo.video_heights` comes from `formats[*].height` where vcodec != "none".
+- mp4 options always include `FFmpegVideoRemuxer` (`preferedformat: "mp4"`, yt-dlp's spelling). If no `.{kind}` file appears but other new media files (`_MEDIA_SUFFIXES`) do, `download` logs them and raises DownloadError naming the wrong extension; `.part` files don't count.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -40,3 +41,9 @@
 - `VideoInfo.video_heights` (distinct positive int heights of video formats, ascending) filled by `parse_info`; `plan_download` uses new `height_ladder(available)` so mp4 plans only walk distinct real heights (only-large videos get their smallest height).
 - Files: src/ninja_bot/media/models.py, planning.py; tests/test_media_models.py, test_media_planning.py
 - Learnings: the PRD example "144/360/480 -> (480, 360)" is superseded by its own rule: rung 240 maps to 144, giving (480, 360, 144). Heights below the lowest reachable mapping are never used (e.g. 100/200 -> (200,)).
+
+## 2026-10-10 - US-005
+- mp4 plans add an `FFmpegVideoRemuxer` postprocessor so webm/mkv sources become mp4; mp3 options unchanged.
+- `download` raises a clear DownloadError (and logs the extensions at INFO) when only non-matching media files appear; the "produced no file" message stays for truly empty results.
+- Files: src/ninja_bot/media/downloader.py, tests/test_media_downloader.py
+- Needs manual check: a real webm-only source is remuxed to mp4 (requires ffmpeg).
