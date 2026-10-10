@@ -42,4 +42,4 @@ scripts/ralph/ralph.sh 10
 The repo is bind-mounted, so commits land in your working tree. The container sees only the dev `.env`.
 
 ## Ralph
-Generate `scripts/ralph/prd.json` (via the `ralph-skills:prd` and `ralph-skills:ralph` skills), then run `scripts/ralph/ralph.sh 10`. It refuses to run unless `.env` has `ENVIRONMENT=dev`.
+Generate `scripts/ralph/prd.json` (via the `ralph-skills:prd` and `ralph-skills:ralph` skills), then run `scripts/ralph/ralph.sh 10`. It refuses to run unless `.env` has `ENVIRONMENT=dev`. The full feature workflow (plan, PRD, Ralph branch, review, PR) is in [CLAUDE.md](CLAUDE.md#feature-workflow).

@@ -29,8 +29,21 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 ## Environment
 Dev work and Ralph run in the container from `Dockerfile.dev` (Debian 13, Python 3.13, uv, claude). The venv lives outside the repo (`UV_PROJECT_ENVIRONMENT=/home/dev/.venv`), so the host `.venv` is never shared.
 
+## Feature workflow
+Features are built with the Ralph loop. Repo: https://github.com/SNGomashie/discord-bot (`origin`); `main` is only changed through PRs (docs/workflow tweaks may go straight to main).
+1. **Plan** the feature with the user (plan mode / clarifying questions); settle design decisions before writing stories.
+2. **PRD**: `ralph-skills:prd` writes `tasks/prd-<feature>.md`. Stories must be small (one Ralph iteration), ordered by dependency, with criteria verifiable by `./scripts/check.sh`. Anything only checkable inside Discord is a manual check, not a gate.
+3. **Convert**: `ralph-skills:ralph` writes `scripts/ralph/prd.json` (branch `ralph/<feature>`; Ralph files live in `scripts/ralph/`, not the repo root). First archive the previous run's `prd.json` and `progress.txt` to `scripts/ralph/archive/YYYY-MM-DD-<feature>/` (gitignored) and start a fresh `progress.txt` that keeps the "Codebase Patterns" section. Create the branch from up-to-date `main` and commit the PRD + `prd.json` there.
+4. **Run** in the dev container (`docker compose run --rm dev`; podman: `PODMAN_USERNS=keep-id podman compose run --rm dev`; log in once with `claude`): `scripts/ralph/ralph.sh <stories + 2-3>`. It refuses unless `.env` has `ENVIRONMENT=dev`. Ralph commits as "ralph", one commit per story. Rebuild the image if `Dockerfile.dev` changed.
+5. **Review and test**: run `/code-review`, then do the "needs manual check" items from `progress.txt` against the dev bot in the test server (`uv run python scripts/smoke.py`, then `/command`).
+6. **PR** from `ralph/<feature>` to `main` on GitHub (summary, what changed, manual checks, known follow-ups). Keep the per-story commits (no squash). Delete the branch after merge.
+Review follow-ups get their own PRD/branch (e.g. `ralph/download-hardening`).
+
 ## Commits
-Conventional Commits (`type: subject`), small and focused. Story ID goes in the body.
+Conventional Commits (`type: subject`), small and focused. Story ID goes in the body. Commits are authored as Sena Gomashie <40298891+SNGomashie@users.noreply.github.com> (repo-local git config; set it if missing). Commits made by Claude end with the `Co-Authored-By: Claude ...` trailer; PR descriptions end with the "Generated with Claude Code" line.
+
+## Deployment (not automated yet)
+Prod runs in a Debian 13 LXC on Proxmox with the prod token (`ENVIRONMENT=prod`, no `GUILD_ID`). It needs ffmpeg and deno (see README). Agents never touch prod.
 
 ## yt-dlp gotchas
 - YouTube needs a JS runtime (deno) and `yt-dlp-ejs` (via the `yt-dlp[default]` extra); otherwise downloads 403. Check with `uv run yt-dlp -v -F <url>` and look for `JS runtimes:`.
