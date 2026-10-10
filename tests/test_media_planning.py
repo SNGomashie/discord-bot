@@ -227,3 +227,23 @@ def test_plan_download_clip_mp4_fits_where_full_video_does_not() -> None:
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])
 def test_plan_download_without_clip_has_no_clip(kind: MediaKind) -> None:
     assert plan_download(INFO, kind, 25 * MB, 3600).clip is None
+
+
+VIDEO_100_9 = replace(INFO, duration_s=100, duration_exact_s=100.9)
+
+
+def test_plan_download_clip_uses_exact_duration() -> None:
+    plan = plan_download(VIDEO_100_9, "mp4", 25 * MB, 3600, clip=Clip(50, None))
+    assert plan.clip == Clip(50, 100.9)
+    plan = plan_download(VIDEO_100_9, "mp3", 25 * MB, 3600, clip=Clip(99.5, 500))
+    assert plan.clip == Clip(99.5, 100.9)
+
+
+def test_plan_download_clip_exact_duration_too_short() -> None:
+    with pytest.raises(InvalidClipError, match="1 second"):
+        plan_download(VIDEO_100_9, "mp4", 25 * MB, 3600, clip=Clip(100.2, None))
+
+
+def test_plan_download_clip_falls_back_to_truncated_duration() -> None:
+    plan = plan_download(replace(INFO, duration_s=100), "mp4", 25 * MB, 3600, clip=Clip(50, None))
+    assert plan.clip == Clip(50, 100)

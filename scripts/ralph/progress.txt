@@ -15,6 +15,7 @@
 - Clipped downloads: `build_ydl_options` adds `download_ranges` (yt_dlp.utils.download_range_func, imported lazily via `_download_ranges`) + `force_keyframes_at_cuts` only when `plan.clip` is set; it raises ValueError for an unresolved clip. The range callable can be invoked in tests as `fn({"duration": n}, None)` without network.
 - Cog clip flow: `handle_download(interaction, url, kind, start=None, end=None)` parses URL and clip in one try block before defer (ephemeral on MediaError); `plan_download(..., clip=clip)` errors go through the followup MediaError path; success embed uses `plan.clip`, error embeds never show a clip. Param descriptions are `locale_str` — use `str(param.description)` in tests.
 - Timestamp input: `MAX_TIMESTAMP_LENGTH` (clip.py) caps input before int()/float() and is the `app_commands.Range[str, 0, N]` max on start/end. Clip regexes use re.ASCII so Unicode digits are rejected. Range params expose the bound via `param.to_dict()["max_length"]` (CommandParameter stores it as `max_value`).
+- Durations: `VideoInfo.duration_s` (int, truncated) is for display and the whole-video cap; `duration_exact_s` (float | None) is for clip resolution. `_opt_float` in models.py rejects bools/NaN/inf/overflowing ints; `_opt_int` builds on it.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -27,3 +28,9 @@
 - Files: src/ninja_bot/media/clip.py, src/ninja_bot/cogs/media.py, tests/test_media_clip.py, tests/test_media_cog.py
 - Learnings: discord.py's CommandParameter has no `max_length` attribute; check `to_dict()["max_length"]`.
 - Needs manual check: Discord client enforces the 32-char limit on start/end.
+
+## 2026-10-10 - US-003
+- `VideoInfo.duration_exact_s` (float | None, from yt-dlp `duration`); `resolve_clip` takes a float duration; `plan_download` passes `duration_exact_s` or falls back to `float(duration_s)`. Error message still shows the truncated whole-second duration.
+- Also hardened `_opt_int`: NaN/inf durations no longer crash `parse_info` (found while testing).
+- Files: src/ninja_bot/media/models.py, clip.py, planning.py; tests/test_media_models.py, test_media_clip.py, test_media_planning.py
+- Learnings: a 100.9 s video with start=100 now gives "at least 1 second", not "past the end".

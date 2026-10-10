@@ -213,3 +213,27 @@ def test_resolve_clip_start_past_end(start: float) -> None:
 def test_resolve_clip_shorter_than_one_second(clip: Clip) -> None:
     with pytest.raises(InvalidClipError, match="1 second"):
         resolve_clip(clip, 600)
+
+
+@pytest.mark.parametrize(
+    ("clip", "expected"),
+    [
+        (Clip(50, None), Clip(50, 100.9)),
+        (Clip(99.9, None), Clip(99.9, 100.9)),
+        (Clip(99, 200), Clip(99, 100.9)),
+    ],
+)
+def test_resolve_clip_float_duration(clip: Clip, expected: Clip) -> None:
+    assert resolve_clip(clip, 100.9) == expected
+
+
+@pytest.mark.parametrize("start", [100, 100.2, 100.5])
+def test_resolve_clip_float_duration_too_short(start: float) -> None:
+    # Under a second is left, but the start is not past the end of the video.
+    with pytest.raises(InvalidClipError, match="1 second"):
+        resolve_clip(Clip(start, None), 100.9)
+
+
+def test_resolve_clip_float_duration_start_past_end_shows_whole_seconds() -> None:
+    with pytest.raises(InvalidClipError, match=r"\(1:40 long\)"):
+        resolve_clip(Clip(100.9, None), 100.9)

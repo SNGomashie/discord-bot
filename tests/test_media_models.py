@@ -36,7 +36,28 @@ def test_parse_info_full() -> None:
         upload_date=datetime.date(2024, 1, 31),
         is_live=False,
         is_playlist=False,
+        duration_exact_s=125.0,
     )
+
+
+@pytest.mark.parametrize(
+    ("duration", "truncated", "exact"),
+    [
+        (100.9, 100, 100.9),
+        (42, 42, 42.0),
+        (0.5, 0, 0.5),
+        (None, None, None),
+        ("100", None, None),
+        (True, None, None),
+        (float("nan"), None, None),
+        (float("inf"), None, None),
+        (10**400, 10**400, None),
+    ],
+)
+def test_parse_info_duration(duration: Any, truncated: int | None, exact: float | None) -> None:
+    info = parse_info({"duration": duration})
+    assert info.duration_s == truncated
+    assert info.duration_exact_s == exact
 
 
 def test_parse_info_minimal() -> None:
@@ -45,6 +66,7 @@ def test_parse_info_minimal() -> None:
     assert info.webpage_url == ""
     assert info.uploader is None
     assert info.duration_s is None
+    assert info.duration_exact_s is None
     assert info.thumbnail is None
     assert info.view_count is None
     assert info.upload_date is None

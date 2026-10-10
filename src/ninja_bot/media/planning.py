@@ -75,7 +75,8 @@ def plan_download(
                 f"That video is too long (max {format_duration(max_duration_s)})."
             )
     else:
-        clip = resolve_clip(clip, duration)
+        exact = info.duration_exact_s
+        clip = resolve_clip(clip, exact if exact is not None else float(duration))
         assert clip.end_s is not None
         clip_length = clip.end_s - clip.start_s
         if clip_length > max_duration_s:

@@ -58,11 +58,12 @@ def parse_clip(start: str | None, end: str | None) -> Clip | None:
     return Clip(start_s, end_s)
 
 
-def resolve_clip(clip: Clip, duration_s: int) -> Clip:
-    """Fit `clip` to a video of `duration_s` seconds, giving it a concrete end."""
+def resolve_clip(clip: Clip, duration_s: float) -> Clip:
+    """Fit `clip` to a video of exactly `duration_s` seconds, giving it a concrete end."""
     if clip.start_s >= duration_s:
         raise InvalidClipError(
-            f"The start time is past the end of the video ({format_duration(duration_s)} long)."
+            "The start time is past the end of the video "
+            f"({format_duration(int(duration_s))} long)."
         )
     end_s = duration_s if clip.end_s is None else min(clip.end_s, duration_s)
     if end_s - clip.start_s < 1:
