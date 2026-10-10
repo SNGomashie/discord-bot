@@ -24,7 +24,7 @@ from ninja_bot.cogs.cs2 import (
 )
 from ninja_bot.config import load_config
 from ninja_bot.cs2.client import LeetifyClient
-from ninja_bot.cs2.embed import BREAKDOWN_FIELD
+from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
@@ -568,3 +568,146 @@ def test_scoreboard_option_metadata() -> None:
     assert not params["match"].required
     assert str(params["player"].description)
     assert params["match"].to_dict()["max_length"] == MAX_MATCH_ID_LENGTH == 64
+
+
+# /profile
+
+
+def profile_cog(
+    profile: Profile, links: dict[int, str] | None = None, **stats_kwargs: Any
+) -> tuple[Cs2, FakeStats, UserCooldown]:
+    stats = FakeStats(profile, **stats_kwargs)
+    cooldown = UserCooldown(COOLDOWN_SECONDS, FakeClock())
+    store = MemoryLinkStore(links if links is not None else {USER_ID: FIXTURE_STEAM_ID})
+    cog, _, _ = make_cog(stats, store, cooldown)
+    return cog, stats, cooldown
+
+
+async def test_profile_own(fixture_profile: Profile) -> None:
+    cog, stats, cooldown = profile_cog(fixture_profile)
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    embed = posted_embed(interaction)
+    assert embed.title == "alpha"
+    assert RATINGS_FIELD in field_names(embed)
+    assert stats.profile_calls == [FIXTURE_STEAM_ID]
+    assert cooldown.try_acquire(USER_ID) > 0  # kept
+
+
+async def test_profile_command_callback_delegates(fixture_profile: Profile) -> None:
+    cog, stats, _ = profile_cog(fixture_profile)
+    interaction = make_interaction()
+    await Cs2.profile.callback(cog, interaction)
+    posted_embed(interaction)
+    assert stats.profile_calls == [FIXTURE_STEAM_ID]
+
+
+async def test_profile_other_member(fixture_profile: Profile) -> None:
+    cog, stats, cooldown = profile_cog(fixture_profile, {OTHER_USER_ID: STEAM_ID})
+    interaction = make_interaction()
+    await cog.handle_profile(interaction, make_member())
+    posted_embed(interaction)
+    assert stats.profile_calls == [STEAM_ID]
+    assert cooldown.try_acquire(USER_ID) > 0  # keyed on the caller
+
+
+async def test_profile_not_linked_self(fixture_profile: Profile) -> None:
+    cog, stats, cooldown = profile_cog(fixture_profile, {})
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    assert reply(interaction) == ((NotLinkedError.default_message,), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    assert stats.profile_calls == []
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_profile_not_linked_other(fixture_profile: Profile) -> None:
+    cog, stats, _ = profile_cog(fixture_profile, {})
+    interaction = make_interaction()
+    await cog.handle_profile(interaction, make_member(name="Friend"))
+    assert reply(interaction) == ((not_linked_message("Friend"),), {"ephemeral": True})
+    assert stats.profile_calls == []
+
+
+async def test_profile_link_lookup_error_is_generic(
+    fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, _, _ = profile_cog(fixture_profile)
+    cog.links.get = AsyncMock(side_effect=RuntimeError("disk"))  # type: ignore[method-assign]
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    assert reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    assert "Unexpected error looking up a CS2 link" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error", [PlayerNotFoundError(), PrivateProfileError(), RateLimitedError(), ApiError()]
+)
+async def test_profile_api_errors_refund(fixture_profile: Profile, error: Cs2Error) -> None:
+    cog, _, cooldown = profile_cog(fixture_profile, error=error)
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    interaction.followup.send.assert_awaited_once_with(error.message)
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_profile_unexpected_error_is_generic(
+    fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, _, cooldown = profile_cog(fixture_profile, error=RuntimeError("x"))
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE)
+    assert "Unexpected error building a CS2 profile" in caplog.text
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_profile_cooldown_blocks_second_use(fixture_profile: Profile) -> None:
+    cog, stats, _ = profile_cog(fixture_profile)
+    await cog.handle_profile(make_interaction())
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    assert reply(interaction) == ((cooldown_message(COOLDOWN_SECONDS),), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    assert len(stats.profile_calls) == 1
+
+
+async def test_profile_shares_cooldown_with_scoreboard(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, _, _ = scoreboard_cog(match, fixture_profile)
+    await cog.handle_scoreboard(make_interaction())
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    assert reply(interaction) == ((cooldown_message(COOLDOWN_SECONDS),), {"ephemeral": True})
+
+
+async def test_profile_send_failure_is_swallowed_and_refunds(
+    fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, _, cooldown = profile_cog(fixture_profile)
+    interaction = make_interaction()
+    interaction.followup.send = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=404, reason="x"), "gone")
+    )
+    await cog.handle_profile(interaction)
+    assert "Could not send CS2 response" in caplog.text
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_profile_defer_failure_refunds(fixture_profile: Profile) -> None:
+    cog, _, cooldown = profile_cog(fixture_profile)
+    interaction = make_interaction()
+    interaction.response.defer = AsyncMock(side_effect=RuntimeError("defer"))
+    with pytest.raises(RuntimeError):
+        await cog.handle_profile(interaction)
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+def test_profile_option_metadata() -> None:
+    params = Cs2.profile._params
+    assert set(params) == {"player"}
+    assert not params["player"].required
+    assert str(params["player"].description)

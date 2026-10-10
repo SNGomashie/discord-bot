@@ -1,6 +1,9 @@
 import pytest
 
 from ninja_bot.cs2.formatting import (
+    BAR_EMPTY,
+    BAR_FILLED,
+    BAR_WIDTH,
     NO_PLAYERS,
     NO_RECENT_MATCHES,
     STAR,
@@ -8,6 +11,7 @@ from ninja_bot.cs2.formatting import (
     form_strip,
     format_rating,
     format_team_table,
+    rating_bar,
 )
 from ninja_bot.cs2.models import MatchOutcome, PlayerMatchStats, RecentMatch
 
@@ -223,3 +227,34 @@ def test_form_strip_uses_newest_five() -> None:
 
 def test_form_strip_without_ratings() -> None:
     assert form_strip([_recent("win"), _recent("loss")]) == "🟩🟥"
+
+
+@pytest.mark.parametrize(
+    ("value", "max_value", "filled"),
+    [
+        (0.0, 100.0, 0),
+        (50.0, 100.0, 5),
+        (71.4, 100.0, 7),
+        (100.0, 100.0, 10),
+        (0.12, 0.2, 6),
+        (150.0, 100.0, 10),
+        (-5.0, 100.0, 0),
+        (None, 100.0, 0),
+        (float("nan"), 100.0, 0),
+        (float("inf"), 100.0, 10),
+    ],
+)
+def test_rating_bar(value: float | None, max_value: float, filled: int) -> None:
+    bar = rating_bar(value, max_value)
+    assert bar == BAR_FILLED * filled + BAR_EMPTY * (BAR_WIDTH - filled)
+    assert len(bar) == BAR_WIDTH
+
+
+def test_rating_bar_custom_width() -> None:
+    assert rating_bar(1.0, 2.0, width=4) == BAR_FILLED * 2 + BAR_EMPTY * 2
+
+
+@pytest.mark.parametrize(("max_value", "width"), [(0.0, 10), (-1.0, 10), (1.0, 0)])
+def test_rating_bar_rejects_bad_bounds(max_value: float, width: int) -> None:
+    with pytest.raises(ValueError):
+        rating_bar(1.0, max_value, width=width)

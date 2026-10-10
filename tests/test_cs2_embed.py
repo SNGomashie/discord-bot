@@ -10,16 +10,25 @@ from ninja_bot.cs2.embed import (
     AWARDS_FIELD,
     BREAKDOWN_FIELD,
     FORM_FIELD,
+    MATCHES_FIELD,
+    PROFILE_COLOUR,
+    RANKS_FIELD,
+    RATINGS_FIELD,
+    WINRATE_FIELD,
     YOUR_TEAM,
     build_match_embed,
+    build_profile_embed,
     format_breakdown,
     format_player_stats,
+    format_ranks,
+    format_rating_bars,
 )
-from ninja_bot.cs2.formatting import form_strip
+from ninja_bot.cs2.formatting import BAR_EMPTY, BAR_FILLED, form_strip, rating_bar
 from ninja_bot.cs2.models import (
     Match,
     PlayerMatchStats,
     Profile,
+    Ranks,
     RecentMatch,
     TeamScore,
     parse_match,
@@ -253,6 +262,110 @@ def test_limits_full_match_with_long_names(profile: Profile) -> None:
     assert len(embed.fields) == 6
     assert len(embed.fields) <= 25
     assert len(embed.title or "") <= 256
+    for field in embed.fields:
+        assert len(field.name or "") <= 256
+        assert len(field.value or "") <= 1024
+    assert len(embed) <= 6000
+    _assert_no_empty_fields(embed)
+
+
+def _minimal_profile(**kwargs: object) -> Profile:
+    defaults: dict[str, object] = {
+        "steam64_id": "76561198000000009",
+        "name": None,
+        "winrate": None,
+        "total_matches": None,
+        "aim": None,
+        "positioning": None,
+        "utility": None,
+        "clutch": None,
+        "opening": None,
+        "ranks": None,
+        "recent_matches": (),
+    }
+    defaults.update(kwargs)
+    return Profile(**defaults)  # type: ignore[arg-type]
+
+
+def test_profile_embed_full_fixture(profile: Profile) -> None:
+    embed = build_profile_embed(profile)
+    assert embed.title == "alpha"
+    assert embed.colour == PROFILE_COLOUR
+    fields = _fields(embed)
+    assert list(fields) == [RANKS_FIELD, WINRATE_FIELD, MATCHES_FIELD, RATINGS_FIELD, FORM_FIELD]
+    assert fields[RANKS_FIELD] == "Premier: 17,250\nFACEIT: level 8\nLeetify: 2.31"
+    assert fields[WINRATE_FIELD] == "54%"
+    assert fields[MATCHES_FIELD] == "812"
+    assert fields[FORM_FIELD] == form_strip(profile.recent_matches)
+    ratings = fields[RATINGS_FIELD]
+    assert ratings.startswith("```\n") and ratings.endswith("\n```")
+    for label in ("Aim", "Positioning", "Utility", "Clutch", "Opening"):
+        assert label in ratings
+    assert f"Aim         {rating_bar(71.4, 100.0)}    71" in ratings
+    assert "+0.12" in ratings and "-0.03" in ratings
+    assert f"Opening     {BAR_EMPTY * 10} -0.03" in ratings
+    _assert_no_empty_fields(embed)
+
+
+def test_profile_embed_minimal_falls_back_to_steam_id() -> None:
+    embed = build_profile_embed(_minimal_profile())
+    assert embed.title == "76561198000000009"
+    assert embed.fields == []
+
+
+def test_profile_embed_partial_data() -> None:
+    embed = build_profile_embed(
+        _minimal_profile(name="x", aim=100.0, ranks=Ranks(faceit_level=3), total_matches=1234)
+    )
+    fields = _fields(embed)
+    assert list(fields) == [RANKS_FIELD, MATCHES_FIELD, RATINGS_FIELD]
+    assert fields[RANKS_FIELD] == "FACEIT: level 3"
+    assert fields[MATCHES_FIELD] == "1,234"
+    assert fields[RATINGS_FIELD] == f"```\nAim         {BAR_FILLED * 10}   100\n```"
+    _assert_no_empty_fields(embed)
+
+
+def test_profile_embed_empty_ranks_are_omitted() -> None:
+    embed = build_profile_embed(_minimal_profile(name="x", ranks=Ranks()))
+    assert embed.fields == []
+    assert format_ranks(Ranks()) == ""
+    assert format_rating_bars(_minimal_profile()) == ""
+
+
+def test_profile_embed_rating_bars_align() -> None:
+    profile = _minimal_profile(aim=5.0, positioning=99.9, utility=0.0, clutch=0.5, opening=-1.0)
+    rows = format_rating_bars(profile).splitlines()[1:-1]
+    assert len(rows) == 5
+    assert len({len(row) for row in rows}) == 1
+
+
+def test_profile_embed_limits() -> None:
+    recent = tuple(
+        RecentMatch(
+            id=str(i),
+            finished_at=None,
+            map_name="de_ancient",
+            outcome="loss",
+            leetify_rating=-0.123,
+            score=(0, 13),
+        )
+        for i in range(50)
+    )
+    profile = _minimal_profile(
+        name="N" * 500,
+        winrate=1.0,
+        total_matches=10**12,
+        aim=999.0,
+        positioning=-999.0,
+        utility=50.0,
+        clutch=-9.99,
+        opening=9.99,
+        ranks=Ranks(premier=10**9, faceit_level=10, leetify=-99.99),
+        recent_matches=recent,
+    )
+    embed = build_profile_embed(profile)
+    assert embed.title is not None and len(embed.title) == 256
+    assert len(embed.fields) <= 25
     for field in embed.fields:
         assert len(field.name or "") <= 256
         assert len(field.value or "") <= 1024

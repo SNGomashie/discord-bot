@@ -5,8 +5,8 @@ from collections.abc import Sequence
 import discord
 
 from ninja_bot.cs2.awards import Award
-from ninja_bot.cs2.formatting import form_strip, format_rating, format_team_table
-from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile
+from ninja_bot.cs2.formatting import form_strip, format_rating, format_team_table, rating_bar
+from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile, Ranks
 
 # Discord embed limits.
 TITLE_LIMIT = 256
@@ -19,6 +19,15 @@ YOUR_TEAM = "Your team"
 AWARDS_FIELD = "Awards"
 BREAKDOWN_FIELD = "Leetify breakdown"
 FORM_FIELD = "Recent form"
+RANKS_FIELD = "Ranks"
+WINRATE_FIELD = "Winrate"
+MATCHES_FIELD = "Matches"
+RATINGS_FIELD = "Ratings"
+PROFILE_COLOUR = discord.Colour.blurple()
+# Aim/positioning/utility are 0-100 scores; clutch/opening are signed ratings whose
+# bar is full at this value (a guess until real API data is captured).
+SCORE_MAX = 100.0
+SIGNED_RATING_MAX = 0.2
 
 OUTCOME_COLOURS: dict[MatchOutcome | None, discord.Colour] = {
     "win": discord.Colour.green(),
@@ -116,6 +125,57 @@ def format_breakdown(profile: Profile) -> str:
         if value is not None
     ]
     return "\n".join(lines)
+
+
+def build_profile_embed(profile: Profile) -> discord.Embed:
+    """A player's ranks, winrate, Leetify rating bars and recent form; missing data is omitted."""
+    embed = discord.Embed(
+        title=_truncate(profile.name or profile.steam64_id, TITLE_LIMIT),
+        colour=PROFILE_COLOUR,
+    )
+    if profile.ranks is not None:
+        _add_field(embed, RANKS_FIELD, format_ranks(profile.ranks))
+    if profile.winrate is not None:
+        _add_field(embed, WINRATE_FIELD, f"{profile.winrate * 100:.0f}%")
+    if profile.total_matches is not None:
+        _add_field(embed, MATCHES_FIELD, f"{profile.total_matches:,}")
+    _add_field(embed, RATINGS_FIELD, format_rating_bars(profile), inline=False)
+    if profile.recent_matches:
+        _add_field(embed, FORM_FIELD, form_strip(profile.recent_matches), inline=False)
+    return embed
+
+
+def format_ranks(ranks: Ranks) -> str:
+    """Premier, FACEIT and Leetify ranks, one per line; only the known ones."""
+    lines: list[str] = []
+    if ranks.premier is not None:
+        lines.append(f"Premier: {ranks.premier:,}")
+    if ranks.faceit_level is not None:
+        lines.append(f"FACEIT: level {ranks.faceit_level}")
+    if ranks.leetify is not None:
+        lines.append(f"Leetify: {ranks.leetify:.2f}")
+    return "\n".join(lines)
+
+
+def format_rating_bars(profile: Profile) -> str:
+    """The five Leetify ratings as bars in a code block; empty when none are known."""
+    rows = [
+        f"{label:<11} {rating_bar(value, SCORE_MAX)} {value:>5.0f}"
+        for label, value in (
+            ("Aim", profile.aim),
+            ("Positioning", profile.positioning),
+            ("Utility", profile.utility),
+        )
+        if value is not None
+    ]
+    rows += [
+        f"{label:<11} {rating_bar(value, SIGNED_RATING_MAX)} {format_rating(value):>5}"
+        for label, value in (("Clutch", profile.clutch), ("Opening", profile.opening))
+        if value is not None
+    ]
+    if not rows:
+        return ""
+    return "```\n" + "\n".join(rows) + "\n```"
 
 
 def _title(match: Match) -> str:

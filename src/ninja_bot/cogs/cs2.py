@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,7 +12,7 @@ from discord.ext import commands
 
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider
-from ninja_bot.cs2.embed import build_match_embed
+from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
 from ninja_bot.cs2.models import Cs2Error, Match, NoMatchesError, NotLinkedError, Profile
 from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH, parse_steam_id
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
@@ -109,6 +109,13 @@ class Cs2(commands.Cog):
     ) -> None:
         await self.handle_scoreboard(interaction, player, match)
 
+    @app_commands.command(name="profile", description="Show a CS2 player's Leetify profile")
+    @app_commands.describe(player="Whose profile to show (defaults to you)")
+    async def profile(
+        self, interaction: discord.Interaction, player: discord.Member | None = None
+    ) -> None:
+        await self.handle_profile(interaction, player)
+
     @app_commands.command(name="unlink", description="Remove your linked Steam account")
     async def unlink(self, interaction: discord.Interaction) -> None:
         await self.handle_unlink(interaction)
@@ -148,14 +155,38 @@ class Cs2(commands.Cog):
             game_id = clean_match_id(match)
             target = player if player is not None else interaction.user
             steam64_id = await self._linked_steam_id(interaction, target)
-        except Cs2Error as exc:
+        except Exception as exc:
+            await self._reply_lookup_error(interaction, exc)
+            return
+        await self._run_with_cooldown(
+            interaction, lambda: self._scoreboard_deferred(interaction, steam64_id, game_id)
+        )
+
+    async def handle_profile(
+        self, interaction: discord.Interaction, player: discord.Member | None = None
+    ) -> None:
+        try:
+            target = player if player is not None else interaction.user
+            steam64_id = await self._linked_steam_id(interaction, target)
+        except Exception as exc:
+            await self._reply_lookup_error(interaction, exc)
+            return
+        await self._run_with_cooldown(
+            interaction, lambda: self._profile_deferred(interaction, steam64_id)
+        )
+
+    async def _reply_lookup_error(self, interaction: discord.Interaction, exc: Exception) -> None:
+        """Ephemeral reply for a failed input check or link lookup (before the defer)."""
+        if isinstance(exc, Cs2Error):
             await interaction.response.send_message(exc.message, ephemeral=True)
             return
-        except Exception:
-            log.exception("Unexpected error looking up a CS2 link")
-            await interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
-            return
+        log.error("Unexpected error looking up a CS2 link", exc_info=exc)
+        await interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
 
+    async def _run_with_cooldown(
+        self, interaction: discord.Interaction, work: Callable[[], Awaitable[bool]]
+    ) -> None:
+        """Take the caller's cooldown, defer and run `work`; refund unless it posted."""
         user_id = interaction.user.id
         retry_after = self.cooldown.try_acquire(user_id)
         if retry_after > 0:
@@ -165,7 +196,7 @@ class Cs2(commands.Cog):
         posted = False
         try:
             await interaction.response.defer(thinking=True)
-            posted = await self._scoreboard_deferred(interaction, steam64_id, game_id)
+            posted = await work()
         finally:
             if not posted:
                 self.cooldown.refund(user_id)
@@ -193,6 +224,20 @@ class Cs2(commands.Cog):
             return False
         except Exception:
             log.exception("Unexpected error building a CS2 scoreboard")
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
+            return False
+        return await _send_safely(interaction.followup.send(embed=embed))
+
+    async def _profile_deferred(self, interaction: discord.Interaction, steam64_id: str) -> bool:
+        """Fetch and post the profile; True only if the embed was posted."""
+        try:
+            profile = await self.stats.get_profile(steam64_id)
+            embed = build_profile_embed(profile)
+        except Cs2Error as exc:
+            await _send_safely(interaction.followup.send(exc.message))
+            return False
+        except Exception:
+            log.exception("Unexpected error building a CS2 profile")
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
             return False
         return await _send_safely(interaction.followup.send(embed=embed))

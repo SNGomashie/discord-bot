@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 from ninja_bot.cs2.models import MatchOutcome, PlayerMatchStats, RecentMatch
@@ -16,6 +17,9 @@ FORM_EMOJI: dict[MatchOutcome | None, str] = {
 }
 NO_RECENT_MATCHES = "No recent matches"
 NO_PLAYERS = "No players"
+BAR_WIDTH = 10
+BAR_FILLED = "█"
+BAR_EMPTY = "░"
 
 _CODE_START = "```\n"
 _CODE_END = "\n```"
@@ -29,6 +33,21 @@ def format_rating(value: float | None) -> str:
     rounded = round(value, 2)
     # Avoid "-0.00" for tiny negative ratings.
     return f"{rounded:+.2f}" if rounded else "+0.00"
+
+
+def rating_bar(value: float | None, max_value: float, width: int = BAR_WIDTH) -> str:
+    """A fixed-width bar for `value` out of `max_value`; None and negatives are empty.
+
+    Values above `max_value` give a full bar. Raises ValueError for a non-positive
+    `max_value` or `width`.
+    """
+    if max_value <= 0 or width <= 0:
+        raise ValueError("max_value and width must be positive")
+    if value is None or math.isnan(value):
+        filled = 0
+    else:
+        filled = round(min(max(value / max_value, 0.0), 1.0) * width)
+    return BAR_FILLED * filled + BAR_EMPTY * (width - filled)
 
 
 def format_team_table(players: Sequence[PlayerMatchStats], max_chars: int = 1000) -> str:
