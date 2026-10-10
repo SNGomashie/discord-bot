@@ -10,4 +10,11 @@
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
 - App command checks (e.g. cooldown) are bypassed by `.callback`; test them via `Command.checks[i](interaction)` — the cooldown check needs a real `interaction.created_at` (discord.utils.utcnow()). Cooldown state lives on the class-level command, so use distinct user ids per test.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
+- Clip times: `media/clip.py` parses/format timestamps; `InvalidClipError` messages are user-facing. `format_timestamp` (float, tenths) vs `format_duration` (int, models.py).
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
+
+## 2026-10-10 - US-001
+- Added `media/clip.py` (Clip, parse_timestamp, parse_clip, format_timestamp) and `InvalidClipError` in models.py; tests in tests/test_media_clip.py.
+- parse_timestamp: three anchored regexes (plain seconds, colon h:mm:ss / m:ss, units h/m/s in order). Decimals only on the seconds part; m:ss minutes are unbounded (`90:00` ok), minutes < 60 only when hours are present. Seconds part accepts 1-2 digits (`1:5` = 65s).
+- parse_clip treats blank strings as missing (Discord can send "").
+- format_timestamp rounds to tenths before splitting so 59.96 -> `1:00`, not `0:60`.

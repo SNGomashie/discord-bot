@@ -1,0 +1,137 @@
+import pytest
+
+from ninja_bot.media.clip import Clip, format_timestamp, parse_clip, parse_timestamp
+from ninja_bot.media.models import InvalidClipError, MediaError
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("90", 90.0),
+        ("90.5", 90.5),
+        ("0", 0.0),
+        ("  45  ", 45.0),
+        ("1:30", 90.0),
+        ("0:05", 5.0),
+        ("1:5", 65.0),
+        ("90:00", 5400.0),
+        ("1:30.5", 90.5),
+        ("1:02:03", 3723.0),
+        ("1:02:03.5", 3723.5),
+        ("10:00:00", 36000.0),
+        ("1h2m3s", 3723.0),
+        ("1H2M3S", 3723.0),
+        ("2m", 120.0),
+        ("45s", 45.0),
+        ("1h", 3600.0),
+        ("1h30s", 3630.0),
+        ("1m30.5s", 90.5),
+        (" 1M30S ", 90.0),
+    ],
+)
+def test_parse_timestamp_accepts(text: str, expected: float) -> None:
+    assert parse_timestamp(text) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "   ",
+        "-5",
+        "-1:30",
+        "abc",
+        "1.2.3",
+        "nan",
+        "inf",
+        "30s1m",
+        "1m1h",
+        "1m1m",
+        "1s1s",
+        "1h1h",
+        "1:75",
+        "1:60",
+        "1:60:00",
+        "1:00:60",
+        "1:2:3:4",
+        "1:",
+        ":30",
+        "1m 30s",
+        "1.5m",
+        "h",
+        "1:30s",
+    ],
+)
+def test_parse_timestamp_rejects(text: str) -> None:
+    with pytest.raises(InvalidClipError):
+        parse_timestamp(text)
+
+
+def test_invalid_clip_error_is_media_error_with_examples() -> None:
+    error = InvalidClipError()
+    assert isinstance(error, MediaError)
+    assert "1:30" in error.message
+    assert "1m30s" in error.message
+
+
+@pytest.mark.parametrize(("start", "end"), [(None, None), ("", None), (None, ""), ("  ", "  ")])
+def test_parse_clip_none_when_blank(start: str | None, end: str | None) -> None:
+    assert parse_clip(start, end) is None
+
+
+def test_parse_clip_start_only() -> None:
+    assert parse_clip("1:30", None) == Clip(90.0, None)
+    assert parse_clip("1:30", " ") == Clip(90.0, None)
+
+
+def test_parse_clip_start_and_end() -> None:
+    assert parse_clip("1m", "2:45.5") == Clip(60.0, 165.5)
+
+
+def test_parse_clip_zero_start() -> None:
+    assert parse_clip("0", "10") == Clip(0.0, 10.0)
+
+
+def test_parse_clip_end_only_rejected() -> None:
+    with pytest.raises(InvalidClipError, match="start time too"):
+        parse_clip(None, "1:00")
+    with pytest.raises(InvalidClipError, match="start time too"):
+        parse_clip("  ", "1:00")
+
+
+@pytest.mark.parametrize(("start", "end"), [("1:00", "1:00"), ("2:00", "1:00")])
+def test_parse_clip_end_not_after_start(start: str, end: str) -> None:
+    with pytest.raises(InvalidClipError, match="after the start"):
+        parse_clip(start, end)
+
+
+def test_parse_clip_bad_timestamp() -> None:
+    with pytest.raises(InvalidClipError):
+        parse_clip("soon", None)
+    with pytest.raises(InvalidClipError):
+        parse_clip("1:00", "later")
+
+
+def test_clip_is_frozen() -> None:
+    clip = Clip(1.0, 2.0)
+    with pytest.raises(AttributeError):
+        clip.start_s = 3.0  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0, "0:00"),
+        (5, "0:05"),
+        (90, "1:30"),
+        (90.0, "1:30"),
+        (90.5, "1:30.5"),
+        (599, "9:59"),
+        (3600, "1:00:00"),
+        (3725, "1:02:05"),
+        (3725.5, "1:02:05.5"),
+        (59.96, "1:00"),
+    ],
+)
+def test_format_timestamp(seconds: float, expected: str) -> None:
+    assert format_timestamp(seconds) == expected
