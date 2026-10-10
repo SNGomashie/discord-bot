@@ -28,6 +28,7 @@
 - CS2 Steam IDs: `parse_steam_id` (cs2/steam.py) caps input at `MAX_STEAM_INPUT_LENGTH` (200, raw text before strip) — reuse it as the `app_commands.Range` max on `/link steam`. Vanity URLs raise `InvalidSteamIdError(VANITY_URL_MESSAGE)`; everything else uses the default message. Host match is case-insensitive; query strings/extra path segments are rejected.
 - CS2 client (cs2/client.py): `LeetifyClient(api_key, base_url, fetch, timeout_s)`; `fetch(url, headers) -> FetchResponse(status, body)` is injectable (tests use a `StubFetch`), default is a lazy aiohttp session closed by `aclose()`. `asyncio.timeout` wraps every fetch, so injected fetches are bounded too. Errors are raised `from None` with default messages and logs only show the path/status, so the key can't leak. `/v3/profile/matches` is expected to return a JSON list of match details (parsed with `parse_match`, bad entries skipped, newest first); unverified until the capture script runs.
 - CS2 links (cs2/store.py): `LinkStore` Protocol + `SqliteLinkStore(path)`; one short-lived sqlite3 connection per call (wrapped in `contextlib.closing`, since `with conn` only commits), sync `_get/_set/_remove/_all_links` helpers run via `asyncio.to_thread`. Parent dir + schema are created lazily on first call, so constructing the store does no I/O.
+- CS2 formatting (cs2/formatting.py): `format_team_table` renders a header + one row per player inside ``` with fixed widths (`_ROW_FORMAT`); `clean_name` strips backticks/non-printables and truncates to 12 with `…` (reuse it anywhere a player name goes into a code block). Star = most MVPs, then best rating (none if both unknown everywhere). Over `max_chars` it drops rows from the bottom + `+N more`; raises ValueError if even the header doesn't fit. `format_rating` gives `+0.05`/`-` and never `-0.00`. `form_strip` shows the newest 5 newest-first (🟩🟥🟨⬜) + ` avg +x.xx` (omitted without ratings); empty -> `NO_RECENT_MATCHES`.
 
 ## 2026-10-10 - US-001
 - Added aiohttp dependency (uv add); Config gains leetify_api_key, cs2_channel_id, cs2_poll_seconds, data_dir (all defaulted).
@@ -66,3 +67,8 @@
 ## 2026-10-10 - US-007
 - Added `cs2/store.py` (`LinkStore` Protocol, `SqliteLinkStore` on stdlib sqlite3; `INSERT OR REPLACE` for set, no uniqueness on steam64_id) and `tests/test_cs2_store.py` (round trip, replace, shared Steam ID, remove, missing user, persistence across instances, dir auto-creation, to_thread recorder).
 - Learnings: sqlite3's connection context manager commits but doesn't close; use `closing(...)` plus `with conn`.
+
+## 2026-10-10 - US-008
+- Added `src/ninja_bot/cs2/formatting.py` (`format_team_table`, `form_strip`, `format_rating`, `clean_name`) and `tests/test_cs2_formatting.py` (5/10-player tables, star rules, missing values, odd/long names, length cap incl. dropping every row, form strip).
+- Learnings: the `+N more` line is shorter than a row, so a cap one char below the full table drops exactly one row. Wide characters (CJK/emoji) in names still misalign columns; acceptable for now.
+- Needs manual check: table readability/alignment inside a real Discord embed (desktop + mobile) once US-010 lands.
