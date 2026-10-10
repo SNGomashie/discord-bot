@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime
+import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 MatchOutcome = Literal["win", "loss", "tie"]
 
@@ -174,3 +175,136 @@ class Profile:
     recent_matches: tuple[RecentMatch, ...]
     ct_leetify: float | None = None
     t_leetify: float | None = None
+
+
+def parse_match(raw: dict[str, Any]) -> Match:
+    """Build a `Match` from a Leetify `MatchDetailsResponse` (`GET /v2/matches/{id}`).
+
+    Missing or wrongly typed values become None; entries without a steam64_id are skipped.
+    Raises ApiError when the match has no usable id or no players.
+    """
+    match_id = _opt_id(raw.get("id"))
+    if match_id is None:
+        raise ApiError()
+    stats = raw.get("stats")
+    players = tuple(
+        player
+        for entry in (stats if isinstance(stats, list) else [])
+        if isinstance(entry, dict) and (player := _parse_player(entry)) is not None
+    )
+    if not players:
+        raise ApiError()
+    return Match(
+        id=match_id,
+        map_name=_opt_str(raw.get("map_name")),
+        finished_at=_opt_datetime(raw.get("finished_at")),
+        team_scores=_team_scores(raw.get("team_scores")),
+        players=players,
+    )
+
+
+def _parse_player(raw: dict[str, Any]) -> PlayerMatchStats | None:
+    steam64_id = _opt_id(raw.get("steam64_id"))
+    if steam64_id is None:
+        return None
+    return PlayerMatchStats(
+        steam64_id=steam64_id,
+        name=_opt_str(raw.get("name")),
+        team_number=_opt_int(raw.get("initial_team_number")),
+        kills=_opt_int(raw.get("total_kills")),
+        deaths=_opt_int(raw.get("total_deaths")),
+        assists=_opt_int(raw.get("total_assists")),
+        hs_kills=_opt_int(raw.get("total_hs_kills")),
+        damage=_opt_int(raw.get("total_damage")),
+        rounds=_opt_int(raw.get("rounds_count")),
+        mvps=_opt_int(raw.get("mvps")),
+        leetify_rating=_opt_float(raw.get("leetify_rating")),
+        accuracy_head=_percent(raw.get("accuracy_head")),
+        flash_assists=_opt_int(raw.get("flash_assist")),
+        trade_kills=_opt_int(raw.get("trade_kills_succeed")),
+        multi2k=_opt_int(raw.get("multi2k")),
+        multi3k=_opt_int(raw.get("multi3k")),
+        multi4k=_opt_int(raw.get("multi4k")),
+        multi5k=_opt_int(raw.get("multi5k")),
+        rounds_survived=_opt_int(raw.get("rounds_survived")),
+        reaction_time_ms=_milliseconds(raw.get("reaction_time")),
+        preaim=_opt_float(raw.get("preaim")),
+        accuracy=_percent(raw.get("accuracy")),
+        spray_accuracy=_percent(raw.get("spray_accuracy")),
+        shots_hit_friend=_opt_int(raw.get("shots_hit_friend")),
+    )
+
+
+def _team_scores(value: Any) -> tuple[TeamScore, ...]:
+    if not isinstance(value, list):
+        return ()
+    scores: list[TeamScore] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        number, score = _opt_int(entry.get("team_number")), _opt_int(entry.get("score"))
+        if number is not None and score is not None:
+            scores.append(TeamScore(number, score))
+    return tuple(sorted(scores, key=lambda s: s.team_number))
+
+
+def _opt_str(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _opt_id(value: Any) -> str | None:
+    """An id as a stripped string; non-negative ints are accepted too."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return str(value)
+    text = _opt_str(value)
+    return text.strip() if text is not None else None
+
+
+def _opt_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    number = _opt_float(value)
+    return None if number is None else int(number)
+
+
+def _opt_float(value: Any) -> float | None:
+    """A finite float from an int/float, else None (bools, NaN, inf and huge ints too)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _percent(value: Any) -> float | None:
+    """Match accuracies are fractions (0.5446); convert to percentages (54.46).
+
+    Values above 1.0 are assumed to be percentages already and left alone.
+    """
+    number = _opt_float(value)
+    if number is None or number > 1.0:
+        return number
+    return number * 100
+
+
+def _milliseconds(value: Any) -> float | None:
+    """Match reaction times are seconds (0.52); convert to ms. Values >= 10 are already ms."""
+    number = _opt_float(value)
+    if number is None or number >= 10:
+        return number
+    return number * 1000
+
+
+def _opt_datetime(value: Any) -> datetime.datetime | None:
+    """An ISO 8601 timestamp as an aware datetime (naive values are taken as UTC)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.UTC)
