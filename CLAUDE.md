@@ -34,4 +34,6 @@ Conventional Commits (`type: subject`), small and focused. Story ID goes in the 
 
 ## yt-dlp gotchas
 - YouTube needs a JS runtime (deno) and `yt-dlp-ejs` (via the `yt-dlp[default]` extra); otherwise downloads 403. Check with `uv run yt-dlp -v -F <url>` and look for `JS runtimes:`.
-- Upgrade regularly: `uv lock --upgrade-package yt-dlp`.
+- Upgrade regularly: `uv lock --upgrade-package yt-dlp`; bump the pinned deno tag in `Dockerfile.dev` (currently 2.9.7) alongside it when needed.
+- mp4 requests are always remuxed to mp4 (`FFmpegVideoRemuxer`), so webm/mkv sources still produce `.mp4`.
+- The mp4 quality ladder only contains distinct heights the video actually has (`height_ladder` in planning.py), so no rung re-downloads the same format.

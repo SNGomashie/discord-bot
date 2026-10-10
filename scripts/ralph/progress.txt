@@ -65,3 +65,8 @@
 - `_download_deferred` creates the work dir with `tempfile.mkdtemp` and removes it with `shutil.rmtree(ignore_errors=True)`, both via `asyncio.to_thread` (removal in `finally`). Downloader `_snapshot`/`_find_output`/`_remove_new_files`/`_unexpected_suffixes` and the output size check (new `_file_size`) run via `asyncio.to_thread`.
 - Files: src/ninja_bot/cogs/media.py, src/ninja_bot/media/downloader.py, tests/test_media_cog.py, tests/test_media_downloader.py
 - Learnings: the work dir is now created before `fetch_info`, so it's also removed when info fetching fails; `_remove_new_files`'s `keep` is passed positionally through to_thread.
+
+## 2026-10-10 - US-009
+- Dockerfile.dev copies deno from the pinned `denoland/deno:bin-2.9.7` tag. README documents the pin (bump deliberately with yt-dlp), clips skipping the size filter, the queued message + 5-minute timeout, and the cooldown starting only after a valid request. CLAUDE.md yt-dlp gotchas mention the mp4 remux, distinct-height ladder and the deno pin.
+- Files: Dockerfile.dev, README.md, CLAUDE.md
+- needs docker rebuild check for pinned deno tag
