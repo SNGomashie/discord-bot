@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -235,6 +236,81 @@ def _parse_player(raw: dict[str, Any]) -> PlayerMatchStats | None:
     )
 
 
+def parse_profile(raw: dict[str, Any]) -> Profile:
+    """Build a `Profile` from a Leetify `GET /v3/profile` response.
+
+    Missing sections become None / empty tuples. Raises PrivateProfileError when
+    `privacy_mode` is set to anything but public, ApiError without a steam64_id.
+    """
+    privacy = raw.get("privacy_mode")
+    if privacy is not None and privacy != "public":
+        raise PrivateProfileError()
+    steam64_id = _opt_id(raw.get("steam64_id"))
+    if steam64_id is None:
+        raise ApiError()
+    rating = _opt_dict(raw.get("rating"))
+    recent = raw.get("recent_matches")
+    return Profile(
+        steam64_id=steam64_id,
+        name=_opt_str(raw.get("name")),
+        winrate=_opt_float(raw.get("winrate")),
+        total_matches=_opt_int(raw.get("total_matches")),
+        aim=_opt_float(rating.get("aim")),
+        positioning=_opt_float(rating.get("positioning")),
+        utility=_opt_float(rating.get("utility")),
+        clutch=_opt_float(rating.get("clutch")),
+        opening=_opt_float(rating.get("opening")),
+        ranks=_parse_ranks(raw.get("ranks")),
+        recent_matches=_newest_first(
+            match
+            for entry in (recent if isinstance(recent, list) else [])
+            if isinstance(entry, dict) and (match := _parse_recent_match(entry)) is not None
+        ),
+        ct_leetify=_opt_float(rating.get("ct_leetify")),
+        t_leetify=_opt_float(rating.get("t_leetify")),
+    )
+
+
+def _parse_ranks(value: Any) -> Ranks | None:
+    if not isinstance(value, dict):
+        return None
+    return Ranks(
+        premier=_opt_int(value.get("premier")),
+        faceit_level=_opt_int(value.get("faceit")),
+        leetify=_opt_float(value.get("leetify")),
+    )
+
+
+def _parse_recent_match(raw: dict[str, Any]) -> RecentMatch | None:
+    match_id = _opt_id(raw.get("id"))
+    if match_id is None:
+        return None
+    outcome = raw.get("outcome")
+    return RecentMatch(
+        id=match_id,
+        finished_at=_opt_datetime(raw.get("finished_at")),
+        map_name=_opt_str(raw.get("map_name")),
+        outcome=outcome if outcome in ("win", "loss", "tie") else None,
+        leetify_rating=_opt_float(raw.get("leetify_rating")),
+        score=_score(raw.get("score")),
+    )
+
+
+def _score(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, list) or len(value) != 2:
+        return None
+    own, other = _opt_int(value[0]), _opt_int(value[1])
+    if own is None or other is None:
+        return None
+    return (own, other)
+
+
+def _newest_first(matches: Iterable[RecentMatch]) -> tuple[RecentMatch, ...]:
+    """Sort by `finished_at` descending; matches without a time keep their order at the end."""
+    floor = datetime.datetime.min.replace(tzinfo=datetime.UTC)
+    return tuple(sorted(matches, key=lambda m: m.finished_at or floor, reverse=True))
+
+
 def _team_scores(value: Any) -> tuple[TeamScore, ...]:
     if not isinstance(value, list):
         return ()
@@ -246,6 +322,10 @@ def _team_scores(value: Any) -> tuple[TeamScore, ...]:
         if number is not None and score is not None:
             scores.append(TeamScore(number, score))
     return tuple(sorted(scores, key=lambda s: s.team_number))
+
+
+def _opt_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _opt_str(value: Any) -> str | None:

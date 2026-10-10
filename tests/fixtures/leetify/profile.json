@@ -1,0 +1,92 @@
+{
+  "privacy_mode": "public",
+  "winrate": 0.54,
+  "total_matches": 812,
+  "first_match_date": "2023-09-27T18:02:11Z",
+  "name": "alpha",
+  "bans": [],
+  "steam64_id": "76561198000000000",
+  "id": "4b0e3c2a-1d7f-4e8b-9c55-0a1b2c3d4e5f",
+  "ranks": {
+    "leetify": 2.31,
+    "premier": 17250,
+    "faceit": 8,
+    "faceit_elo": 1912,
+    "wingman": 14,
+    "renown": null,
+    "competitive": [
+      {"map_name": "de_mirage", "rank": 15},
+      {"map_name": "de_inferno", "rank": 14}
+    ]
+  },
+  "rating": {
+    "aim": 71.4,
+    "positioning": 58.2,
+    "utility": 49.9,
+    "clutch": 0.12,
+    "opening": -0.03,
+    "ct_leetify": 0.021,
+    "t_leetify": -0.008
+  },
+  "stats": {
+    "accuracy_enemy_spotted": 38.2,
+    "accuracy_head": 29.5,
+    "counter_strafing_good_shots_ratio": 74.1,
+    "preaim": 7.4,
+    "reaction_time_ms": 512.0,
+    "spray_accuracy": 40.3
+  },
+  "recent_matches": [
+    {
+      "id": "aaaaaaaa-0000-4000-8000-000000000002",
+      "finished_at": "2026-10-08T20:01:00Z",
+      "data_source": "matchmaking",
+      "outcome": "loss",
+      "rank": 17100,
+      "rank_type": 11,
+      "map_name": "de_inferno",
+      "leetify_rating": -0.04,
+      "score": [10, 13],
+      "preaim": 8.1,
+      "reaction_time_ms": 540.0,
+      "accuracy_enemy_spotted": 35.0,
+      "accuracy_head": 27.0,
+      "spray_accuracy": 38.0
+    },
+    {
+      "id": "8d5a1f3e-6b2c-4c11-9a7e-2f0c5b9d4e71",
+      "finished_at": "2026-10-09T21:14:05Z",
+      "data_source": "matchmaking",
+      "outcome": "win",
+      "rank": 17250,
+      "rank_type": 11,
+      "map_name": "de_mirage",
+      "leetify_rating": 0.08,
+      "score": [13, 9],
+      "preaim": 6.5,
+      "reaction_time_ms": 480.0,
+      "accuracy_enemy_spotted": 40.1,
+      "accuracy_head": 31.0,
+      "spray_accuracy": 41.0
+    },
+    {
+      "id": "aaaaaaaa-0000-4000-8000-000000000001",
+      "finished_at": "2026-10-07T19:30:42Z",
+      "data_source": "faceit",
+      "outcome": "tie",
+      "rank": 8,
+      "rank_type": null,
+      "map_name": "de_nuke",
+      "leetify_rating": 0.0,
+      "score": [12, 12],
+      "preaim": 7.0,
+      "reaction_time_ms": 500.0,
+      "accuracy_enemy_spotted": 37.0,
+      "accuracy_head": 30.0,
+      "spray_accuracy": 40.0
+    }
+  ],
+  "recent_teammates": [
+    {"steam64_id": "76561198000000001", "recent_matches_count": 12}
+  ]
+}
