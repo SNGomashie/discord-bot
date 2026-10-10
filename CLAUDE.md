@@ -43,7 +43,7 @@ Review follow-ups get their own PRD/branch (e.g. `ralph/download-hardening`).
 Conventional Commits (`type: subject`), small and focused. Story ID goes in the body. Commits are authored as Sena Gomashie <40298891+SNGomashie@users.noreply.github.com> (repo-local git config; set it if missing). Commits made by Claude end with the `Co-Authored-By: Claude ...` trailer; PR descriptions end with the "Generated with Claude Code" line.
 
 ## Deployment (not automated yet)
-Prod runs in a Debian 13 LXC on Proxmox with the prod token (`ENVIRONMENT=prod`, no `GUILD_ID`). It needs ffmpeg and deno (see README). Agents never touch prod.
+Prod runs in a Debian 13 LXC on Proxmox with the prod token (`ENVIRONMENT=prod`, no `GUILD_ID`). It needs ffmpeg and deno. Setup, permissions, systemd unit and update steps are in `docs/deployment.md`; keep it current when adding env vars, intents or system dependencies. Agents never touch prod.
 
 ## yt-dlp gotchas
 - YouTube needs a JS runtime (deno) and `yt-dlp-ejs` (via the `yt-dlp[default]` extra); otherwise downloads 403. Check with `uv run yt-dlp -v -F <url>` and look for `JS runtimes:`.
