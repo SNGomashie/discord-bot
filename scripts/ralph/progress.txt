@@ -22,6 +22,7 @@
 - Disk work stays off the event loop: `_download_deferred` uses `asyncio.to_thread(tempfile.mkdtemp)` + `to_thread(shutil.rmtree, ignore_errors=True)` in `finally`; downloader filesystem helpers (`_snapshot`, `_find_output`, `_file_size`, `_remove_new_files`, `_unexpected_suffixes`) are sync and called via `to_thread`. Tests verify by monkeypatching `asyncio.to_thread` with a recorder (`ThreadRecorder` in test_media_cog.py).
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 - CS2 feature (tasks/prd-cs2-scoreboard.md): Leetify fixtures in tests/fixtures/leetify/ are hand-written from the public swagger (https://api-public.cs-prod.leetify.com/swagger.json), not captured from the real API; field names/units are unverified until scripts/capture_leetify.py is run by the owner. Never read .env or print LEETIFY_API_KEY.
+- CS2 models (cs2/models.py): `Cs2Error` mirrors `MediaError` (default_message/.message). `PlayerMatchStats` has every stat optional except steam64_id (keyword defaults); `accuracy`/`spray_accuracy` are percentages (0-100). `hs_percent` is 0-100, `kd_ratio` with 0 deaths = kills. `Match.team_scores` is a tuple of `TeamScore(team_number, score)`; `Match.teams()` always returns 2 tuples (padded with `()`), dropping players without a team number. `Profile` ratings are flat fields; ranks live in `Ranks(premier, faceit_level, leetify)`; `RecentMatch.score` is (own, other).
 
 ## 2026-10-10 - US-001
 - Added aiohttp dependency (uv add); Config gains leetify_api_key, cs2_channel_id, cs2_poll_seconds, data_dir (all defaulted).
@@ -29,3 +30,8 @@
 - New `_parse_optional_positive_int` in config.py; `_parse_positive_int` builds on it. Errors name the env var.
 - Files: pyproject.toml, uv.lock, src/ninja_bot/config.py, tests/test_config.py, .env.example
 - Learnings: use `_parse_optional_positive_int` for optional ID-style env ints.
+
+## 2026-10-10 - US-002
+- New package src/ninja_bot/cs2/ with models.py: Cs2Error + 7 subclasses, PlayerMatchStats (derived kd_ratio/adr/hs_percent), TeamScore, Match (teams()), RecentMatch, Ranks, Profile (also ct_leetify/t_leetify for US-004).
+- Files: src/ninja_bot/cs2/__init__.py, src/ninja_bot/cs2/models.py, tests/test_cs2_models.py
+- Learnings: parsers (US-003/004) should fill these dataclasses; PlayerMatchStats uses keyword defaults so tests can build minimal players.
