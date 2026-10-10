@@ -39,6 +39,8 @@ class FetchResponse:
 
 
 # One HTTP GET (url, headers) -> response; injectable so tests never touch the network.
+# It may raise aiohttp.ClientError, OSError, UnicodeDecodeError (undecodable body) or
+# TimeoutError; `LeetifyClient` turns all of them into ApiError.
 FetchFn = Callable[[str, Mapping[str, str]], Awaitable[FetchResponse]]
 
 
@@ -123,7 +125,7 @@ class LeetifyClient:
         except TimeoutError:
             log.warning("Leetify request timed out: %s", path)
             raise ApiError() from None
-        except (aiohttp.ClientError, OSError) as exc:
+        except (aiohttp.ClientError, OSError, UnicodeDecodeError) as exc:
             log.warning("Leetify request failed: %s (%s)", path, type(exc).__name__)
             raise ApiError() from None
         _raise_for_status(response.status, path, not_found)

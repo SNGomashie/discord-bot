@@ -183,6 +183,7 @@ def test_default_timeout_is_ten_seconds() -> None:
         aiohttp.ClientConnectionError(f"boom {SECRET}"),
         aiohttp.ClientPayloadError("bad payload"),
         OSError("network unreachable"),
+        UnicodeDecodeError("utf-8", SECRET.encode() + b"\xff", len(SECRET), len(SECRET) + 1, "bad"),
     ],
 )
 async def test_connection_errors_become_api_error(exc: BaseException) -> None:
@@ -194,6 +195,24 @@ async def test_connection_errors_become_api_error(exc: BaseException) -> None:
     assert info.value.message == ApiError.default_message
     assert info.value.__cause__ is None
     assert SECRET not in str(info.value)
+
+
+async def test_undecodable_body_logs_warning_without_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("DEBUG")
+    fetch = StubFetch()
+    fetch.error = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+    with pytest.raises(ApiError) as info:
+        await _client(fetch).get_profile(STEAM_ID)
+
+    assert info.value.message == ApiError.default_message
+    assert info.value.__cause__ is None
+    [record] = [r for r in caplog.records if r.name == "ninja_bot.cs2.client"]
+    assert record.levelname == "WARNING"
+    assert record.exc_info is None
+    assert "UnicodeDecodeError" in record.getMessage()
+    assert SECRET not in caplog.text
 
 
 async def test_key_never_logged(caplog: pytest.LogCaptureFixture) -> None:
