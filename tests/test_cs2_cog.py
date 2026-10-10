@@ -223,6 +223,13 @@ async def test_link_without_name_falls_back_to_steam_id() -> None:
 
 def test_linked_message_escapes_markdown() -> None:
     assert "\\*" in linked_message("a*b")
+    assert linked_message("[x](https://evil.example)") == (
+        "Linked to **\\[x\\]\\(https://evil.example\\)** on Leetify."
+    )
+
+
+def test_not_linked_message_escapes_links() -> None:
+    assert "\\[x\\]\\(" in not_linked_message("[x](https://evil.example)")
 
 
 @pytest.mark.parametrize(

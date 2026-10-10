@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
+
+import discord
 
 from ninja_bot.cs2.models import MatchOutcome, PlayerMatchStats, RecentMatch
 
 NAME_WIDTH = 12
+ESCAPED_NAME_LENGTH = 32
 MISSING = "-"
 STAR = "★"
 FORM_LENGTH = 5
@@ -23,6 +27,7 @@ BAR_EMPTY = "░"
 
 _CODE_START = "```\n"
 _CODE_END = "\n```"
+_UNESCAPED_LINK_CHAR = re.compile(r"(?<!\\)((?:\\\\)*)([\[\]()])")
 _ROW_FORMAT = "{star}{name:<12} {kda:>8} {adr:>4} {hs:>4} {rating:>6}"
 
 
@@ -94,6 +99,23 @@ def clean_name(name: str | None) -> str:
     if len(cleaned) > NAME_WIDTH:
         return cleaned[: NAME_WIDTH - 1] + "…"
     return cleaned
+
+
+def escape_name(name: str | None) -> str:
+    """A player name safe for embed text outside code blocks, so it shows as plain text.
+
+    Control characters and newlines are dropped and the name is truncated to
+    `ESCAPED_NAME_LENGTH` characters before escaping (so an escape is never cut in half).
+    `escape_markdown` only escapes complete `[text](url)` links, so every link bracket or
+    parenthesis it left unescaped (an even run of backslashes before it) is escaped too.
+    """
+    cleaned = "".join(c for c in name or "" if c.isprintable()).strip()
+    if not cleaned:
+        return "?"
+    if len(cleaned) > ESCAPED_NAME_LENGTH:
+        cleaned = cleaned[: ESCAPED_NAME_LENGTH - 1] + "…"
+    escaped = discord.utils.escape_markdown(cleaned, ignore_links=False)
+    return _UNESCAPED_LINK_CHAR.sub(r"\1\\\2", escaped)
 
 
 def _row(player: PlayerMatchStats, starred: bool) -> str:

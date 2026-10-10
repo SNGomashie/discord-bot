@@ -5,7 +5,13 @@ from collections.abc import Sequence
 import discord
 
 from ninja_bot.cs2.awards import Award
-from ninja_bot.cs2.formatting import form_strip, format_rating, format_team_table, rating_bar
+from ninja_bot.cs2.formatting import (
+    escape_name,
+    form_strip,
+    format_rating,
+    format_team_table,
+    rating_bar,
+)
 from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile, Ranks
 
 # Discord embed limits.
@@ -62,10 +68,10 @@ def build_match_embed(
             inline=False,
         )
     if awards:
-        lines = [f"**{a.title}**: {a.name} ({a.detail})" for a in awards]
+        lines = [f"**{a.title}**: {escape_name(a.name)} ({a.detail})" for a in awards]
         _add_field(embed, AWARDS_FIELD, "\n".join(lines), inline=False)
     if focus is not None:
-        _add_field(embed, focus.name or focus.steam64_id, format_player_stats(focus))
+        _add_field(embed, escape_name(focus.name or focus.steam64_id), format_player_stats(focus))
         if profile is not None:
             _add_field(embed, BREAKDOWN_FIELD, format_breakdown(profile))
             if profile.recent_matches:
@@ -130,7 +136,7 @@ def format_breakdown(profile: Profile) -> str:
 def build_profile_embed(profile: Profile) -> discord.Embed:
     """A player's ranks, winrate, Leetify rating bars and recent form; missing data is omitted."""
     embed = discord.Embed(
-        title=_truncate(profile.name or profile.steam64_id, TITLE_LIMIT),
+        title=escape_name(profile.name or profile.steam64_id),
         colour=PROFILE_COLOUR,
     )
     if profile.ranks is not None:

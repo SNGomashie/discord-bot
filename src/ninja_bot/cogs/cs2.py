@@ -13,6 +13,7 @@ from discord.ext import commands
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider
 from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
+from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.models import Cs2Error, Match, NoMatchesError, NotLinkedError, Profile
 from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH, parse_steam_id
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
@@ -34,14 +35,13 @@ INVALID_MATCH_ID_MESSAGE = "That doesn't look like a Leetify match id."
 
 
 def linked_message(name: str) -> str:
-    return f"Linked to **{discord.utils.escape_markdown(name)}** on Leetify."
+    return f"Linked to **{escape_name(name)}** on Leetify."
 
 
 def not_linked_message(name: str) -> str:
     """NotLinkedError text for someone other than the caller."""
     return (
-        f"**{discord.utils.escape_markdown(name)}** hasn't linked a Steam account yet. "
-        "They can run `/link` to do it."
+        f"**{escape_name(name)}** hasn't linked a Steam account yet. They can run `/link` to do it."
     )
 
 

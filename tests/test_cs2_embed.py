@@ -23,7 +23,14 @@ from ninja_bot.cs2.embed import (
     format_ranks,
     format_rating_bars,
 )
-from ninja_bot.cs2.formatting import BAR_EMPTY, BAR_FILLED, form_strip, rating_bar
+from ninja_bot.cs2.formatting import (
+    BAR_EMPTY,
+    BAR_FILLED,
+    ESCAPED_NAME_LENGTH,
+    escape_name,
+    form_strip,
+    rating_bar,
+)
 from ninja_bot.cs2.models import (
     Match,
     PlayerMatchStats,
@@ -163,6 +170,30 @@ def test_awards_field() -> None:
     assert _fields(embed)[AWARDS_FIELD] == (
         "**Headhunter**: alice (60% headshots)\n**Trader**: bob (3 trade kills)"
     )
+
+
+def test_hostile_names_are_escaped_outside_code_blocks() -> None:
+    hostile = "[free nitro](https://evil.example)"
+    match = Match(
+        id="m1",
+        map_name="de_dust2",
+        finished_at=None,
+        team_scores=(TeamScore(2, 13), TeamScore(3, 7)),
+        players=(_player(1, 2, name=hostile, kills=20), _player(2, 3)),
+    )
+    awards = [Award("Headhunter", match.players[0].steam64_id, hostile, "60% headshots")]
+    embed = build_match_embed(match, awards, focus_steam_id=match.players[0].steam64_id)
+    fields = _fields(embed)
+    assert "[free nitro](" not in fields[AWARDS_FIELD]
+    assert r"\[free nitro\]\(" in fields[AWARDS_FIELD]
+    assert all(not name.startswith("[") for name in fields)
+    assert escape_name(hostile) in fields
+
+
+def test_profile_embed_title_is_escaped() -> None:
+    embed = build_profile_embed(_minimal_profile(name="**[x](https://evil.example)**"))
+    assert embed.title == escape_name("**[x](https://evil.example)**")
+    assert "](" not in (embed.title or "")
 
 
 def test_format_player_stats() -> None:
@@ -364,7 +395,8 @@ def test_profile_embed_limits() -> None:
         recent_matches=recent,
     )
     embed = build_profile_embed(profile)
-    assert embed.title is not None and len(embed.title) == 256
+    assert embed.title == escape_name(profile.name)
+    assert len(embed.title) == ESCAPED_NAME_LENGTH
     assert len(embed.fields) <= 25
     for field in embed.fields:
         assert len(field.name or "") <= 256

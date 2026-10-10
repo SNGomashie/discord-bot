@@ -4,10 +4,12 @@ from ninja_bot.cs2.formatting import (
     BAR_EMPTY,
     BAR_FILLED,
     BAR_WIDTH,
+    ESCAPED_NAME_LENGTH,
     NO_PLAYERS,
     NO_RECENT_MATCHES,
     STAR,
     clean_name,
+    escape_name,
     form_strip,
     format_rating,
     format_team_table,
@@ -161,6 +163,42 @@ def test_empty_team() -> None:
 )
 def test_clean_name(name: str | None, expected: str) -> None:
     assert clean_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Ninja", "Ninja"),
+        ("[free nitro](https://evil.example)", r"\[free nitro\]\(https://evil.examp…"),
+        ("[x](https://a.b)", r"\[x\]\(https://a.b\)"),
+        ("**bold**", r"\*\*bold\*\*"),
+        ("_under_", r"\_under\_"),
+        ("~~strike~~", r"\~\~strike\~\~"),
+        ("||spoiler||", r"\|\|spoiler\|\|"),
+        ("`code`", r"\`code\`"),
+        # A leading backslash must not cancel the escape of the link bracket.
+        (r"\[x](https://a.b)", r"\\\[x\]\(https://a.b\)"),
+        ("line\nbreak\r\n", "linebreak"),
+        ("bell\x07\x1bname\u200b", "bellname"),
+        ("  padded  ", "padded"),
+        ("", "?"),
+        ("\n\t", "?"),
+        (None, "?"),
+    ],
+)
+def test_escape_name(name: str | None, expected: str) -> None:
+    assert escape_name(name) == expected
+
+
+def test_escape_name_truncates_long_names() -> None:
+    escaped = escape_name("x" * 100)
+    assert escaped == "x" * (ESCAPED_NAME_LENGTH - 1) + "…"
+    assert len(escaped) == ESCAPED_NAME_LENGTH
+
+
+def test_escape_name_truncates_before_escaping() -> None:
+    escaped = escape_name("*" * 100)
+    assert escaped == "\\*" * (ESCAPED_NAME_LENGTH - 1) + "…"
 
 
 def test_odd_names_cannot_break_the_code_block() -> None:
