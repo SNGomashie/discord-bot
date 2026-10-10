@@ -1,8 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from ninja_bot.media.clip import Clip
 from ninja_bot.media.downloader import YtDlpDownloader, build_ydl_options
 from ninja_bot.media.models import DownloadError, TooLargeError
 from ninja_bot.media.planning import HEIGHT_LADDER, DownloadPlan, format_selector
@@ -72,6 +74,47 @@ def test_build_options_mp4(tmp_path: Path) -> None:
     assert options["noplaylist"] is True
     assert options["quiet"] is True
     assert "postprocessors" not in options
+
+
+def test_build_options_without_clip_has_no_ranges(tmp_path: Path) -> None:
+    for options in (
+        build_ydl_options(MP3_PLAN, None, tmp_path),
+        build_ydl_options(MP4_PLAN, 720, tmp_path),
+    ):
+        assert "download_ranges" not in options
+        assert "force_keyframes_at_cuts" not in options
+
+
+@pytest.mark.parametrize(
+    ("plan", "height"),
+    [
+        (replace(MP3_PLAN, clip=Clip(90.5, 165.0)), None),
+        (replace(MP4_PLAN, clip=Clip(90.5, 165.0)), 720),
+    ],
+)
+def test_build_options_with_clip(plan: DownloadPlan, height: int | None, tmp_path: Path) -> None:
+    options = build_ydl_options(plan, height, tmp_path)
+    assert options["force_keyframes_at_cuts"] is True
+    ranges = list(options["download_ranges"]({"duration": 300}, None))
+    assert ranges == [{"start_time": 90.5, "end_time": 165.0}]
+    unclipped = build_ydl_options(replace(plan, clip=None), height, tmp_path)
+    clip_keys = {"download_ranges", "force_keyframes_at_cuts"}
+    assert {k: v for k, v in options.items() if k not in clip_keys} == unclipped
+
+
+def test_build_options_rejects_unresolved_clip(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        build_ydl_options(replace(MP3_PLAN, clip=Clip(10.0, None)), None, tmp_path)
+
+
+async def test_download_clipped_mp4_steps_down(tmp_path: Path) -> None:
+    run = StubRun([5000, 500])
+    plan = replace(MP4_PLAN, clip=Clip(10.0, 20.0))
+    output = await make_downloader(run=run).download(URL, plan, tmp_path)
+    assert output.stat().st_size == 500
+    assert len(run.calls) == 2
+    assert all(call["force_keyframes_at_cuts"] is True for call in run.calls)
+    assert files(tmp_path) == [output]
 
 
 def test_build_options_mp4_requires_height(tmp_path: Path) -> None:

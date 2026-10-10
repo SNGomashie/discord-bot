@@ -29,6 +29,13 @@ class TooLargeError(MediaError):
     default_message = "That file is too large to upload to this server."
 
 
+class InvalidClipError(MediaError):
+    default_message = (
+        "That clip time doesn't look right. "
+        "Use seconds or a time like `90`, `1:30`, `1:02:03` or `1m30s`."
+    )
+
+
 class DownloadError(MediaError):
     default_message = "The download failed. The link may be private, removed or unsupported."
 

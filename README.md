@@ -11,6 +11,8 @@ Personal Discord bot for a private server. See CLAUDE.md for architecture and co
 ## /download
 `/download url:<link> format:<mp3|mp4>` fetches a video with yt-dlp and posts the file plus an info embed. `format` defaults to mp4. The bot picks the best quality that fits the server's upload limit (10 MiB without a guild), rejects live streams, playlists and videos longer than `MAX_DURATION_SECONDS` (default 3600). One download runs at a time, with a 30-second per-user cooldown.
 
+**Clips:** add `start` (and optionally `end`) to post only part of the video, e.g. `/download url:<link> format:mp3 start:1:30 end:2:45`. Accepted time formats: plain seconds (`90`, `90.5`), `m:ss` / `h:mm:ss` (with optional tenths, e.g. `1:30.5`), and units in h/m/s order (`1h2m3s`, `2m`, `45s`, `1m30.5s`). `start` alone clips to the end of the video; `end` without `start` is rejected, as is an `end` at or before `start` or a `start` past the end of the video. An `end` beyond the video is clamped to its length. Clips must be at least 1 second long. `MAX_DURATION_SECONDS` and the upload size limit apply to the clip length, so you can clip a section from a video longer than the cap.
+
 **System dependencies:** ffmpeg (audio extraction and video merging) and **deno** (JavaScript runtime yt-dlp needs for YouTube; without it downloads fail with `HTTP Error 403`). Both are in `Dockerfile.dev`. On the Debian 13 prod LXC run `apt install ffmpeg unzip curl` and install deno (`curl -fsSL https://deno.land/install.sh | sh`, then put `~/.deno/bin` on the service's PATH). yt-dlp is installed with its `[default]` extra, which provides `yt-dlp-ejs`.
 
 **yt-dlp upkeep:** sites change often. When extractors break, run `uv lock --upgrade-package yt-dlp`, then `uv sync`, `./scripts/check.sh`, and redeploy.
@@ -22,6 +24,12 @@ Personal Discord bot for a private server. See CLAUDE.md for architecture and co
 - [ ] Bogus URL (e.g. `not a url`) → ephemeral invalid-URL reply
 - [ ] Private/unavailable video → friendly download error
 - [ ] Playlist link → "unsupported" reply (a video link with `&list=` should download just that video)
+- [ ] mp3 clip (`start` + `end`) → audio of just that section, embed shows the Clip field
+- [ ] mp4 clip (`start` + `end`) → video of just that section, cut at the right times
+- [ ] Start-only clip → from `start` to the end of the video
+- [ ] `end` without `start` → ephemeral "give a start time too" reply
+- [ ] `start` beyond the video length → friendly error mentioning the video length
+- [ ] Short clip from a video longer than `MAX_DURATION_SECONDS` → downloads fine
 
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).

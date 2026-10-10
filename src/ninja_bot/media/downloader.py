@@ -47,7 +47,18 @@ def build_ydl_options(plan: DownloadPlan, height: int | None, workdir: Path) -> 
             raise ValueError("mp4 download needs a height")
         options["format"] = format_selector(plan, height)
         options["merge_output_format"] = "mp4"
+    if plan.clip is not None:
+        if plan.clip.end_s is None:
+            raise ValueError("clip must be resolved (end_s set) before downloading")
+        options["download_ranges"] = _download_ranges(plan.clip.start_s, plan.clip.end_s)
+        options["force_keyframes_at_cuts"] = True
     return options
+
+
+def _download_ranges(start_s: float, end_s: float) -> Any:
+    import yt_dlp.utils
+
+    return yt_dlp.utils.download_range_func(None, [(start_s, end_s)])
 
 
 def _ytdlp_extract(url: str, options: dict[str, Any]) -> dict[str, Any]:

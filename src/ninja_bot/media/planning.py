@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from ninja_bot.media.clip import Clip, resolve_clip
 from ninja_bot.media.models import (
     InvalidUrlError,
     MediaKind,
@@ -27,6 +29,7 @@ class DownloadPlan:
     limit_bytes: int
     audio_bitrate_kbps: int | None = None
     height_ladder: tuple[int, ...] = ()
+    clip: Clip | None = None  # resolved: end_s is always set
 
 
 def validate_url(text: str) -> str:
@@ -47,9 +50,16 @@ def estimated_size_bytes(duration_s: int, kbps: int) -> int:
 
 
 def plan_download(
-    info: VideoInfo, kind: MediaKind, limit_bytes: int, max_duration_s: int
+    info: VideoInfo,
+    kind: MediaKind,
+    limit_bytes: int,
+    max_duration_s: int,
+    clip: Clip | None = None,
 ) -> DownloadPlan:
-    """Choose download settings that should fit `limit_bytes`, or raise a MediaError."""
+    """Choose download settings that should fit `limit_bytes`, or raise a MediaError.
+
+    With a clip, the duration cap and size estimates apply to the clip length.
+    """
     if info.is_live:
         raise UnsupportedMediaError("Live streams can't be downloaded.")
     if info.is_playlist:
@@ -59,20 +69,32 @@ def plan_download(
         raise UnsupportedMediaError(
             "I couldn't tell how long that video is, so I won't download it."
         )
-    if duration > max_duration_s:
-        raise UnsupportedMediaError(
-            f"That video is too long (max {format_duration(max_duration_s)})."
-        )
+    if clip is None:
+        if duration > max_duration_s:
+            raise UnsupportedMediaError(
+                f"That video is too long (max {format_duration(max_duration_s)})."
+            )
+    else:
+        clip = resolve_clip(clip, duration)
+        assert clip.end_s is not None
+        clip_length = clip.end_s - clip.start_s
+        if clip_length > max_duration_s:
+            raise UnsupportedMediaError(
+                f"That clip is too long (max {format_duration(max_duration_s)})."
+            )
+        duration = math.ceil(clip_length)
 
     if kind == "mp3":
         for kbps in AUDIO_BITRATES_KBPS:
             if estimated_size_bytes(duration, kbps) <= limit_bytes:
-                return DownloadPlan(kind=kind, limit_bytes=limit_bytes, audio_bitrate_kbps=kbps)
+                return DownloadPlan(
+                    kind=kind, limit_bytes=limit_bytes, audio_bitrate_kbps=kbps, clip=clip
+                )
         raise TooLargeError("That audio is too long to fit this server's upload limit.")
 
     if estimated_size_bytes(duration, MIN_240P_BITRATE_KBPS) > limit_bytes:
         raise TooLargeError("That video is too long to fit this server's upload limit.")
-    return DownloadPlan(kind=kind, limit_bytes=limit_bytes, height_ladder=HEIGHT_LADDER)
+    return DownloadPlan(kind=kind, limit_bytes=limit_bytes, height_ladder=HEIGHT_LADDER, clip=clip)
 
 
 def format_selector(plan: DownloadPlan, height: int) -> str:

@@ -1,9 +1,11 @@
 import datetime
 from dataclasses import replace
 
+import discord
 import pytest
 
-from ninja_bot.media.embed import FIELD_VALUE_LIMIT, TITLE_LIMIT, build_embed
+from ninja_bot.media.clip import Clip
+from ninja_bot.media.embed import FIELD_VALUE_LIMIT, TITLE_LIMIT, build_embed, format_clip
 from ninja_bot.media.models import MediaKind, VideoInfo
 
 FULL = VideoInfo(
@@ -78,3 +80,40 @@ def test_footer_shows_kind(kind: MediaKind, footer: str) -> None:
 def test_zero_views_are_shown() -> None:
     embed = build_embed(replace(FULL, view_count=0), "mp4")
     assert ("Views", "0") in [(f.name, f.value) for f in embed.fields]
+
+
+def _fields(embed: discord.Embed) -> list[tuple[str | None, str | None]]:
+    return [(f.name, f.value) for f in embed.fields]
+
+
+@pytest.mark.parametrize("kind", ["mp3", "mp4"])
+def test_clip_field_whole_seconds(kind: MediaKind) -> None:
+    embed = build_embed(FULL, kind, Clip(90, 165))
+    assert _fields(embed) == [
+        ("Uploader", "Someone"),
+        ("Duration", "1:02:05"),
+        ("Clip", "1:30 → 2:45 (1:15)"),
+        ("Views", "1,234,567"),
+        ("Uploaded", "2024-01-31"),
+    ]
+    assert embed.footer.text == kind.upper()
+
+
+def test_clip_field_fractional() -> None:
+    embed = build_embed(FULL, "mp4", Clip(90.5, 3725))
+    assert ("Clip", "1:30.5 → 1:02:05 (1:00:34.5)") in _fields(embed)
+
+
+def test_clip_field_shown_without_known_duration() -> None:
+    embed = build_embed(MINIMAL, "mp3", Clip(0, 10))
+    assert _fields(embed) == [("Clip", "0:00 → 0:10 (0:10)")]
+
+
+@pytest.mark.parametrize("kind", ["mp3", "mp4"])
+def test_no_clip_embed_unchanged(kind: MediaKind) -> None:
+    assert _fields(build_embed(FULL, kind, None)) == _fields(build_embed(FULL, kind))
+    assert all(name != "Clip" for name, _ in _fields(build_embed(FULL, kind)))
+
+
+def test_format_clip_open_end() -> None:
+    assert format_clip(Clip(90, None)) == "1:30 → end"
