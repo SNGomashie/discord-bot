@@ -9,7 +9,7 @@ from .config import Config, load_config
 
 log = logging.getLogger("ninja_bot")
 
-EXTENSIONS = ["ninja_bot.cogs.core"]
+EXTENSIONS = ["ninja_bot.cogs.core", "ninja_bot.cogs.media"]
 
 
 class NinjaBot(commands.Bot):

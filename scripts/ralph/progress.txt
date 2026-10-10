@@ -7,6 +7,7 @@
 - DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size.
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
+- Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 
 ## 2026-10-10 — US-001 Dependencies, config and infrastructure
@@ -35,3 +36,10 @@
 - download walks the mp4 height ladder (mp3: single attempt), checks real file size vs plan.limit_bytes, removes only files it created between attempts (pre-existing workdir files are kept), raises TooLargeError when nothing fits. yt-dlp errors -> DownloadError with a friendly message (no internals); no output file -> DownloadError.
 - outtmpl is '%(title).100B.%(ext)s' in workdir with restrictfilenames so attachment names are safe.
 - Tests: tests/test_media_downloader.py (options for both kinds, fetch_info parse + error wrap, step-down, nothing fits, cleanup, no output).
+
+## 2026-10-10 — US-006 /download slash command (core flow)
+- src/ninja_bot/cogs/media.py: Media cog (injectable Downloader + max_duration_s), /download url format (Literal mp3|mp4 -> dropdown, default mp4). Logic in handle_download + pure helpers upload_limit(guild) and error_embed(exc, info, kind).
+- Flow: validate_url (ephemeral reply on failure, before defer) -> defer(thinking=True) -> fetch_info -> plan_download(guild.filesize_limit or 10 MiB) -> download into TemporaryDirectory -> followup with embed + file. MediaErrors reply with .message (embed added for TooLarge/Unsupported once info is known); other exceptions logged + generic message.
+- 'ninja_bot.cogs.media' added to EXTENSIONS; setup(bot) uses bot.config.max_duration_seconds.
+- Tests: tests/test_media_cog.py (fake Downloader + MagicMock interaction).
+- needs manual check in Discord test server (real download/upload, dropdown, embed rendering).
