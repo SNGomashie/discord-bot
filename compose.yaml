@@ -1,0 +1,22 @@
+# Dev sandbox for Ralph and running the dev bot.
+#   docker compose run --rm dev            # shell in the sandbox
+#   podman:  PODMAN_USERNS=keep-id podman compose run --rm dev
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:z                       # :z = SELinux relabel (Fedora)
+      - claude-config:/home/dev/.claude-config   # persists `claude` login, separate from host ~/.claude
+    environment:
+      GIT_AUTHOR_NAME: ralph
+      GIT_AUTHOR_EMAIL: ralph@localhost
+      GIT_COMMITTER_NAME: ralph
+      GIT_COMMITTER_EMAIL: ralph@localhost
+    stdin_open: true
+    tty: true
+
+volumes:
+  claude-config:
