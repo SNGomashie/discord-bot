@@ -40,3 +40,8 @@
 - `/download` gains optional `start`/`end` string options (describe text with example formats). `handle_download` calls `parse_clip` before deferring; invalid clip -> ephemeral reply, no semaphore/download. Clip passed to `plan_download`; success embed built with `plan.clip`.
 - Tests in tests/test_media_cog.py: params optional strings, no clip, start only, start+end, clip under cap on long video, end only / end<=start / garbage (ephemeral before defer), start beyond video (followup), clip too long (error embed without Clip field).
 - needs manual check in Discord test server (option UI, real clipped mp3/mp4 upload).
+
+## 2026-10-10 - US-006
+- README `/download` section documents `start`/`end`, accepted time formats, end-alone rejection, end clamping, 1s minimum, and that `MAX_DURATION_SECONDS`/size limit apply to the clip length. Manual checklist gained six clip cases.
+- CLAUDE.md architecture lists `media/clip.py`.
+- needs manual check in Discord test server (run the new checklist items).

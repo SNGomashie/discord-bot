@@ -64,7 +64,7 @@
       "title": "Show the clip in the embed",
       "description": "As a user, I want the embed to say which part of the video was posted.",
       "acceptanceCriteria": [
-        "`build_embed(info, kind, clip: Clip | None = None)` adds a `Clip` field when a clip is given, formatted like `1:30 \u2192 2:45 (1:15)` using `format_timestamp` (start, end, and clip length via `format_duration`/`format_timestamp`)",
+        "`build_embed(info, kind, clip: Clip | None = None)` adds a `Clip` field when a clip is given, formatted like `1:30 → 2:45 (1:15)` using `format_timestamp` (start, end, and clip length via `format_duration`/`format_timestamp`)",
         "The existing Duration field still shows the full video length; without a clip the embed is unchanged",
         "The field respects the 1024-character limit helpers already in `embed.py`",
         "Unit tests: embed with a clip (whole seconds and fractional), without a clip (unchanged), and both formats",
@@ -106,7 +106,7 @@
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": ""
     }
   ]
