@@ -12,6 +12,8 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/bot.py`: `NinjaBot`, loads extensions, syncs slash commands to `GUILD_ID` in dev.
 - `src/ninja_bot/config.py`: env-based config (`load_config` takes an optional dict for tests).
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
+- `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + cooldown).
+- `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
 - `tests/`: pytest (asyncio_mode=auto).
 
 ## Conventions

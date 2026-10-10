@@ -51,3 +51,8 @@
 - cog_app_command_error: CommandOnCooldown -> ephemeral cooldown_message(retry_after) (rounded up); other errors logged + ephemeral generic message (followup if the response is already done).
 - Tests in tests/test_media_cog.py: concurrent requests serialize (BlockingDownloader with asyncio events), semaphore released after errors, cooldown check per user, cooldown/other error handler replies.
 - needs manual check in Discord test server (cooldown reply, two users downloading at once).
+
+## 2026-10-10 — US-008 Documentation
+- CLAUDE.md architecture lists cogs/media.py and src/ninja_bot/media/ (models, planning, embed, downloader).
+- README.md: /download section (usage, limits, MAX_DURATION_SECONDS, cooldown/concurrency), ffmpeg requirement (`apt install ffmpeg` on prod LXC), yt-dlp upkeep (`uv lock --upgrade-package yt-dlp`), manual test checklist.
+- needs manual check in Discord test server: run the README checklist.
