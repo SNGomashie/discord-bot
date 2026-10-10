@@ -4,6 +4,7 @@
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
 - yt-dlp has no type stubs; mypy override for `yt_dlp` / `yt_dlp.*` is in pyproject.toml.
 - Media errors: subclass MediaError and set `default_message`; `.message` is the user-facing text (safe to send to Discord).
+- DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 
 ## 2026-10-10 — US-001 Dependencies, config and infrastructure
@@ -16,3 +17,8 @@
 - New package src/ninja_bot/media/: models.py (MediaKind, VideoInfo, parse_info, format_duration, MediaError + subclasses), planning.py (validate_url).
 - parse_info tolerates missing/odd values: title -> "Untitled", webpage_url falls back to original_url then "", float durations -> int, bad upload_date -> None.
 - Tests: tests/test_media_models.py, tests/test_media_planning.py.
+
+## 2026-10-10 — US-003 Download planning that fits the upload limit
+- planning.py: DownloadPlan, plan_download (live/playlist/unknown/too-long -> UnsupportedMediaError; mp3 bitrate from 192/128/96/64; mp4 ladder 1080..240), estimated_size_bytes, format_selector.
+- MIN_240P_BITRATE_KBPS = 200 (deliberately optimistic) gates mp4 TooLargeError up front.
+- Tests added to tests/test_media_planning.py.
