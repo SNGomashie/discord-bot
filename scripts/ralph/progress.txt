@@ -1,4 +1,4 @@
-# Ralph progress log — started 2026-10-10 (feature: download-hardening; patterns carried over)
+# Ralph progress log — started 2026-10-10 (feature: cs2-scoreboard; patterns carried over)
 
 ## Codebase Patterns
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
@@ -21,52 +21,4 @@
 - /download queue: `_wait_for_slot` edits the original response to QUEUED_MESSAGE when the semaphore is held and waits up to `QUEUE_TIMEOUT_SECONDS` (module constant; tests monkeypatch `ninja_bot.cogs.media.QUEUE_TIMEOUT_SECONDS`). handle_download releases the semaphore itself (no `async with`). Every send/edit on the deferred path goes through `_send_safely` (logs + swallows discord.HTTPException, returns success). Fake interactions need `edit_original_response = AsyncMock()`.
 - Disk work stays off the event loop: `_download_deferred` uses `asyncio.to_thread(tempfile.mkdtemp)` + `to_thread(shutil.rmtree, ignore_errors=True)` in `finally`; downloader filesystem helpers (`_snapshot`, `_find_output`, `_file_size`, `_remove_new_files`, `_unexpected_suffixes`) are sync and called via `to_thread`. Tests verify by monkeypatching `asyncio.to_thread` with a recorder (`ThreadRecorder` in test_media_cog.py).
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
-
-## 2026-10-10 - US-001
-- `format_selector` omits the filesize/filesize_approx filters when `plan.clip` is set; unclipped output unchanged. Docstring explains why.
-- Files: src/ninja_bot/media/planning.py, tests/test_media_planning.py, tests/test_media_downloader.py
-- Learnings: `test_build_options_with_clip` compared clipped vs unclipped options minus clip keys; "format" now legitimately differs for mp4 clips.
-
-## 2026-10-10 - US-002
-- `parse_timestamp` rejects trimmed input over `MAX_TIMESTAMP_LENGTH` (32) before conversion; regexes are ASCII-only so Unicode digits give InvalidClipError. `/download` start/end are `app_commands.Range[str, 0, 32] | None`.
-- Files: src/ninja_bot/media/clip.py, src/ninja_bot/cogs/media.py, tests/test_media_clip.py, tests/test_media_cog.py
-- Learnings: discord.py's CommandParameter has no `max_length` attribute; check `to_dict()["max_length"]`.
-- Needs manual check: Discord client enforces the 32-char limit on start/end.
-
-## 2026-10-10 - US-003
-- `VideoInfo.duration_exact_s` (float | None, from yt-dlp `duration`); `resolve_clip` takes a float duration; `plan_download` passes `duration_exact_s` or falls back to `float(duration_s)`. Error message still shows the truncated whole-second duration.
-- Also hardened `_opt_int`: NaN/inf durations no longer crash `parse_info` (found while testing).
-- Files: src/ninja_bot/media/models.py, clip.py, planning.py; tests/test_media_models.py, test_media_clip.py, test_media_planning.py
-- Learnings: a 100.9 s video with start=100 now gives "at least 1 second", not "past the end".
-
-## 2026-10-10 - US-004
-- `VideoInfo.video_heights` (distinct positive int heights of video formats, ascending) filled by `parse_info`; `plan_download` uses new `height_ladder(available)` so mp4 plans only walk distinct real heights (only-large videos get their smallest height).
-- Files: src/ninja_bot/media/models.py, planning.py; tests/test_media_models.py, test_media_planning.py
-- Learnings: the PRD example "144/360/480 -> (480, 360)" is superseded by its own rule: rung 240 maps to 144, giving (480, 360, 144). Heights below the lowest reachable mapping are never used (e.g. 100/200 -> (200,)).
-
-## 2026-10-10 - US-005
-- mp4 plans add an `FFmpegVideoRemuxer` postprocessor so webm/mkv sources become mp4; mp3 options unchanged.
-- `download` raises a clear DownloadError (and logs the extensions at INFO) when only non-matching media files appear; the "produced no file" message stays for truly empty results.
-- Files: src/ninja_bot/media/downloader.py, tests/test_media_downloader.py
-- Needs manual check: a real webm-only source is remuxed to mp4 (requires ffmpeg).
-
-## 2026-10-10 - US-006
-- New `UserCooldown` (try_acquire/refund, injectable clock). Removed the `@app_commands.checks.cooldown` decorator and the `CommandOnCooldown` branch; `handle_download` validates first, then takes the cooldown, and refunds it when no file was posted (MediaError, unexpected exception, failed send, cancellation).
-- Files: src/ninja_bot/media/cooldown.py, src/ninja_bot/cogs/media.py, tests/test_media_cog.py
-- Learnings: `_download_deferred` now returns whether the file was posted; the refund lives in handle_download's `finally` so it also covers defer failures.
-
-## 2026-10-10 - US-007
-- Queued requests get a "queued behind another download" edit; the semaphore wait is bounded by `QUEUE_TIMEOUT_SECONDS = 300` (timeout → BUSY_MESSAGE followup, cooldown refunded, no download). Semaphore is released in a `finally`. All followup/edit calls on the deferred path use `_send_safely`, so an HTTPException (expired token) is logged and swallowed; a failed file post counts as not posted (cooldown refunded).
-- Files: src/ninja_bot/cogs/media.py, tests/test_media_cog.py
-- Learnings: `discord.HTTPException(MagicMock(status=401, reason="x"), "msg")` builds a test exception without a real response.
-- Needs manual check: the queued message appears in Discord while another download runs.
-
-## 2026-10-10 - US-008
-- `_download_deferred` creates the work dir with `tempfile.mkdtemp` and removes it with `shutil.rmtree(ignore_errors=True)`, both via `asyncio.to_thread` (removal in `finally`). Downloader `_snapshot`/`_find_output`/`_remove_new_files`/`_unexpected_suffixes` and the output size check (new `_file_size`) run via `asyncio.to_thread`.
-- Files: src/ninja_bot/cogs/media.py, src/ninja_bot/media/downloader.py, tests/test_media_cog.py, tests/test_media_downloader.py
-- Learnings: the work dir is now created before `fetch_info`, so it's also removed when info fetching fails; `_remove_new_files`'s `keep` is passed positionally through to_thread.
-
-## 2026-10-10 - US-009
-- Dockerfile.dev copies deno from the pinned `denoland/deno:bin-2.9.7` tag. README documents the pin (bump deliberately with yt-dlp), clips skipping the size filter, the queued message + 5-minute timeout, and the cooldown starting only after a valid request. CLAUDE.md yt-dlp gotchas mention the mp4 remux, distinct-height ladder and the deno pin.
-- Files: Dockerfile.dev, README.md, CLAUDE.md
-- needs docker rebuild check for pinned deno tag
+- CS2 feature (tasks/prd-cs2-scoreboard.md): Leetify fixtures in tests/fixtures/leetify/ are hand-written from the public swagger (https://api-public.cs-prod.leetify.com/swagger.json), not captured from the real API; field names/units are unverified until scripts/capture_leetify.py is run by the owner. Never read .env or print LEETIFY_API_KEY.
