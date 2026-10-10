@@ -26,3 +26,6 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 
 ## Environment
 Dev work and Ralph run in the container from `Dockerfile.dev` (Debian 13, Python 3.13, uv, claude). The venv lives outside the repo (`UV_PROJECT_ENVIRONMENT=/home/dev/.venv`), so the host `.venv` is never shared.
+
+## Commits
+Conventional Commits (`type: subject`), small and focused. Story ID goes in the body.
