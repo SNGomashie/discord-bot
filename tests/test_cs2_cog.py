@@ -131,6 +131,12 @@ def reply(interaction: MagicMock) -> tuple[tuple[Any, ...], dict[str, Any]]:
     return args, kwargs
 
 
+def followup_reply(interaction: MagicMock) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    interaction.followup.send.assert_awaited_once()
+    args, kwargs = interaction.followup.send.call_args
+    return args, kwargs
+
+
 def make_cog(
     stats: FakeStats | None = None,
     store: MemoryLinkStore | None = None,
@@ -148,10 +154,39 @@ async def test_link_success_stores_and_replies_ephemeral() -> None:
     await Cs2.link.callback(cog, interaction, STEAM_ID)
     assert stats.profile_calls == [STEAM_ID]
     assert store.links == {USER_ID: STEAM_ID}
-    args, kwargs = reply(interaction)
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    interaction.response.send_message.assert_not_awaited()
+    args, kwargs = followup_reply(interaction)
     assert args == (linked_message("Ninja"),)
     assert kwargs == {"ephemeral": True}
     assert "Ninja" in args[0]
+
+
+async def test_link_defers_before_profile_lookup() -> None:
+    calls: list[str] = []
+    stats = FakeStats()
+    original = stats.get_profile
+
+    async def get_profile(steam64_id: str) -> Profile:
+        calls.append("get_profile")
+        return await original(steam64_id)
+
+    stats.get_profile = get_profile  # type: ignore[method-assign]
+    cog, _, _ = make_cog(stats)
+    interaction = make_interaction()
+    interaction.response.defer = AsyncMock(side_effect=lambda **_: calls.append("defer"))
+    await cog.handle_link(interaction, STEAM_ID)
+    assert calls == ["defer", "get_profile"]
+
+
+async def test_link_followup_failure_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
+    cog, _, store = make_cog()
+    interaction = make_interaction()
+    response = MagicMock(status=404, reason="Not Found")
+    interaction.followup.send = AsyncMock(side_effect=discord.NotFound(response, "expired"))
+    await cog.handle_link(interaction, STEAM_ID)
+    assert store.links == {USER_ID: STEAM_ID}
+    assert "Could not send CS2 response" in caplog.text
 
 
 async def test_link_accepts_profile_url() -> None:
@@ -170,7 +205,7 @@ async def test_link_without_name_falls_back_to_steam_id() -> None:
     cog, _, _ = make_cog(FakeStats(make_profile(name=None)))
     interaction = make_interaction()
     await cog.handle_link(interaction, STEAM_ID)
-    args, _ = reply(interaction)
+    args, _ = followup_reply(interaction)
     assert STEAM_ID in args[0]
 
 
@@ -192,17 +227,22 @@ async def test_link_invalid_id_is_ephemeral_and_skips_api(steam: str, message: s
     assert stats.profile_calls == []
     assert store.links == {}
     assert reply(interaction) == ((message,), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    interaction.followup.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
-    "error", [PlayerNotFoundError(), PrivateProfileError(), ApiError()], ids=type
+    "error",
+    [PlayerNotFoundError(), PrivateProfileError(), RateLimitedError(), ApiError()],
+    ids=type,
 )
 async def test_link_api_errors_are_ephemeral_and_not_stored(error: Cs2Error) -> None:
     cog, _, store = make_cog(FakeStats(error=error))
     interaction = make_interaction()
     await cog.handle_link(interaction, STEAM_ID)
     assert store.links == {}
-    assert reply(interaction) == ((error.message,), {"ephemeral": True})
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    assert followup_reply(interaction) == ((error.message,), {"ephemeral": True})
 
 
 async def test_link_unexpected_error_is_generic_and_logged(
@@ -212,7 +252,7 @@ async def test_link_unexpected_error_is_generic_and_logged(
     interaction = make_interaction()
     await cog.handle_link(interaction, STEAM_ID)
     assert store.links == {}
-    assert reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    assert followup_reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
     assert "Unexpected error linking" in caplog.text
 
 
@@ -263,6 +303,35 @@ async def test_cog_app_command_error_is_generic(
     send = interaction.followup.send if done else interaction.response.send_message
     send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE, ephemeral=True)
     assert "App command error in Cs2 cog" in caplog.text
+
+
+async def test_cog_app_command_error_uses_followup_after_link_defer() -> None:
+    cog, _, _ = make_cog()
+    interaction = make_interaction()
+    interaction.response.is_done = MagicMock(return_value=False)
+
+    async def defer(**_: Any) -> None:
+        interaction.response.is_done.return_value = True
+
+    interaction.response.defer = AsyncMock(side_effect=defer)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await cog.cog_app_command_error(interaction, app_commands.AppCommandError("x"))
+    interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE, ephemeral=True)
+    interaction.response.send_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("done", [False, True])
+async def test_cog_app_command_error_send_failure_is_swallowed(
+    done: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, _, _ = make_cog()
+    interaction = make_interaction()
+    interaction.response.is_done = MagicMock(return_value=done)
+    error = discord.HTTPException(MagicMock(status=500, reason="boom"), "boom")
+    interaction.followup.send = AsyncMock(side_effect=error)
+    interaction.response.send_message = AsyncMock(side_effect=error)
+    await cog.cog_app_command_error(interaction, app_commands.AppCommandError("x"))
+    assert "Could not send CS2 response" in caplog.text
 
 
 def test_extension_registered() -> None:

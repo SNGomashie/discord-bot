@@ -123,17 +123,24 @@ class Cs2(commands.Cog):
     async def handle_link(self, interaction: discord.Interaction, steam: str) -> None:
         try:
             steam64_id = parse_steam_id(steam)
-            profile = await self.stats.get_profile(steam64_id)
-            await self.links.set(interaction.user.id, steam64_id)
         except Cs2Error as exc:
             await interaction.response.send_message(exc.message, ephemeral=True)
             return
+
+        # Leetify can be slow; defer so Discord doesn't time out the interaction.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            profile = await self.stats.get_profile(steam64_id)
+            await self.links.set(interaction.user.id, steam64_id)
+        except Cs2Error as exc:
+            await _send_safely(interaction.followup.send(exc.message, ephemeral=True))
+            return
         except Exception:
             log.exception("Unexpected error linking a Steam account")
-            await interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE, ephemeral=True))
             return
         name = profile.name or steam64_id
-        await interaction.response.send_message(linked_message(name), ephemeral=True)
+        await _send_safely(interaction.followup.send(linked_message(name), ephemeral=True))
 
     async def handle_unlink(self, interaction: discord.Interaction) -> None:
         try:
@@ -264,9 +271,9 @@ class Cs2(commands.Cog):
         log.error("App command error in Cs2 cog", exc_info=error)
         message = GENERIC_ERROR_MESSAGE
         if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
+            await _send_safely(interaction.followup.send(message, ephemeral=True))
         else:
-            await interaction.response.send_message(message, ephemeral=True)
+            await _send_safely(interaction.response.send_message(message, ephemeral=True))
 
 
 async def setup(bot: NinjaBot) -> None:
