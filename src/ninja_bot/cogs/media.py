@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import shutil
 import tempfile
 from collections.abc import Awaitable
 from pathlib import Path
@@ -159,18 +160,19 @@ class Media(commands.Cog):
     ) -> bool:
         """Fetch, download and post the file; return whether the file was posted."""
         info: VideoInfo | None = None
+        # mkdtemp/rmtree run in a thread: removing a large file can stall the heartbeat.
+        tmp = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="ninja-dl-"))
         try:
-            with tempfile.TemporaryDirectory(prefix="ninja-dl-") as tmp:
-                info = await self.downloader.fetch_info(clean_url)
-                plan = plan_download(
-                    info, kind, upload_limit(interaction.guild), self.max_duration_s, clip=clip
+            info = await self.downloader.fetch_info(clean_url)
+            plan = plan_download(
+                info, kind, upload_limit(interaction.guild), self.max_duration_s, clip=clip
+            )
+            path = await self.downloader.download(clean_url, plan, tmp)
+            return await _send_safely(
+                interaction.followup.send(
+                    embed=build_embed(info, kind, plan.clip), file=discord.File(path)
                 )
-                path = await self.downloader.download(clean_url, plan, Path(tmp))
-                return await _send_safely(
-                    interaction.followup.send(
-                        embed=build_embed(info, kind, plan.clip), file=discord.File(path)
-                    )
-                )
+            )
         except MediaError as exc:
             embed = error_embed(exc, info, kind)
             if embed is None:
@@ -180,6 +182,8 @@ class Media(commands.Cog):
         except Exception:
             log.exception("Unexpected error downloading %s", clean_url)
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
+        finally:
+            await asyncio.to_thread(shutil.rmtree, tmp, ignore_errors=True)
         return False
 
     async def cog_app_command_error(

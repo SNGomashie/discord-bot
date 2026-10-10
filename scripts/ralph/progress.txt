@@ -19,6 +19,7 @@
 - mp4 ladder: `height_ladder(info.video_heights)` in planning.py maps HEIGHT_LADDER rungs to the largest available height <= rung, deduped; `()` heights = full HEIGHT_LADDER. `VideoInfo.video_heights` comes from `formats[*].height` where vcodec != "none".
 - mp4 options always include `FFmpegVideoRemuxer` (`preferedformat: "mp4"`, yt-dlp's spelling). If no `.{kind}` file appears but other new media files (`_MEDIA_SUFFIXES`) do, `download` logs them and raises DownloadError naming the wrong extension; `.part` files don't count.
 - /download queue: `_wait_for_slot` edits the original response to QUEUED_MESSAGE when the semaphore is held and waits up to `QUEUE_TIMEOUT_SECONDS` (module constant; tests monkeypatch `ninja_bot.cogs.media.QUEUE_TIMEOUT_SECONDS`). handle_download releases the semaphore itself (no `async with`). Every send/edit on the deferred path goes through `_send_safely` (logs + swallows discord.HTTPException, returns success). Fake interactions need `edit_original_response = AsyncMock()`.
+- Disk work stays off the event loop: `_download_deferred` uses `asyncio.to_thread(tempfile.mkdtemp)` + `to_thread(shutil.rmtree, ignore_errors=True)` in `finally`; downloader filesystem helpers (`_snapshot`, `_find_output`, `_file_size`, `_remove_new_files`, `_unexpected_suffixes`) are sync and called via `to_thread`. Tests verify by monkeypatching `asyncio.to_thread` with a recorder (`ThreadRecorder` in test_media_cog.py).
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -59,3 +60,8 @@
 - Files: src/ninja_bot/cogs/media.py, tests/test_media_cog.py
 - Learnings: `discord.HTTPException(MagicMock(status=401, reason="x"), "msg")` builds a test exception without a real response.
 - Needs manual check: the queued message appears in Discord while another download runs.
+
+## 2026-10-10 - US-008
+- `_download_deferred` creates the work dir with `tempfile.mkdtemp` and removes it with `shutil.rmtree(ignore_errors=True)`, both via `asyncio.to_thread` (removal in `finally`). Downloader `_snapshot`/`_find_output`/`_remove_new_files`/`_unexpected_suffixes` and the output size check (new `_file_size`) run via `asyncio.to_thread`.
+- Files: src/ninja_bot/cogs/media.py, src/ninja_bot/media/downloader.py, tests/test_media_cog.py, tests/test_media_downloader.py
+- Learnings: the work dir is now created before `fetch_info`, so it's also removed when info fetching fails; `_remove_new_files`'s `keep` is passed positionally through to_thread.

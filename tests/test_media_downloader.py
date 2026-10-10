@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -250,3 +251,22 @@ async def test_download_mp4_output_succeeds(tmp_path: Path) -> None:
     path = await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
     assert path == tmp_path / "video.mp4"
     assert files(tmp_path) == [path]
+
+
+async def test_download_disk_work_runs_in_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_to_thread = asyncio.to_thread
+    names: list[str] = []
+
+    async def recording_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        names.append(getattr(func, "__name__", type(func).__name__))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recording_to_thread)
+    run = StubRun([5000, 10])
+
+    await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+
+    rung = ["_snapshot", "StubRun", "_find_output", "_file_size", "_remove_new_files"]
+    assert names == rung * 2

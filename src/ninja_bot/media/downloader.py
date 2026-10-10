@@ -118,22 +118,29 @@ class YtDlpDownloader:
         """Download, stepping down the mp4 height ladder until the file fits the limit."""
         heights: tuple[int | None, ...] = plan.height_ladder if plan.kind == "mp4" else (None,)
         for height in heights:
-            before = _snapshot(workdir)
+            before = await asyncio.to_thread(_snapshot, workdir)
             options = build_ydl_options(plan, height, workdir)
             try:
                 await asyncio.to_thread(self._run, url, options)
             except Exception as exc:
-                _remove_new_files(workdir, before)
+                await asyncio.to_thread(_remove_new_files, workdir, before)
                 if self._is_ytdlp_error(exc):
                     log.info("yt-dlp download failed for %s at %s: %s", url, height, exc)
                     raise DownloadError() from exc
                 raise
-            output = _find_output(workdir, before, plan)
-            if output is not None and output.stat().st_size <= plan.limit_bytes:
-                _remove_new_files(workdir, before, keep=output)
+            output = await asyncio.to_thread(_find_output, workdir, before, plan)
+            if (
+                output is not None
+                and await asyncio.to_thread(_file_size, output) <= plan.limit_bytes
+            ):
+                await asyncio.to_thread(_remove_new_files, workdir, before, output)
                 return output
-            unexpected = _unexpected_suffixes(workdir, before) if output is None else []
-            _remove_new_files(workdir, before)
+            unexpected = (
+                await asyncio.to_thread(_unexpected_suffixes, workdir, before)
+                if output is None
+                else []
+            )
+            await asyncio.to_thread(_remove_new_files, workdir, before)
             if output is None:
                 if unexpected:
                     log.info("%s produced %s instead of .%s", url, ", ".join(unexpected), plan.kind)
@@ -162,6 +169,10 @@ def _remove_new_files(workdir: Path, before: set[Path], keep: Path | None = None
     for path in workdir.iterdir():
         if path not in before and path != keep and path.is_file():
             path.unlink(missing_ok=True)
+
+
+def _file_size(path: Path) -> int:
+    return path.stat().st_size
 
 
 def _snapshot(workdir: Path) -> set[Path]:

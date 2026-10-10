@@ -694,3 +694,70 @@ async def test_clip_too_long_error_embed_has_no_clip() -> None:
 
 def test_invalid_clip_error_is_media_error() -> None:
     assert issubclass(InvalidClipError, MediaError)
+
+
+class ThreadRecorder:
+    """Wraps asyncio.to_thread, recording each function name and result."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+        self._real = asyncio.to_thread
+
+    async def __call__(self, func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        result = await self._real(func, *args, **kwargs)
+        self.calls.append((func.__name__, result))
+        return result
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+    def mkdtemp_paths(self) -> list[Path]:
+        return [Path(result) for name, result in self.calls if name == "mkdtemp"]
+
+
+@pytest.fixture
+def threads(monkeypatch: pytest.MonkeyPatch) -> ThreadRecorder:
+    recorder = ThreadRecorder()
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    return recorder
+
+
+async def test_workdir_created_and_removed_in_thread(threads: ThreadRecorder) -> None:
+    downloader = FakeDownloader()
+
+    await Media(downloader, 3600).handle_download(make_interaction(), URL, "mp4")
+
+    assert threads.names() == ["mkdtemp", "rmtree"]
+    (workdir,) = threads.mkdtemp_paths()
+    assert workdir.name.startswith("ninja-dl-")
+    assert downloader.workdirs == [workdir]
+    assert not exists(workdir)
+
+
+@pytest.mark.parametrize(
+    "downloader",
+    [
+        FakeDownloader(info_error=DownloadError()),
+        FakeDownloader(download_error=TooLargeError()),
+        FakeDownloader(info_error=RuntimeError("boom")),
+        FakeDownloader(download_error=RuntimeError("boom")),
+    ],
+)
+async def test_workdir_removed_on_every_failure(
+    threads: ThreadRecorder, downloader: FakeDownloader
+) -> None:
+    await Media(downloader, 3600).handle_download(make_interaction(), URL, "mp4")
+
+    assert threads.names()[-1] == "rmtree"
+    (workdir,) = threads.mkdtemp_paths()
+    assert not exists(workdir)
+
+
+async def test_workdir_removed_when_post_fails(threads: ThreadRecorder) -> None:
+    interaction = make_interaction()
+    interaction.followup.send.side_effect = http_exception()
+
+    await Media(FakeDownloader(), 3600).handle_download(interaction, URL, "mp4")
+
+    (workdir,) = threads.mkdtemp_paths()
+    assert not exists(workdir)
