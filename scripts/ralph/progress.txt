@@ -1,4 +1,4 @@
-# Ralph progress log — started 2026-10-10
+# Ralph progress log — started 2026-10-10 (feature: download-clip; patterns carried over from download-command)
 
 ## Codebase Patterns
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
@@ -10,49 +10,4 @@
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
 - App command checks (e.g. cooldown) are bypassed by `.callback`; test them via `Command.checks[i](interaction)` — the cooldown check needs a real `interaction.created_at` (discord.utils.utcnow()). Cooldown state lives on the class-level command, so use distinct user ids per test.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
-
-## 2026-10-10 — US-001 Dependencies, config and infrastructure
-- Added yt-dlp runtime dep (pyproject + uv.lock), mypy override, ffmpeg in Dockerfile.dev.
-- Config.max_duration_seconds from MAX_DURATION_SECONDS (default 3600; non-int / <=0 -> ConfigError); documented in .env.example.
-- Tests in tests/test_config.py: default, custom, invalid (abc, 1.5, 0, -10).
-- Files: pyproject.toml, uv.lock, Dockerfile.dev, .env.example, src/ninja_bot/config.py, tests/test_config.py
-
-## 2026-10-10 — US-002 Media models and URL validation
-- New package src/ninja_bot/media/: models.py (MediaKind, VideoInfo, parse_info, format_duration, MediaError + subclasses), planning.py (validate_url).
-- parse_info tolerates missing/odd values: title -> "Untitled", webpage_url falls back to original_url then "", float durations -> int, bad upload_date -> None.
-- Tests: tests/test_media_models.py, tests/test_media_planning.py.
-
-## 2026-10-10 — US-003 Download planning that fits the upload limit
-- planning.py: DownloadPlan, plan_download (live/playlist/unknown/too-long -> UnsupportedMediaError; mp3 bitrate from 192/128/96/64; mp4 ladder 1080..240), estimated_size_bytes, format_selector.
-- MIN_240P_BITRATE_KBPS = 200 (deliberately optimistic) gates mp4 TooLargeError up front.
-- Tests added to tests/test_media_planning.py.
-
-## 2026-10-10 — US-004 Info embed builder
-- src/ninja_bot/media/embed.py: build_embed(info, kind) -> discord.Embed. Title truncated to 256 (ellipsis), linked to webpage_url (no link when empty); inline fields Uploader/Duration/Views/Uploaded only when data present (0 views still shown); thumbnail only when present; footer 'MP3'/'MP4'. Field values capped at 1024.
-- Tests: tests/test_media_embed.py (full, minimal, empty url, long title, title at limit, long uploader, both kinds, zero views).
-- Learning: build VideoInfo test variants with dataclasses.replace(FULL, ...) instead of **kwargs helpers — keeps mypy strict happy without type: ignore.
-
-## 2026-10-10 — US-005 yt-dlp downloader wrapper
-- src/ninja_bot/media/downloader.py: Downloader Protocol, build_ydl_options(plan, height, workdir), YtDlpDownloader (fetch_info / download via asyncio.to_thread).
-- download walks the mp4 height ladder (mp3: single attempt), checks real file size vs plan.limit_bytes, removes only files it created between attempts (pre-existing workdir files are kept), raises TooLargeError when nothing fits. yt-dlp errors -> DownloadError with a friendly message (no internals); no output file -> DownloadError.
-- outtmpl is '%(title).100B.%(ext)s' in workdir with restrictfilenames so attachment names are safe.
-- Tests: tests/test_media_downloader.py (options for both kinds, fetch_info parse + error wrap, step-down, nothing fits, cleanup, no output).
-
-## 2026-10-10 — US-006 /download slash command (core flow)
-- src/ninja_bot/cogs/media.py: Media cog (injectable Downloader + max_duration_s), /download url format (Literal mp3|mp4 -> dropdown, default mp4). Logic in handle_download + pure helpers upload_limit(guild) and error_embed(exc, info, kind).
-- Flow: validate_url (ephemeral reply on failure, before defer) -> defer(thinking=True) -> fetch_info -> plan_download(guild.filesize_limit or 10 MiB) -> download into TemporaryDirectory -> followup with embed + file. MediaErrors reply with .message (embed added for TooLarge/Unsupported once info is known); other exceptions logged + generic message.
-- 'ninja_bot.cogs.media' added to EXTENSIONS; setup(bot) uses bot.config.max_duration_seconds.
-- Tests: tests/test_media_cog.py (fake Downloader + MagicMock interaction).
-- needs manual check in Discord test server (real download/upload, dropdown, embed rendering).
-
-## 2026-10-10 — US-007 /download concurrency limit and cooldown
-- cogs/media.py: Media.semaphore = asyncio.Semaphore(1), acquired after defer (invalid URLs never wait) around _download_deferred; released in every outcome via `async with`.
-- /download has @app_commands.checks.cooldown(1, COOLDOWN_SECONDS=30) (default key = user id).
-- cog_app_command_error: CommandOnCooldown -> ephemeral cooldown_message(retry_after) (rounded up); other errors logged + ephemeral generic message (followup if the response is already done).
-- Tests in tests/test_media_cog.py: concurrent requests serialize (BlockingDownloader with asyncio events), semaphore released after errors, cooldown check per user, cooldown/other error handler replies.
-- needs manual check in Discord test server (cooldown reply, two users downloading at once).
-
-## 2026-10-10 — US-008 Documentation
-- CLAUDE.md architecture lists cogs/media.py and src/ninja_bot/media/ (models, planning, embed, downloader).
-- README.md: /download section (usage, limits, MAX_DURATION_SECONDS, cooldown/concurrency), ffmpeg requirement (`apt install ffmpeg` on prod LXC), yt-dlp upkeep (`uv lock --upgrade-package yt-dlp`), manual test checklist.
-- needs manual check in Discord test server: run the README checklist.
+- YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
