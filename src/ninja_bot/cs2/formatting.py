@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections.abc import Sequence
 
 import discord
@@ -28,7 +29,8 @@ BAR_EMPTY = "░"
 _CODE_START = "```\n"
 _CODE_END = "\n```"
 _UNESCAPED_LINK_CHAR = re.compile(r"(?<!\\)((?:\\\\)*)([\[\]()])")
-_ROW_FORMAT = "{star}{name:<12} {kda:>8} {adr:>4} {hs:>4} {rating:>6}"
+# `name` is padded to `NAME_WIDTH` display columns by `_pad_name`, not by the format.
+_ROW_FORMAT = "{star}{name} {kda:>8} {adr:>4} {hs:>4} {rating:>6}"
 
 
 def format_rating(value: float | None) -> str:
@@ -63,7 +65,7 @@ def format_team_table(players: Sequence[PlayerMatchStats], max_chars: int = 1000
     ValueError when not even the header fits.
     """
     header = _ROW_FORMAT.format(
-        star=" ", name="Player", kda="K/D/A", adr="ADR", hs="HS%", rating="Rating"
+        star=" ", name=_pad_name("Player"), kda="K/D/A", adr="ADR", hs="HS%", rating="Rating"
     )
     if not players:
         return _code_block([header, NO_PLAYERS], max_chars)
@@ -91,14 +93,26 @@ def form_strip(recent: Sequence[RecentMatch]) -> str:
     return f"{emoji} avg {format_rating(sum(ratings) / len(ratings))}"
 
 
+def display_width(text: str) -> int:
+    """Monospace columns `text` takes: wide/fullwidth chars count 2, zero-width ones 0."""
+    return sum(_char_width(c) for c in text)
+
+
 def clean_name(name: str | None) -> str:
-    """A player name safe for a code block, truncated to `NAME_WIDTH` characters."""
+    """A player name safe for a code block, truncated to `NAME_WIDTH` display columns."""
     cleaned = "".join(c for c in name or "" if c != "`" and c.isprintable()).strip()
     if not cleaned:
         return "?"
-    if len(cleaned) > NAME_WIDTH:
-        return cleaned[: NAME_WIDTH - 1] + "…"
-    return cleaned
+    if display_width(cleaned) <= NAME_WIDTH:
+        return cleaned
+    kept: list[str] = []
+    width = 0
+    for c in cleaned:
+        width += _char_width(c)
+        if width > NAME_WIDTH - 1:
+            break
+        kept.append(c)
+    return "".join(kept) + "…"
 
 
 def escape_name(name: str | None) -> str:
@@ -122,12 +136,23 @@ def _row(player: PlayerMatchStats, starred: bool) -> str:
     kda = "/".join(_int(v) for v in (player.kills, player.deaths, player.assists))
     return _ROW_FORMAT.format(
         star=STAR if starred else " ",
-        name=clean_name(player.name),
+        name=_pad_name(clean_name(player.name)),
         kda=kda,
         adr=_int(player.adr),
         hs=_int(player.hs_percent),
         rating=format_rating(player.leetify_rating),
     )
+
+
+def _char_width(char: str) -> int:
+    if unicodedata.combining(char) or unicodedata.category(char) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def _pad_name(name: str) -> str:
+    """`name` padded with spaces to `NAME_WIDTH` display columns."""
+    return name + " " * max(NAME_WIDTH - display_width(name), 0)
 
 
 def _star_player(players: Sequence[PlayerMatchStats]) -> PlayerMatchStats | None:

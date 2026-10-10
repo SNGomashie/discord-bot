@@ -37,6 +37,7 @@
 - CS2 /profile (cogs/cs2.py, cs2/embed.py): `handle_scoreboard`/`handle_profile` share `_reply_lookup_error` (pre-defer ephemeral replies; logs "Unexpected error looking up a CS2 link") and `_run_with_cooldown(interaction, work)` (cooldown -> defer -> `work()` returning True if posted, refund otherwise). New stats commands: resolve the link, then pass a `_<name>_deferred` lambda. `build_profile_embed` fields: Ranks, Winrate, Matches (inline), Ratings (code block of `rating_bar`s; aim/positioning/utility out of `SCORE_MAX` 100, clutch/opening out of `SIGNED_RATING_MAX` 0.2, a unit guess), Recent form. `rating_bar` treats None/NaN/negatives as empty and clamps above max.
 - CS2 newest-first: use `newest_first(items)` from cs2/models.py (generic over anything with `finished_at: datetime | None`, returns a list, stable, undated last, no sentinel so it never compares aware vs naive). Don't write another sort.
 - CS2 /scoreboard fetches run concurrently via `Cs2._fetch_match_and_profile` (two tasks; await match then profile, so a match error wins; `finally` cancels both and `gather(..., return_exceptions=True)` drains them so nothing is left running or unretrieved). Concurrency tests use `GatedStats` (FakeStats + `asyncio.Event` started/gate per call) and `gated_cog` in tests/test_cs2_cog.py.
+- CS2 table widths: name column width is `NAME_WIDTH` in *display columns* (`display_width`: W/F = 2, Mn/Me/Cf/combining = 0). `_ROW_FORMAT` has no name width; `_pad_name` pads header and rows. Read `NAME_WIDTH` at call time (tests monkeypatch `formatting.NAME_WIDTH`).
 - CS2 names in embed text outside code blocks (award lines, field names, embed titles, cog messages) go through `escape_name` (cs2/formatting.py); names inside code blocks use `clean_name`. `escape_markdown` already doubles backslashes but only escapes *complete* `[x](y)` links, so `escape_name` escapes leftover `[ ] ( )` after it (odd backslash run = already escaped). Never pre-escape before `escape_markdown` (it would double your backslashes). Use `ignore_links=False` so URLs get the same treatment.
 
 ## 2026-10-10 - US-001
@@ -89,4 +90,11 @@
 - `StatsProvider` protocol gained `aclose()` (comment: wrappers must delegate it); `Cs2.cog_unload` calls it unconditionally (no isinstance check; `LeetifyClient` import stays for `setup`).
 - `FakeStats.aclose` counts `close_calls`; tests: unloading closes the provider exactly once, injected-fetch client close is a no-op and safe twice.
 - Files: src/ninja_bot/cs2/client.py, src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py, tests/test_cs2_client.py
+---
+
+## 2026-10-10 - US-009
+- `display_width` helper; `clean_name` truncates by display width (to NAME_WIDTH-1 columns + `…`, so a wide char that doesn't fit is dropped); `_pad_name` pads the header and every row by display width; `_ROW_FORMAT` no longer hardcodes 12.
+- Files: src/ninja_bot/cs2/formatting.py, tests/test_cs2_formatting.py (display width, CJK/emoji/combining truncation, equal row widths at NAME_WIDTH 8/12/16, 10 wide-name rows within FIELD_VALUE_LIMIT).
+- Learnings: emoji like 😀 are east-asian width W; `…` and `★` are ambiguous (A) and count as 1. Discord's mobile/desktop fonts may still render some emoji at other widths.
+- Needs manual check: `/scoreboard` with a CJK/emoji-named player looks aligned in Discord.
 ---
