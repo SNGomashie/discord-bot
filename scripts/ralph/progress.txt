@@ -12,6 +12,7 @@
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 - Clip times: `media/clip.py` parses/format timestamps; `InvalidClipError` messages are user-facing. `format_timestamp` (float, tenths) vs `format_duration` (int, models.py).
 - plan_download with a clip: `plan.clip` is always resolved (concrete `end_s`); size estimates use `math.ceil(clip length)` since `estimated_size_bytes` takes int seconds.
+- Clipped downloads: `build_ydl_options` adds `download_ranges` (yt_dlp.utils.download_range_func, imported lazily via `_download_ranges`) + `force_keyframes_at_cuts` only when `plan.clip` is set; it raises ValueError for an unresolved clip. The range callable can be invoked in tests as `fn({"duration": n}, None)` without network.
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
@@ -24,3 +25,8 @@
 - Added `resolve_clip(clip, duration_s)` to media/clip.py (start past end -> error with video length; None/overlong end clamped; < 1s -> error).
 - `DownloadPlan.clip` + `plan_download(..., clip=None)`: with a clip, the max-duration cap and all size estimates use the clip length (ceil to whole seconds); "That clip is too long" message. No-clip path unchanged.
 - Tests in tests/test_media_clip.py and tests/test_media_planning.py.
+
+## 2026-10-10 - US-003
+- `build_ydl_options` adds `download_ranges` + `force_keyframes_at_cuts: True` for clipped mp3/mp4 plans; no-clip options unchanged. Unresolved clip (end_s None) -> ValueError.
+- Tests in tests/test_media_downloader.py: options with/without clip for both kinds, range callable yields start/end, clipped mp4 ladder step-down + cleanup.
+- Real cut accuracy (ffmpeg re-encode at keyframes) needs manual check with a live download.
