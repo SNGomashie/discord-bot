@@ -8,6 +8,7 @@
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
+- App command checks (e.g. cooldown) are bypassed by `.callback`; test them via `Command.checks[i](interaction)` — the cooldown check needs a real `interaction.created_at` (discord.utils.utcnow()). Cooldown state lives on the class-level command, so use distinct user ids per test.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 
 ## 2026-10-10 — US-001 Dependencies, config and infrastructure
@@ -43,3 +44,10 @@
 - 'ninja_bot.cogs.media' added to EXTENSIONS; setup(bot) uses bot.config.max_duration_seconds.
 - Tests: tests/test_media_cog.py (fake Downloader + MagicMock interaction).
 - needs manual check in Discord test server (real download/upload, dropdown, embed rendering).
+
+## 2026-10-10 — US-007 /download concurrency limit and cooldown
+- cogs/media.py: Media.semaphore = asyncio.Semaphore(1), acquired after defer (invalid URLs never wait) around _download_deferred; released in every outcome via `async with`.
+- /download has @app_commands.checks.cooldown(1, COOLDOWN_SECONDS=30) (default key = user id).
+- cog_app_command_error: CommandOnCooldown -> ephemeral cooldown_message(retry_after) (rounded up); other errors logged + ephemeral generic message (followup if the response is already done).
+- Tests in tests/test_media_cog.py: concurrent requests serialize (BlockingDownloader with asyncio events), semaphore released after errors, cooldown check per user, cooldown/other error handler replies.
+- needs manual check in Discord test server (cooldown reply, two users downloading at once).

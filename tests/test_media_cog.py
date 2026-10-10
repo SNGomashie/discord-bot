@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import datetime
 from pathlib import Path
@@ -6,11 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
+from discord import app_commands
 
 from ninja_bot.cogs.media import (
     DEFAULT_UPLOAD_LIMIT_BYTES,
     GENERIC_ERROR_MESSAGE,
     Media,
+    cooldown_message,
     upload_limit,
 )
 from ninja_bot.media.models import (
@@ -250,3 +253,118 @@ async def test_unexpected_error_is_generic_and_logged(caplog: pytest.LogCaptureF
     assert "secret" not in GENERIC_ERROR_MESSAGE
     assert any(r.exc_info for r in caplog.records)
     assert not exists(downloader.workdirs[0])
+
+
+class BlockingDownloader(FakeDownloader):
+    """Fake whose first download blocks until `release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.active = 0
+        self.max_active = 0
+
+    async def download(self, url: str, plan: DownloadPlan, workdir: Path) -> Path:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.started.set()
+        try:
+            await self.release.wait()
+            return await super().download(url, plan, workdir)
+        finally:
+            self.active -= 1
+
+
+async def test_second_request_waits_for_first() -> None:
+    downloader = BlockingDownloader()
+    cog = Media(downloader, 3600)
+    first_interaction = make_interaction()
+    second_interaction = make_interaction()
+
+    first = asyncio.create_task(cog.handle_download(first_interaction, URL, "mp4"))
+    await downloader.started.wait()
+    second = asyncio.create_task(cog.handle_download(second_interaction, URL, "mp3"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # The second request is deferred but has not started fetching yet.
+    second_interaction.response.defer.assert_awaited_once_with(thinking=True)
+    assert downloader.fetched == [URL]
+    assert not second.done()
+
+    downloader.release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+
+    assert downloader.fetched == [URL, URL]
+    assert [p.kind for p in downloader.plans] == ["mp4", "mp3"]
+    assert downloader.max_active == 1
+    first_interaction.followup.send.assert_awaited_once()
+    second_interaction.followup.send.assert_awaited_once()
+
+
+async def test_semaphore_released_after_error() -> None:
+    cog = Media(FakeDownloader(download_error=RuntimeError("boom")), 3600)
+
+    await cog.handle_download(make_interaction(), URL, "mp4")
+
+    assert not cog.semaphore.locked()
+
+
+async def test_semaphore_not_acquired_for_invalid_url() -> None:
+    cog = Media(FakeDownloader(), 3600)
+    await cog.semaphore.acquire()
+
+    await asyncio.wait_for(cog.handle_download(make_interaction(), "nope", "mp4"), timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected"),
+    [(29.2, "30 seconds"), (1.0, "1 second"), (0.1, "1 second"), (2.0, "2 seconds")],
+)
+def test_cooldown_message(retry_after: float, expected: str) -> None:
+    assert cooldown_message(retry_after).endswith(f"in {expected}.")
+
+
+async def test_download_has_per_user_cooldown() -> None:
+    check = Media.download.checks[0]
+    now = discord.utils.utcnow()
+    interaction = make_interaction()
+    interaction.user.id = 1
+    interaction.created_at = now
+    other = make_interaction()
+    other.user.id = 2
+    other.created_at = now
+
+    assert await check(interaction)
+    with pytest.raises(app_commands.CommandOnCooldown) as exc_info:
+        await check(interaction)
+    assert exc_info.value.cooldown.per == 30
+    assert await check(other)
+
+
+async def test_cooldown_error_replies_ephemeral_with_remaining_time() -> None:
+    interaction = make_interaction()
+    interaction.response.is_done = MagicMock(return_value=False)
+    error = app_commands.CommandOnCooldown(app_commands.Cooldown(1, 30), retry_after=12.3)
+
+    await Media(FakeDownloader(), 3600).cog_app_command_error(interaction, error)
+
+    interaction.response.send_message.assert_awaited_once_with(
+        cooldown_message(12.3), ephemeral=True
+    )
+    assert "13 seconds" in cooldown_message(12.3)
+
+
+async def test_other_command_error_is_generic_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    interaction = make_interaction()
+    interaction.response.is_done = MagicMock(return_value=True)
+    error = app_commands.CheckFailure("secret detail")
+
+    await Media(FakeDownloader(), 3600).cog_app_command_error(interaction, error)
+
+    interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE, ephemeral=True)
+    interaction.response.send_message.assert_not_awaited()
+    assert any(r.exc_info for r in caplog.records)

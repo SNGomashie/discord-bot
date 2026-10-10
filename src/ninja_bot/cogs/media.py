@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,6 +30,7 @@ log = logging.getLogger(__name__)
 # Discord's base upload limit, used when there is no guild (e.g. DMs).
 DEFAULT_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024
 GENERIC_ERROR_MESSAGE = "Something went wrong while downloading that. Please try again later."
+COOLDOWN_SECONDS = 30.0
 
 
 def upload_limit(guild: discord.Guild | None) -> int:
@@ -44,12 +47,22 @@ def error_embed(exc: MediaError, info: VideoInfo | None, kind: MediaKind) -> dis
     return None
 
 
+def cooldown_message(retry_after: float) -> str:
+    """User-facing reply for a /download cooldown, rounded up to whole seconds."""
+    seconds = max(1, math.ceil(retry_after))
+    unit = "second" if seconds == 1 else "seconds"
+    return f"Slow down! You can use /download again in {seconds} {unit}."
+
+
 class Media(commands.Cog):
     def __init__(self, downloader: Downloader, max_duration_s: int) -> None:
         self.downloader = downloader
         self.max_duration_s = max_duration_s
+        # One download at a time keeps the homelab LXC from being overloaded.
+        self.semaphore = asyncio.Semaphore(1)
 
     @app_commands.command(name="download", description="Download a video as mp3 or mp4")
+    @app_commands.checks.cooldown(1, COOLDOWN_SECONDS)
     @app_commands.describe(url="Link to the video", format="File format (default mp4)")
     async def download(
         self, interaction: discord.Interaction, url: str, format: MediaKind = "mp4"
@@ -66,6 +79,12 @@ class Media(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True)
+        async with self.semaphore:
+            await self._download_deferred(interaction, clean_url, kind)
+
+    async def _download_deferred(
+        self, interaction: discord.Interaction, clean_url: str, kind: MediaKind
+    ) -> None:
         info: VideoInfo | None = None
         try:
             with tempfile.TemporaryDirectory(prefix="ninja-dl-") as tmp:
@@ -86,6 +105,19 @@ class Media(commands.Cog):
         except Exception:
             log.exception("Unexpected error downloading %s", clean_url)
             await interaction.followup.send(GENERIC_ERROR_MESSAGE)
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.CommandOnCooldown):
+            message = cooldown_message(error.retry_after)
+        else:
+            log.error("App command error in Media cog", exc_info=error)
+            message = GENERIC_ERROR_MESSAGE
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
 
 async def setup(bot: NinjaBot) -> None:
