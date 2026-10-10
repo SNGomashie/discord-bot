@@ -1,47 +1,72 @@
-# Ralph progress log — started 2026-10-10 (feature: download-clip; patterns carried over from download-command)
+# Ralph progress log — started 2026-10-10 (feature: download-hardening; patterns carried over)
 
 ## Codebase Patterns
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
 - yt-dlp has no type stubs; mypy override for `yt_dlp` / `yt_dlp.*` is in pyproject.toml.
 - Media errors: subclass MediaError and set `default_message`; `.message` is the user-facing text (safe to send to Discord).
-- DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size.
+- DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size. Clipped plans get no size filter at all (yt-dlp filesize is for the whole video).
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
-- App command checks (e.g. cooldown) are bypassed by `.callback`; test them via `Command.checks[i](interaction)` — the cooldown check needs a real `interaction.created_at` (discord.utils.utcnow()). Cooldown state lives on the class-level command, so use distinct user ids per test.
+- /download cooldown is `UserCooldown` (media/cooldown.py, injectable clock) on the cog instance, not an app_commands check: `handle_download` takes it after URL/clip validation and refunds in a `finally` unless `_download_deferred` returns True (file posted). Tests inject `Media(downloader, 3600, UserCooldown(30, FakeClock()))`.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
 - Clip times: `media/clip.py` parses/format timestamps; `InvalidClipError` messages are user-facing. `format_timestamp` (float, tenths) vs `format_duration` (int, models.py).
 - plan_download with a clip: `plan.clip` is always resolved (concrete `end_s`); size estimates use `math.ceil(clip length)` since `estimated_size_bytes` takes int seconds.
 - Clipped downloads: `build_ydl_options` adds `download_ranges` (yt_dlp.utils.download_range_func, imported lazily via `_download_ranges`) + `force_keyframes_at_cuts` only when `plan.clip` is set; it raises ValueError for an unresolved clip. The range callable can be invoked in tests as `fn({"duration": n}, None)` without network.
 - Cog clip flow: `handle_download(interaction, url, kind, start=None, end=None)` parses URL and clip in one try block before defer (ephemeral on MediaError); `plan_download(..., clip=clip)` errors go through the followup MediaError path; success embed uses `plan.clip`, error embeds never show a clip. Param descriptions are `locale_str` — use `str(param.description)` in tests.
+- Timestamp input: `MAX_TIMESTAMP_LENGTH` (clip.py) caps input before int()/float() and is the `app_commands.Range[str, 0, N]` max on start/end. Clip regexes use re.ASCII so Unicode digits are rejected. Range params expose the bound via `param.to_dict()["max_length"]` (CommandParameter stores it as `max_value`).
+- Durations: `VideoInfo.duration_s` (int, truncated) is for display and the whole-video cap; `duration_exact_s` (float | None) is for clip resolution. `_opt_float` in models.py rejects bools/NaN/inf/overflowing ints; `_opt_int` builds on it.
+- mp4 ladder: `height_ladder(info.video_heights)` in planning.py maps HEIGHT_LADDER rungs to the largest available height <= rung, deduped; `()` heights = full HEIGHT_LADDER. `VideoInfo.video_heights` comes from `formats[*].height` where vcodec != "none".
+- mp4 options always include `FFmpegVideoRemuxer` (`preferedformat: "mp4"`, yt-dlp's spelling). If no `.{kind}` file appears but other new media files (`_MEDIA_SUFFIXES`) do, `download` logs them and raises DownloadError naming the wrong extension; `.part` files don't count.
+- /download queue: `_wait_for_slot` edits the original response to QUEUED_MESSAGE when the semaphore is held and waits up to `QUEUE_TIMEOUT_SECONDS` (module constant; tests monkeypatch `ninja_bot.cogs.media.QUEUE_TIMEOUT_SECONDS`). handle_download releases the semaphore itself (no `async with`). Every send/edit on the deferred path goes through `_send_safely` (logs + swallows discord.HTTPException, returns success). Fake interactions need `edit_original_response = AsyncMock()`.
+- Disk work stays off the event loop: `_download_deferred` uses `asyncio.to_thread(tempfile.mkdtemp)` + `to_thread(shutil.rmtree, ignore_errors=True)` in `finally`; downloader filesystem helpers (`_snapshot`, `_find_output`, `_file_size`, `_remove_new_files`, `_unexpected_suffixes`) are sync and called via `to_thread`. Tests verify by monkeypatching `asyncio.to_thread` with a recorder (`ThreadRecorder` in test_media_cog.py).
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 
 ## 2026-10-10 - US-001
-- Added `media/clip.py` (Clip, parse_timestamp, parse_clip, format_timestamp) and `InvalidClipError` in models.py; tests in tests/test_media_clip.py.
-- parse_timestamp: three anchored regexes (plain seconds, colon h:mm:ss / m:ss, units h/m/s in order). Decimals only on the seconds part; m:ss minutes are unbounded (`90:00` ok), minutes < 60 only when hours are present. Seconds part accepts 1-2 digits (`1:5` = 65s).
-- parse_clip treats blank strings as missing (Discord can send "").
-- format_timestamp rounds to tenths before splitting so 59.96 -> `1:00`, not `0:60`.
+- `format_selector` omits the filesize/filesize_approx filters when `plan.clip` is set; unclipped output unchanged. Docstring explains why.
+- Files: src/ninja_bot/media/planning.py, tests/test_media_planning.py, tests/test_media_downloader.py
+- Learnings: `test_build_options_with_clip` compared clipped vs unclipped options minus clip keys; "format" now legitimately differs for mp4 clips.
 
 ## 2026-10-10 - US-002
-- Added `resolve_clip(clip, duration_s)` to media/clip.py (start past end -> error with video length; None/overlong end clamped; < 1s -> error).
-- `DownloadPlan.clip` + `plan_download(..., clip=None)`: with a clip, the max-duration cap and all size estimates use the clip length (ceil to whole seconds); "That clip is too long" message. No-clip path unchanged.
-- Tests in tests/test_media_clip.py and tests/test_media_planning.py.
+- `parse_timestamp` rejects trimmed input over `MAX_TIMESTAMP_LENGTH` (32) before conversion; regexes are ASCII-only so Unicode digits give InvalidClipError. `/download` start/end are `app_commands.Range[str, 0, 32] | None`.
+- Files: src/ninja_bot/media/clip.py, src/ninja_bot/cogs/media.py, tests/test_media_clip.py, tests/test_media_cog.py
+- Learnings: discord.py's CommandParameter has no `max_length` attribute; check `to_dict()["max_length"]`.
+- Needs manual check: Discord client enforces the 32-char limit on start/end.
 
 ## 2026-10-10 - US-003
-- `build_ydl_options` adds `download_ranges` + `force_keyframes_at_cuts: True` for clipped mp3/mp4 plans; no-clip options unchanged. Unresolved clip (end_s None) -> ValueError.
-- Tests in tests/test_media_downloader.py: options with/without clip for both kinds, range callable yields start/end, clipped mp4 ladder step-down + cleanup.
-- Real cut accuracy (ffmpeg re-encode at keyframes) needs manual check with a live download.
+- `VideoInfo.duration_exact_s` (float | None, from yt-dlp `duration`); `resolve_clip` takes a float duration; `plan_download` passes `duration_exact_s` or falls back to `float(duration_s)`. Error message still shows the truncated whole-second duration.
+- Also hardened `_opt_int`: NaN/inf durations no longer crash `parse_info` (found while testing).
+- Files: src/ninja_bot/media/models.py, clip.py, planning.py; tests/test_media_models.py, test_media_clip.py, test_media_planning.py
+- Learnings: a 100.9 s video with start=100 now gives "at least 1 second", not "past the end".
 
 ## 2026-10-10 - US-004
-- `build_embed(info, kind, clip=None)` adds a `Clip` field (after Duration) via new `format_clip(clip)` in embed.py: `1:30 → 2:45 (1:15)`; length uses `format_timestamp` so fractional clips keep tenths. Open end (unresolved clip) renders `1:30 → end`.
-- Duration field still shows full video length; no-clip embed unchanged. Tests in tests/test_media_embed.py.
+- `VideoInfo.video_heights` (distinct positive int heights of video formats, ascending) filled by `parse_info`; `plan_download` uses new `height_ladder(available)` so mp4 plans only walk distinct real heights (only-large videos get their smallest height).
+- Files: src/ninja_bot/media/models.py, planning.py; tests/test_media_models.py, test_media_planning.py
+- Learnings: the PRD example "144/360/480 -> (480, 360)" is superseded by its own rule: rung 240 maps to 144, giving (480, 360, 144). Heights below the lowest reachable mapping are never used (e.g. 100/200 -> (200,)).
 
 ## 2026-10-10 - US-005
-- `/download` gains optional `start`/`end` string options (describe text with example formats). `handle_download` calls `parse_clip` before deferring; invalid clip -> ephemeral reply, no semaphore/download. Clip passed to `plan_download`; success embed built with `plan.clip`.
-- Tests in tests/test_media_cog.py: params optional strings, no clip, start only, start+end, clip under cap on long video, end only / end<=start / garbage (ephemeral before defer), start beyond video (followup), clip too long (error embed without Clip field).
-- needs manual check in Discord test server (option UI, real clipped mp3/mp4 upload).
+- mp4 plans add an `FFmpegVideoRemuxer` postprocessor so webm/mkv sources become mp4; mp3 options unchanged.
+- `download` raises a clear DownloadError (and logs the extensions at INFO) when only non-matching media files appear; the "produced no file" message stays for truly empty results.
+- Files: src/ninja_bot/media/downloader.py, tests/test_media_downloader.py
+- Needs manual check: a real webm-only source is remuxed to mp4 (requires ffmpeg).
 
 ## 2026-10-10 - US-006
-- README `/download` section documents `start`/`end`, accepted time formats, end-alone rejection, end clamping, 1s minimum, and that `MAX_DURATION_SECONDS`/size limit apply to the clip length. Manual checklist gained six clip cases.
-- CLAUDE.md architecture lists `media/clip.py`.
-- needs manual check in Discord test server (run the new checklist items).
+- New `UserCooldown` (try_acquire/refund, injectable clock). Removed the `@app_commands.checks.cooldown` decorator and the `CommandOnCooldown` branch; `handle_download` validates first, then takes the cooldown, and refunds it when no file was posted (MediaError, unexpected exception, failed send, cancellation).
+- Files: src/ninja_bot/media/cooldown.py, src/ninja_bot/cogs/media.py, tests/test_media_cog.py
+- Learnings: `_download_deferred` now returns whether the file was posted; the refund lives in handle_download's `finally` so it also covers defer failures.
+
+## 2026-10-10 - US-007
+- Queued requests get a "queued behind another download" edit; the semaphore wait is bounded by `QUEUE_TIMEOUT_SECONDS = 300` (timeout → BUSY_MESSAGE followup, cooldown refunded, no download). Semaphore is released in a `finally`. All followup/edit calls on the deferred path use `_send_safely`, so an HTTPException (expired token) is logged and swallowed; a failed file post counts as not posted (cooldown refunded).
+- Files: src/ninja_bot/cogs/media.py, tests/test_media_cog.py
+- Learnings: `discord.HTTPException(MagicMock(status=401, reason="x"), "msg")` builds a test exception without a real response.
+- Needs manual check: the queued message appears in Discord while another download runs.
+
+## 2026-10-10 - US-008
+- `_download_deferred` creates the work dir with `tempfile.mkdtemp` and removes it with `shutil.rmtree(ignore_errors=True)`, both via `asyncio.to_thread` (removal in `finally`). Downloader `_snapshot`/`_find_output`/`_remove_new_files`/`_unexpected_suffixes` and the output size check (new `_file_size`) run via `asyncio.to_thread`.
+- Files: src/ninja_bot/cogs/media.py, src/ninja_bot/media/downloader.py, tests/test_media_cog.py, tests/test_media_downloader.py
+- Learnings: the work dir is now created before `fetch_info`, so it's also removed when info fetching fails; `_remove_new_files`'s `keep` is passed positionally through to_thread.
+
+## 2026-10-10 - US-009
+- Dockerfile.dev copies deno from the pinned `denoland/deno:bin-2.9.7` tag. README documents the pin (bump deliberately with yt-dlp), clips skipping the size filter, the queued message + 5-minute timeout, and the cooldown starting only after a valid request. CLAUDE.md yt-dlp gotchas mention the mp4 remux, distinct-height ladder and the deno pin.
+- Files: Dockerfile.dev, README.md, CLAUDE.md
+- needs docker rebuild check for pinned deno tag

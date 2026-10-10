@@ -1,6 +1,7 @@
 import pytest
 
 from ninja_bot.media.clip import (
+    MAX_TIMESTAMP_LENGTH,
     Clip,
     format_timestamp,
     parse_clip,
@@ -71,6 +72,51 @@ def test_parse_timestamp_accepts(text: str, expected: float) -> None:
 def test_parse_timestamp_rejects(text: str) -> None:
     with pytest.raises(InvalidClipError):
         parse_timestamp(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "9" * 5000,
+        "9" * 5000 + "m",
+        "9" * 5000 + "h",
+        "1:" + "9" * 5000 + ":00",
+        "0." + "9" * 5000,
+        "9" * (MAX_TIMESTAMP_LENGTH + 1),
+        "1e400",
+        "1e5",
+        "inf",
+        "-inf",
+        "infinity",
+        "nan",
+        "NaN",
+        "\u0663\u0660",  # Arabic-Indic digits "30"
+        "\uff19\uff10",  # fullwidth digits "90"
+        "1:\u0663\u0660",
+        "\u0661m",
+        "\u00b2",  # superscript two
+        "1_000",
+        "0x10",
+        "\x00",
+    ],
+)
+def test_parse_timestamp_odd_input_only_raises_invalid_clip(text: str) -> None:
+    with pytest.raises(InvalidClipError):
+        parse_timestamp(text)
+
+
+def test_parse_timestamp_length_cap_applies_after_trim() -> None:
+    text = "1" * MAX_TIMESTAMP_LENGTH
+    assert parse_timestamp(f"  {text}  ") == float(text)
+    with pytest.raises(InvalidClipError):
+        parse_timestamp(text + "1")
+
+
+def test_parse_clip_huge_input_is_invalid_clip() -> None:
+    with pytest.raises(InvalidClipError):
+        parse_clip("9" * 5000, None)
+    with pytest.raises(InvalidClipError):
+        parse_clip("0", "9" * 5000 + "m")
 
 
 def test_invalid_clip_error_is_media_error_with_examples() -> None:
@@ -167,3 +213,27 @@ def test_resolve_clip_start_past_end(start: float) -> None:
 def test_resolve_clip_shorter_than_one_second(clip: Clip) -> None:
     with pytest.raises(InvalidClipError, match="1 second"):
         resolve_clip(clip, 600)
+
+
+@pytest.mark.parametrize(
+    ("clip", "expected"),
+    [
+        (Clip(50, None), Clip(50, 100.9)),
+        (Clip(99.9, None), Clip(99.9, 100.9)),
+        (Clip(99, 200), Clip(99, 100.9)),
+    ],
+)
+def test_resolve_clip_float_duration(clip: Clip, expected: Clip) -> None:
+    assert resolve_clip(clip, 100.9) == expected
+
+
+@pytest.mark.parametrize("start", [100, 100.2, 100.5])
+def test_resolve_clip_float_duration_too_short(start: float) -> None:
+    # Under a second is left, but the start is not past the end of the video.
+    with pytest.raises(InvalidClipError, match="1 second"):
+        resolve_clip(Clip(start, None), 100.9)
+
+
+def test_resolve_clip_float_duration_start_past_end_shows_whole_seconds() -> None:
+    with pytest.raises(InvalidClipError, match=r"\(1:40 long\)"):
+        resolve_clip(Clip(100.9, None), 100.9)

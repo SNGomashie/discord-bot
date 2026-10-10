@@ -16,6 +16,7 @@ from ninja_bot.media.planning import (
     MIN_240P_BITRATE_KBPS,
     DownloadPlan,
     format_selector,
+    height_ladder,
     plan_download,
     validate_url,
 )
@@ -129,6 +130,21 @@ def test_format_selector(height: int) -> None:
     )
 
 
+@pytest.mark.parametrize("height", HEIGHT_LADDER)
+def test_format_selector_with_clip_has_no_size_filter(height: int) -> None:
+    plan = DownloadPlan(
+        kind="mp4", limit_bytes=1000, height_ladder=HEIGHT_LADDER, clip=Clip(10, 20)
+    )
+    selector = format_selector(plan, height)
+    assert "filesize" not in selector
+    assert selector == (
+        f"bv*[height<={height}][ext=mp4]+ba[ext=m4a]"
+        f"/bv*[height<={height}]+ba"
+        f"/b[height<={height}][ext=mp4]"
+        f"/b[height<={height}]"
+    )
+
+
 def test_format_selector_rejects_mp3_plan() -> None:
     with pytest.raises(ValueError):
         format_selector(DownloadPlan(kind="mp3", limit_bytes=1000, audio_bitrate_kbps=64), 240)
@@ -212,3 +228,54 @@ def test_plan_download_clip_mp4_fits_where_full_video_does_not() -> None:
 @pytest.mark.parametrize("kind", ["mp3", "mp4"])
 def test_plan_download_without_clip_has_no_clip(kind: MediaKind) -> None:
     assert plan_download(INFO, kind, 25 * MB, 3600).clip is None
+
+
+VIDEO_100_9 = replace(INFO, duration_s=100, duration_exact_s=100.9)
+
+
+def test_plan_download_clip_uses_exact_duration() -> None:
+    plan = plan_download(VIDEO_100_9, "mp4", 25 * MB, 3600, clip=Clip(50, None))
+    assert plan.clip == Clip(50, 100.9)
+    plan = plan_download(VIDEO_100_9, "mp3", 25 * MB, 3600, clip=Clip(99.5, 500))
+    assert plan.clip == Clip(99.5, 100.9)
+
+
+def test_plan_download_clip_exact_duration_too_short() -> None:
+    with pytest.raises(InvalidClipError, match="1 second"):
+        plan_download(VIDEO_100_9, "mp4", 25 * MB, 3600, clip=Clip(100.2, None))
+
+
+def test_plan_download_clip_falls_back_to_truncated_duration() -> None:
+    plan = plan_download(replace(INFO, duration_s=100), "mp4", 25 * MB, 3600, clip=Clip(50, None))
+    assert plan.clip == Clip(50, 100)
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [
+        ((), HEIGHT_LADDER),
+        ((240, 360, 480, 720, 1080), (1080, 720, 480, 360, 240)),
+        ((144, 240, 360, 480, 720, 1080, 1440, 2160), (1080, 720, 480, 360, 240)),
+        ((144, 360, 480), (480, 360, 144)),
+        ((360, 720), (720, 360)),
+        ((144,), (144,)),
+        ((100, 200), (200,)),
+        ((1440, 2160), (1440,)),
+        ((2160,), (2160,)),
+        ((300, 1440), (300,)),
+    ],
+)
+def test_height_ladder(available: tuple[int, ...], expected: tuple[int, ...]) -> None:
+    assert height_ladder(available) == expected
+
+
+def test_plan_download_mp4_uses_available_heights() -> None:
+    plan = plan_download(replace(INFO, video_heights=(144, 360, 480)), "mp4", 25 * MB, 3600)
+    assert plan.height_ladder == (480, 360, 144)
+    plan = plan_download(replace(INFO, video_heights=(2160,)), "mp4", 25 * MB, 3600)
+    assert plan.height_ladder == (2160,)
+
+
+def test_plan_download_mp3_ignores_heights() -> None:
+    plan = plan_download(replace(INFO, video_heights=(144, 360)), "mp3", 25 * MB, 3600)
+    assert plan.height_ladder == ()

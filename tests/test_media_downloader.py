@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,7 @@ def test_build_options_mp3(tmp_path: Path) -> None:
     assert options["noplaylist"] is True
     assert options["quiet"] is True
     assert "merge_output_format" not in options
+    assert all(pp["key"] != "FFmpegVideoRemuxer" for pp in options["postprocessors"])
 
 
 def test_build_options_mp4(tmp_path: Path) -> None:
@@ -73,7 +75,7 @@ def test_build_options_mp4(tmp_path: Path) -> None:
     assert Path(options["outtmpl"]).parent == tmp_path
     assert options["noplaylist"] is True
     assert options["quiet"] is True
-    assert "postprocessors" not in options
+    assert options["postprocessors"] == [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}]
 
 
 def test_build_options_without_clip_has_no_ranges(tmp_path: Path) -> None:
@@ -98,8 +100,16 @@ def test_build_options_with_clip(plan: DownloadPlan, height: int | None, tmp_pat
     ranges = list(options["download_ranges"]({"duration": 300}, None))
     assert ranges == [{"start_time": 90.5, "end_time": 165.0}]
     unclipped = build_ydl_options(replace(plan, clip=None), height, tmp_path)
-    clip_keys = {"download_ranges", "force_keyframes_at_cuts"}
-    assert {k: v for k, v in options.items() if k not in clip_keys} == unclipped
+    # The format differs for mp4 clips (no whole-video size filter).
+    clip_keys = {"download_ranges", "force_keyframes_at_cuts", "format"}
+    assert {k: v for k, v in options.items() if k not in clip_keys} == {
+        k: v for k, v in unclipped.items() if k != "format"
+    }
+    if height is not None:
+        assert options["format"] == format_selector(plan, height)
+        assert "filesize" not in options["format"]
+    else:
+        assert options["format"] == unclipped["format"]
 
 
 def test_build_options_rejects_unresolved_clip(tmp_path: Path) -> None:
@@ -210,3 +220,53 @@ async def test_download_no_output_file(tmp_path: Path) -> None:
 
     with pytest.raises(DownloadError):
         await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+
+
+async def test_download_wrong_extension_only(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    run = StubRun([500], ext="webm")
+    with caplog.at_level("INFO", logger="ninja_bot.media.downloader"):
+        with pytest.raises(DownloadError) as exc_info:
+            await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+    assert ".webm" in exc_info.value.message
+    assert ".mp4" in exc_info.value.message
+    assert "produced no file" not in exc_info.value.message
+    assert ".webm" in caplog.text
+    assert len(run.calls) == 1
+    assert files(tmp_path) == []
+
+
+async def test_download_no_output_file_message(tmp_path: Path) -> None:
+    def run(url: str, options: dict[str, Any]) -> None:
+        (tmp_path / "video.webm.part").write_bytes(b"partial")
+
+    with pytest.raises(DownloadError) as exc_info:
+        await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+    assert "produced no file" in exc_info.value.message
+
+
+async def test_download_mp4_output_succeeds(tmp_path: Path) -> None:
+    run = StubRun([500], ext="mp4")
+    path = await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+    assert path == tmp_path / "video.mp4"
+    assert files(tmp_path) == [path]
+
+
+async def test_download_disk_work_runs_in_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_to_thread = asyncio.to_thread
+    names: list[str] = []
+
+    async def recording_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        names.append(getattr(func, "__name__", type(func).__name__))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recording_to_thread)
+    run = StubRun([5000, 10])
+
+    await make_downloader(run=run).download(URL, MP4_PLAN, tmp_path)
+
+    rung = ["_snapshot", "StubRun", "_find_output", "_file_size", "_remove_new_files"]
+    assert names == rung * 2

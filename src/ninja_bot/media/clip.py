@@ -5,9 +5,13 @@ from dataclasses import dataclass
 
 from ninja_bot.media.models import InvalidClipError, format_duration
 
-_SECONDS_RE = re.compile(r"\d+(?:\.\d+)?")
-_COLON_RE = re.compile(r"(?:(\d+):)?(\d+):(\d{1,2}(?:\.\d+)?)")
-_UNITS_RE = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?")
+# Longest accepted timestamp; also the max length of the /download start/end options.
+MAX_TIMESTAMP_LENGTH = 32
+
+# re.ASCII: `\d` must not match other Unicode digits.
+_SECONDS_RE = re.compile(r"\d+(?:\.\d+)?", re.ASCII)
+_COLON_RE = re.compile(r"(?:(\d+):)?(\d+):(\d{1,2}(?:\.\d+)?)", re.ASCII)
+_UNITS_RE = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -19,7 +23,8 @@ class Clip:
 def parse_timestamp(text: str) -> float:
     """Parse `90`, `90.5`, `1:30`, `1:02:03.5`, `1h2m3s`, `1m30.5s` into seconds."""
     value = text.strip().lower()
-    if not value:
+    # The length cap runs before any int()/float() so huge inputs can't overflow or stall.
+    if not value or len(value) > MAX_TIMESTAMP_LENGTH:
         raise InvalidClipError()
     if _SECONDS_RE.fullmatch(value):
         return float(value)
@@ -53,11 +58,12 @@ def parse_clip(start: str | None, end: str | None) -> Clip | None:
     return Clip(start_s, end_s)
 
 
-def resolve_clip(clip: Clip, duration_s: int) -> Clip:
-    """Fit `clip` to a video of `duration_s` seconds, giving it a concrete end."""
+def resolve_clip(clip: Clip, duration_s: float) -> Clip:
+    """Fit `clip` to a video of exactly `duration_s` seconds, giving it a concrete end."""
     if clip.start_s >= duration_s:
         raise InvalidClipError(
-            f"The start time is past the end of the video ({format_duration(duration_s)} long)."
+            "The start time is past the end of the video "
+            f"({format_duration(int(duration_s))} long)."
         )
     end_s = duration_s if clip.end_s is None else min(clip.end_s, duration_s)
     if end_s - clip.start_s < 1:

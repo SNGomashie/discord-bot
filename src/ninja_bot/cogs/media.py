@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import shutil
 import tempfile
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,7 +13,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ninja_bot.media.clip import Clip, parse_clip
+from ninja_bot.media.clip import MAX_TIMESTAMP_LENGTH, Clip, parse_clip
+from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.media.downloader import Downloader, YtDlpDownloader
 from ninja_bot.media.embed import build_embed
 from ninja_bot.media.models import (
@@ -32,6 +35,10 @@ log = logging.getLogger(__name__)
 DEFAULT_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024
 GENERIC_ERROR_MESSAGE = "Something went wrong while downloading that. Please try again later."
 COOLDOWN_SECONDS = 30.0
+# How long a request may wait for the running download before giving up.
+QUEUE_TIMEOUT_SECONDS = 300.0
+QUEUED_MESSAGE = "Queued behind another download, yours starts as soon as it finishes."
+BUSY_MESSAGE = "The bot is busy right now, try again in a few minutes."
 
 
 def upload_limit(guild: discord.Guild | None) -> int:
@@ -55,15 +62,31 @@ def cooldown_message(retry_after: float) -> str:
     return f"Slow down! You can use /download again in {seconds} {unit}."
 
 
+async def _send_safely(send: Awaitable[object]) -> bool:
+    """Await a Discord send/edit; log and swallow HTTP errors (e.g. an expired token)."""
+    try:
+        await send
+    except discord.HTTPException:
+        log.warning("Could not send /download response", exc_info=True)
+        return False
+    return True
+
+
 class Media(commands.Cog):
-    def __init__(self, downloader: Downloader, max_duration_s: int) -> None:
+    def __init__(
+        self,
+        downloader: Downloader,
+        max_duration_s: int,
+        cooldown: UserCooldown | None = None,
+    ) -> None:
         self.downloader = downloader
         self.max_duration_s = max_duration_s
+        # Taken only after the input is valid and refunded unless a file is posted.
+        self.cooldown = cooldown if cooldown is not None else UserCooldown(COOLDOWN_SECONDS)
         # One download at a time keeps the homelab LXC from being overloaded.
         self.semaphore = asyncio.Semaphore(1)
 
     @app_commands.command(name="download", description="Download a video as mp3 or mp4")
-    @app_commands.checks.cooldown(1, COOLDOWN_SECONDS)
     @app_commands.describe(
         url="Link to the video",
         format="File format (default mp4)",
@@ -75,8 +98,8 @@ class Media(commands.Cog):
         interaction: discord.Interaction,
         url: str,
         format: MediaKind = "mp4",
-        start: str | None = None,
-        end: str | None = None,
+        start: app_commands.Range[str, 0, MAX_TIMESTAMP_LENGTH] | None = None,
+        end: app_commands.Range[str, 0, MAX_TIMESTAMP_LENGTH] | None = None,
     ) -> None:
         await self.handle_download(interaction, url, format, start, end)
 
@@ -95,9 +118,38 @@ class Media(commands.Cog):
             await interaction.response.send_message(exc.message, ephemeral=True)
             return
 
-        await interaction.response.defer(thinking=True)
-        async with self.semaphore:
-            await self._download_deferred(interaction, clean_url, kind, clip)
+        user_id = interaction.user.id
+        retry_after = self.cooldown.try_acquire(user_id)
+        if retry_after > 0:
+            await interaction.response.send_message(cooldown_message(retry_after), ephemeral=True)
+            return
+
+        posted = False
+        try:
+            await interaction.response.defer(thinking=True)
+            if not await self._wait_for_slot(interaction):
+                return
+            try:
+                posted = await self._download_deferred(interaction, clean_url, kind, clip)
+            finally:
+                self.semaphore.release()
+        finally:
+            if not posted:
+                self.cooldown.refund(user_id)
+
+    async def _wait_for_slot(self, interaction: discord.Interaction) -> bool:
+        """Acquire the download semaphore, telling the user if they are queued.
+
+        Returns False (after telling the user) if the wait exceeds QUEUE_TIMEOUT_SECONDS.
+        """
+        if self.semaphore.locked():
+            await _send_safely(interaction.edit_original_response(content=QUEUED_MESSAGE))
+        try:
+            await asyncio.wait_for(self.semaphore.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            await _send_safely(interaction.followup.send(BUSY_MESSAGE))
+            return False
+        return True
 
     async def _download_deferred(
         self,
@@ -105,36 +157,40 @@ class Media(commands.Cog):
         clean_url: str,
         kind: MediaKind,
         clip: Clip | None,
-    ) -> None:
+    ) -> bool:
+        """Fetch, download and post the file; return whether the file was posted."""
         info: VideoInfo | None = None
+        # mkdtemp/rmtree run in a thread: removing a large file can stall the heartbeat.
+        tmp = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="ninja-dl-"))
         try:
-            with tempfile.TemporaryDirectory(prefix="ninja-dl-") as tmp:
-                info = await self.downloader.fetch_info(clean_url)
-                plan = plan_download(
-                    info, kind, upload_limit(interaction.guild), self.max_duration_s, clip=clip
-                )
-                path = await self.downloader.download(clean_url, plan, Path(tmp))
-                await interaction.followup.send(
+            info = await self.downloader.fetch_info(clean_url)
+            plan = plan_download(
+                info, kind, upload_limit(interaction.guild), self.max_duration_s, clip=clip
+            )
+            path = await self.downloader.download(clean_url, plan, tmp)
+            return await _send_safely(
+                interaction.followup.send(
                     embed=build_embed(info, kind, plan.clip), file=discord.File(path)
                 )
+            )
         except MediaError as exc:
             embed = error_embed(exc, info, kind)
             if embed is None:
-                await interaction.followup.send(exc.message)
+                await _send_safely(interaction.followup.send(exc.message))
             else:
-                await interaction.followup.send(exc.message, embed=embed)
+                await _send_safely(interaction.followup.send(exc.message, embed=embed))
         except Exception:
             log.exception("Unexpected error downloading %s", clean_url)
-            await interaction.followup.send(GENERIC_ERROR_MESSAGE)
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
+        finally:
+            await asyncio.to_thread(shutil.rmtree, tmp, ignore_errors=True)
+        return False
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
-        if isinstance(error, app_commands.CommandOnCooldown):
-            message = cooldown_message(error.retry_after)
-        else:
-            log.error("App command error in Media cog", exc_info=error)
-            message = GENERIC_ERROR_MESSAGE
+        log.error("App command error in Media cog", exc_info=error)
+        message = GENERIC_ERROR_MESSAGE
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:

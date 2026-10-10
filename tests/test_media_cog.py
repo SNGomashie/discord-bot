@@ -9,14 +9,19 @@ import discord
 import pytest
 from discord import app_commands
 
+from ninja_bot.cogs import media as media_cog
 from ninja_bot.cogs.media import (
+    BUSY_MESSAGE,
     DEFAULT_UPLOAD_LIMIT_BYTES,
     GENERIC_ERROR_MESSAGE,
+    QUEUE_TIMEOUT_SECONDS,
+    QUEUED_MESSAGE,
     Media,
     cooldown_message,
     upload_limit,
 )
-from ninja_bot.media.clip import Clip
+from ninja_bot.media.clip import MAX_TIMESTAMP_LENGTH, Clip
+from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.media.models import (
     DownloadError,
     InvalidClipError,
@@ -85,6 +90,7 @@ def make_interaction(guild_limit: int | None = GUILD_LIMIT) -> MagicMock:
     interaction.response.send_message = AsyncMock()
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
     if guild_limit is None:
         interaction.guild = None
     else:
@@ -112,6 +118,13 @@ def test_download_command_clip_params_are_optional_strings(name: str) -> None:
     assert param.default is None
     assert param.type is discord.AppCommandOptionType.string
     assert ":" in str(param.description)  # example formats
+
+
+@pytest.mark.parametrize("name", ["start", "end"])
+def test_download_command_clip_params_have_max_length(name: str) -> None:
+    payload = Media.download._params[name].to_dict()
+    assert payload["max_length"] == MAX_TIMESTAMP_LENGTH == 32
+    assert not payload["required"]
 
 
 def test_upload_limit() -> None:
@@ -304,6 +317,10 @@ async def test_second_request_waits_for_first() -> None:
     assert downloader.fetched == [URL]
     assert not second.done()
 
+    # Only the waiting request is told it is queued.
+    second_interaction.edit_original_response.assert_awaited_once_with(content=QUEUED_MESSAGE)
+    first_interaction.edit_original_response.assert_not_awaited()
+
     downloader.release.set()
     await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
 
@@ -312,14 +329,103 @@ async def test_second_request_waits_for_first() -> None:
     assert downloader.max_active == 1
     first_interaction.followup.send.assert_awaited_once()
     second_interaction.followup.send.assert_awaited_once()
+    assert not cog.semaphore.locked()
 
 
-async def test_semaphore_released_after_error() -> None:
-    cog = Media(FakeDownloader(download_error=RuntimeError("boom")), 3600)
+async def test_no_queued_message_when_idle() -> None:
+    interaction = make_interaction()
+    cog = Media(FakeDownloader(), 3600)
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    interaction.edit_original_response.assert_not_awaited()
+
+
+def test_queue_timeout_is_five_minutes() -> None:
+    assert QUEUE_TIMEOUT_SECONDS == 300
+
+
+async def test_queue_timeout_gives_up_and_refunds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(media_cog, "QUEUE_TIMEOUT_SECONDS", 0.01)
+    downloader = FakeDownloader()
+    cog, cooldown, _ = make_cooldown_cog(downloader)
+    await cog.semaphore.acquire()  # another download is running
+    interaction = make_user_interaction()
+
+    await asyncio.wait_for(cog.handle_download(interaction, URL, "mp4"), timeout=1)
+
+    interaction.edit_original_response.assert_awaited_once_with(content=QUEUED_MESSAGE)
+    interaction.followup.send.assert_awaited_once_with(BUSY_MESSAGE)
+    assert downloader.fetched == []
+    assert cooldown.try_acquire(1) == 0.0
+    # The running download still holds the semaphore; nothing extra was taken.
+    cog.semaphore.release()
+    assert not cog.semaphore.locked()
+
+
+@pytest.mark.parametrize(
+    "downloader",
+    [
+        FakeDownloader(download_error=RuntimeError("boom")),
+        FakeDownloader(download_error=DownloadError()),
+        FakeDownloader(),
+    ],
+)
+async def test_semaphore_released_after_download(downloader: FakeDownloader) -> None:
+    cog = Media(downloader, 3600)
 
     await cog.handle_download(make_interaction(), URL, "mp4")
 
     assert not cog.semaphore.locked()
+
+
+def http_exception() -> discord.HTTPException:
+    return discord.HTTPException(MagicMock(status=401, reason="Unauthorized"), "expired token")
+
+
+async def test_followup_http_exception_is_logged_and_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    downloader = FakeDownloader()
+    cog, cooldown, _ = make_cooldown_cog(downloader)
+    interaction = make_user_interaction()
+    interaction.followup.send.side_effect = http_exception()
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    interaction.followup.send.assert_awaited_once()
+    assert any(r.exc_info and r.exc_info[0] is discord.HTTPException for r in caplog.records)
+    assert not exists(downloader.workdirs[0])
+    assert not cog.semaphore.locked()
+    assert cooldown.try_acquire(1) == 0.0  # the file was never posted
+
+
+async def test_error_followup_http_exception_is_swallowed() -> None:
+    downloader = FakeDownloader(download_error=DownloadError())
+    cog = Media(downloader, 3600)
+    interaction = make_interaction()
+    interaction.followup.send.side_effect = http_exception()
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    interaction.followup.send.assert_awaited_once()
+    assert not exists(downloader.workdirs[0])
+
+
+async def test_queued_edit_and_busy_http_exceptions_are_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(media_cog, "QUEUE_TIMEOUT_SECONDS", 0.01)
+    cog = Media(FakeDownloader(), 3600)
+    await cog.semaphore.acquire()
+    interaction = make_interaction()
+    interaction.edit_original_response.side_effect = http_exception()
+    interaction.followup.send.side_effect = http_exception()
+
+    await asyncio.wait_for(cog.handle_download(interaction, URL, "mp4"), timeout=1)
+
+    interaction.edit_original_response.assert_awaited_once()
+    interaction.followup.send.assert_awaited_once_with(BUSY_MESSAGE)
 
 
 async def test_semaphore_not_acquired_for_invalid_url() -> None:
@@ -337,34 +443,129 @@ def test_cooldown_message(retry_after: float, expected: str) -> None:
     assert cooldown_message(retry_after).endswith(f"in {expected}.")
 
 
-async def test_download_has_per_user_cooldown() -> None:
-    check = Media.download.checks[0]
-    now = discord.utils.utcnow()
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_download_has_no_builtin_cooldown_check() -> None:
+    assert Media.download.checks == []
+
+
+def test_user_cooldown_allows_first_use() -> None:
+    assert UserCooldown(30, FakeClock()).try_acquire(1) == 0.0
+
+
+def test_user_cooldown_blocks_with_remaining_time() -> None:
+    clock = FakeClock()
+    cooldown = UserCooldown(30, clock)
+    cooldown.try_acquire(1)
+
+    clock.now += 12.5
+    assert cooldown.try_acquire(1) == pytest.approx(17.5)
+    # A blocked attempt doesn't restart the cooldown.
+    clock.now += 17.5
+    assert cooldown.try_acquire(1) == 0.0
+
+
+def test_user_cooldown_refund_clears_user() -> None:
+    cooldown = UserCooldown(30, FakeClock())
+    cooldown.try_acquire(1)
+
+    cooldown.refund(1)
+    cooldown.refund(2)  # unknown user is fine
+
+    assert cooldown.try_acquire(1) == 0.0
+
+
+def test_user_cooldown_users_are_independent() -> None:
+    cooldown = UserCooldown(30, FakeClock())
+    cooldown.try_acquire(1)
+
+    assert cooldown.try_acquire(2) == 0.0
+    assert cooldown.try_acquire(1) > 0
+
+
+def make_user_interaction(user_id: int = 1) -> MagicMock:
     interaction = make_interaction()
-    interaction.user.id = 1
-    interaction.created_at = now
-    other = make_interaction()
-    other.user.id = 2
-    other.created_at = now
-
-    assert await check(interaction)
-    with pytest.raises(app_commands.CommandOnCooldown) as exc_info:
-        await check(interaction)
-    assert exc_info.value.cooldown.per == 30
-    assert await check(other)
+    interaction.user.id = user_id
+    return interaction
 
 
-async def test_cooldown_error_replies_ephemeral_with_remaining_time() -> None:
-    interaction = make_interaction()
-    interaction.response.is_done = MagicMock(return_value=False)
-    error = app_commands.CommandOnCooldown(app_commands.Cooldown(1, 30), retry_after=12.3)
+def make_cooldown_cog(downloader: FakeDownloader) -> tuple[Media, UserCooldown, FakeClock]:
+    clock = FakeClock()
+    cooldown = UserCooldown(30, clock)
+    return Media(downloader, 3600, cooldown), cooldown, clock
 
-    await Media(FakeDownloader(), 3600).cog_app_command_error(interaction, error)
 
-    interaction.response.send_message.assert_awaited_once_with(
-        cooldown_message(12.3), ephemeral=True
-    )
-    assert "13 seconds" in cooldown_message(12.3)
+@pytest.mark.parametrize(
+    ("url", "start", "end"),
+    [("nope", None, None), (URL, "abc", None), (URL, None, "1:00"), (URL, "2:00", "1:00")],
+)
+async def test_invalid_input_does_not_consume_cooldown(
+    url: str, start: str | None, end: str | None
+) -> None:
+    cog, cooldown, _ = make_cooldown_cog(FakeDownloader())
+
+    await cog.handle_download(make_user_interaction(), url, "mp4", start, end)
+
+    assert cooldown.try_acquire(1) == 0.0
+
+
+async def test_success_consumes_cooldown() -> None:
+    downloader = FakeDownloader()
+    cog, _, clock = make_cooldown_cog(downloader)
+    await cog.handle_download(make_user_interaction(), URL, "mp4")
+
+    clock.now += 12.3
+    blocked = make_user_interaction()
+    await cog.handle_download(blocked, URL, "mp4")
+
+    blocked.response.send_message.assert_awaited_once_with(cooldown_message(17.7), ephemeral=True)
+    blocked.response.defer.assert_not_awaited()
+    assert len(downloader.fetched) == 1
+    assert "18 seconds" in cooldown_message(17.7)
+
+
+@pytest.mark.parametrize(
+    "downloader",
+    [
+        FakeDownloader(info_error=InvalidUrlError()),
+        FakeDownloader(download_error=DownloadError()),
+        FakeDownloader(download_error=RuntimeError("boom")),
+        FakeDownloader(info=dataclasses.replace(INFO, duration_s=99999)),
+    ],
+)
+async def test_failure_refunds_cooldown(downloader: FakeDownloader) -> None:
+    cog, cooldown, _ = make_cooldown_cog(downloader)
+
+    await cog.handle_download(make_user_interaction(), URL, "mp4")
+
+    assert downloader.fetched == [URL]
+    assert cooldown.try_acquire(1) == 0.0
+
+
+async def test_failed_post_refunds_cooldown() -> None:
+    cog, cooldown, _ = make_cooldown_cog(FakeDownloader())
+    interaction = make_user_interaction()
+    interaction.followup.send.side_effect = [RuntimeError("send failed"), None]
+
+    await cog.handle_download(interaction, URL, "mp4")
+
+    assert cooldown.try_acquire(1) == 0.0
+
+
+async def test_cooldown_is_per_user_in_cog() -> None:
+    downloader = FakeDownloader()
+    cog, _, _ = make_cooldown_cog(downloader)
+
+    await cog.handle_download(make_user_interaction(1), URL, "mp4")
+    await cog.handle_download(make_user_interaction(2), URL, "mp4")
+
+    assert len(downloader.fetched) == 2
 
 
 async def test_other_command_error_is_generic_and_logged(
@@ -493,3 +694,70 @@ async def test_clip_too_long_error_embed_has_no_clip() -> None:
 
 def test_invalid_clip_error_is_media_error() -> None:
     assert issubclass(InvalidClipError, MediaError)
+
+
+class ThreadRecorder:
+    """Wraps asyncio.to_thread, recording each function name and result."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+        self._real = asyncio.to_thread
+
+    async def __call__(self, func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        result = await self._real(func, *args, **kwargs)
+        self.calls.append((func.__name__, result))
+        return result
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+    def mkdtemp_paths(self) -> list[Path]:
+        return [Path(result) for name, result in self.calls if name == "mkdtemp"]
+
+
+@pytest.fixture
+def threads(monkeypatch: pytest.MonkeyPatch) -> ThreadRecorder:
+    recorder = ThreadRecorder()
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    return recorder
+
+
+async def test_workdir_created_and_removed_in_thread(threads: ThreadRecorder) -> None:
+    downloader = FakeDownloader()
+
+    await Media(downloader, 3600).handle_download(make_interaction(), URL, "mp4")
+
+    assert threads.names() == ["mkdtemp", "rmtree"]
+    (workdir,) = threads.mkdtemp_paths()
+    assert workdir.name.startswith("ninja-dl-")
+    assert downloader.workdirs == [workdir]
+    assert not exists(workdir)
+
+
+@pytest.mark.parametrize(
+    "downloader",
+    [
+        FakeDownloader(info_error=DownloadError()),
+        FakeDownloader(download_error=TooLargeError()),
+        FakeDownloader(info_error=RuntimeError("boom")),
+        FakeDownloader(download_error=RuntimeError("boom")),
+    ],
+)
+async def test_workdir_removed_on_every_failure(
+    threads: ThreadRecorder, downloader: FakeDownloader
+) -> None:
+    await Media(downloader, 3600).handle_download(make_interaction(), URL, "mp4")
+
+    assert threads.names()[-1] == "rmtree"
+    (workdir,) = threads.mkdtemp_paths()
+    assert not exists(workdir)
+
+
+async def test_workdir_removed_when_post_fails(threads: ThreadRecorder) -> None:
+    interaction = make_interaction()
+    interaction.followup.send.side_effect = http_exception()
+
+    await Media(FakeDownloader(), 3600).handle_download(interaction, URL, "mp4")
+
+    (workdir,) = threads.mkdtemp_paths()
+    assert not exists(workdir)

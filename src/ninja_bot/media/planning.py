@@ -75,7 +75,8 @@ def plan_download(
                 f"That video is too long (max {format_duration(max_duration_s)})."
             )
     else:
-        clip = resolve_clip(clip, duration)
+        exact = info.duration_exact_s
+        clip = resolve_clip(clip, exact if exact is not None else float(duration))
         assert clip.end_s is not None
         clip_length = clip.end_s - clip.start_s
         if clip_length > max_duration_s:
@@ -94,14 +95,45 @@ def plan_download(
 
     if estimated_size_bytes(duration, MIN_240P_BITRATE_KBPS) > limit_bytes:
         raise TooLargeError("That video is too long to fit this server's upload limit.")
-    return DownloadPlan(kind=kind, limit_bytes=limit_bytes, height_ladder=HEIGHT_LADDER, clip=clip)
+    return DownloadPlan(
+        kind=kind,
+        limit_bytes=limit_bytes,
+        height_ladder=height_ladder(info.video_heights),
+        clip=clip,
+    )
+
+
+def height_ladder(available: tuple[int, ...]) -> tuple[int, ...]:
+    """Rungs of HEIGHT_LADDER mapped to the heights the video really has.
+
+    Each rung becomes the largest available height <= it; rungs that map to the
+    same height are walked once. Unknown heights keep the full ladder, and a
+    video with only heights above every rung gets its smallest height.
+    """
+    if not available:
+        return HEIGHT_LADDER
+    ladder: list[int] = []
+    for rung in HEIGHT_LADDER:
+        fitting = [h for h in available if h <= rung]
+        if fitting and max(fitting) not in ladder:
+            ladder.append(max(fitting))
+    return tuple(ladder) or (min(available),)
 
 
 def format_selector(plan: DownloadPlan, height: int) -> str:
-    """yt-dlp format string: height <= `height`, size within the limit, prefer mp4/m4a."""
+    """yt-dlp format string: height <= `height`, size within the limit, prefer mp4/m4a.
+
+    Clipped plans skip the size filter: yt-dlp's filesize describes the whole
+    video, so it would reject short clips of long videos. The downloader checks
+    the real size of the clipped file after download instead.
+    """
     if plan.kind != "mp4":
         raise ValueError("format_selector is only for mp4 plans")
-    size = f"[filesize<=?{plan.limit_bytes}][filesize_approx<=?{plan.limit_bytes}]"
+    size = (
+        ""
+        if plan.clip is not None
+        else f"[filesize<=?{plan.limit_bytes}][filesize_approx<=?{plan.limit_bytes}]"
+    )
     video = f"bv*[height<={height}]"
     best = f"b[height<={height}]"
     return "/".join(

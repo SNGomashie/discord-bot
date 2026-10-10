@@ -36,7 +36,54 @@ def test_parse_info_full() -> None:
         upload_date=datetime.date(2024, 1, 31),
         is_live=False,
         is_playlist=False,
+        duration_exact_s=125.0,
     )
+
+
+@pytest.mark.parametrize(
+    ("duration", "truncated", "exact"),
+    [
+        (100.9, 100, 100.9),
+        (42, 42, 42.0),
+        (0.5, 0, 0.5),
+        (None, None, None),
+        ("100", None, None),
+        (True, None, None),
+        (float("nan"), None, None),
+        (float("inf"), None, None),
+        (10**400, 10**400, None),
+    ],
+)
+def test_parse_info_duration(duration: Any, truncated: int | None, exact: float | None) -> None:
+    info = parse_info({"duration": duration})
+    assert info.duration_s == truncated
+    assert info.duration_exact_s == exact
+
+
+def test_parse_info_video_heights() -> None:
+    raw: dict[str, Any] = {
+        "formats": [
+            {"height": 720, "vcodec": "avc1"},
+            {"height": 360, "vcodec": "vp9"},
+            {"height": 720, "vcodec": "vp9"},
+            {"height": 1080},
+            {"height": 480, "vcodec": "none"},
+            {"height": None, "vcodec": "avc1"},
+            {"height": 0, "vcodec": "avc1"},
+            {"height": -5, "vcodec": "avc1"},
+            {"height": 240.0, "vcodec": "avc1"},
+            {"height": "144", "vcodec": "avc1"},
+            {"height": True, "vcodec": "avc1"},
+            {"vcodec": "avc1"},
+            "not a dict",
+        ]
+    }
+    assert parse_info(raw).video_heights == (360, 720, 1080)
+
+
+@pytest.mark.parametrize("formats", [None, "x", [], [{"vcodec": "none", "height": 0}]])
+def test_parse_info_video_heights_unknown(formats: Any) -> None:
+    assert parse_info({"formats": formats}).video_heights == ()
 
 
 def test_parse_info_minimal() -> None:
@@ -45,6 +92,7 @@ def test_parse_info_minimal() -> None:
     assert info.webpage_url == ""
     assert info.uploader is None
     assert info.duration_s is None
+    assert info.duration_exact_s is None
     assert info.thumbnail is None
     assert info.view_count is None
     assert info.upload_date is None
