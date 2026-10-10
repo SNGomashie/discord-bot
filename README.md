@@ -8,6 +8,21 @@ Personal Discord bot for a private server. See CLAUDE.md for architecture and co
 3. `uv sync`
 4. `./scripts/check.sh` then `uv run python -m ninja_bot`
 
+## /download
+`/download url:<link> format:<mp3|mp4>` fetches a video with yt-dlp and posts the file plus an info embed. `format` defaults to mp4. The bot picks the best quality that fits the server's upload limit (10 MiB without a guild), rejects live streams, playlists and videos longer than `MAX_DURATION_SECONDS` (default 3600). One download runs at a time, with a 30-second per-user cooldown.
+
+**System dependencies:** ffmpeg (audio extraction and video merging) and **deno** (JavaScript runtime yt-dlp needs for YouTube; without it downloads fail with `HTTP Error 403`). Both are in `Dockerfile.dev`. On the Debian 13 prod LXC run `apt install ffmpeg unzip curl` and install deno (`curl -fsSL https://deno.land/install.sh | sh`, then put `~/.deno/bin` on the service's PATH). yt-dlp is installed with its `[default]` extra, which provides `yt-dlp-ejs`.
+
+**yt-dlp upkeep:** sites change often. When extractors break, run `uv lock --upgrade-package yt-dlp`, then `uv sync`, `./scripts/check.sh`, and redeploy.
+
+**Manual test checklist** (dev bot in the test server):
+- [ ] Short video as mp3 → audio file + embed
+- [ ] Short video as mp4 (default) → video file + embed
+- [ ] Video too large for the upload limit → friendly "too large" reply with embed
+- [ ] Bogus URL (e.g. `not a url`) → ephemeral invalid-URL reply
+- [ ] Private/unavailable video → friendly download error
+- [ ] Playlist link → "unsupported" reply (a video link with `&list=` should download just that video)
+
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).
 ```

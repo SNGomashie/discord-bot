@@ -22,3 +22,19 @@ def test_dev_requires_guild() -> None:
 def test_prod_guild_optional() -> None:
     cfg = load_config({"ENVIRONMENT": "prod", "DISCORD_TOKEN": "t"})
     assert cfg.guild_id is None
+
+
+def test_max_duration_defaults_to_one_hour() -> None:
+    cfg = load_config({"ENVIRONMENT": "prod", "DISCORD_TOKEN": "t"})
+    assert cfg.max_duration_seconds == 3600
+
+
+def test_max_duration_custom_value() -> None:
+    cfg = load_config({"ENVIRONMENT": "prod", "DISCORD_TOKEN": "t", "MAX_DURATION_SECONDS": "600"})
+    assert cfg.max_duration_seconds == 600
+
+
+@pytest.mark.parametrize("value", ["abc", "1.5", "0", "-10"])
+def test_max_duration_invalid_raises(value: str) -> None:
+    with pytest.raises(ConfigError):
+        load_config({"ENVIRONMENT": "prod", "DISCORD_TOKEN": "t", "MAX_DURATION_SECONDS": value})

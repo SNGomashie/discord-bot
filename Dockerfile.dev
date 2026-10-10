@@ -2,11 +2,13 @@
 FROM python:3.13-slim-trixie
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git jq curl ca-certificates tmux less \
+ && apt-get install -y --no-install-recommends git jq curl ca-certificates tmux less ffmpeg \
  && rm -rf /var/lib/apt/lists/* \
  && git config --system --add safe.directory /workspace
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /uvx /usr/local/bin/
+# JS runtime yt-dlp needs for YouTube (default runtime is deno)
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
 # Non-root user: Claude Code refuses --dangerously-skip-permissions as root.
 ARG UID=1000
