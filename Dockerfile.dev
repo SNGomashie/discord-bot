@@ -2,7 +2,7 @@
 FROM python:3.13-slim-trixie
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git jq curl ca-certificates tmux less \
+ && apt-get install -y --no-install-recommends git jq curl ca-certificates tmux less ffmpeg \
  && rm -rf /var/lib/apt/lists/* \
  && git config --system --add safe.directory /workspace
 

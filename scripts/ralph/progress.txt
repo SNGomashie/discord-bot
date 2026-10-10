@@ -1,0 +1,12 @@
+# Ralph progress log — started 2026-10-10
+
+## Codebase Patterns
+- Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
+- yt-dlp has no type stubs; mypy override for `yt_dlp` / `yt_dlp.*` is in pyproject.toml.
+- ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
+
+## 2026-10-10 — US-001 Dependencies, config and infrastructure
+- Added yt-dlp runtime dep (pyproject + uv.lock), mypy override, ffmpeg in Dockerfile.dev.
+- Config.max_duration_seconds from MAX_DURATION_SECONDS (default 3600; non-int / <=0 -> ConfigError); documented in .env.example.
+- Tests in tests/test_config.py: default, custom, invalid (abc, 1.5, 0, -10).
+- Files: pyproject.toml, uv.lock, Dockerfile.dev, .env.example, src/ninja_bot/config.py, tests/test_config.py
