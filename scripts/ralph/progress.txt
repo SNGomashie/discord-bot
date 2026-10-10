@@ -98,3 +98,9 @@
 - Learnings: emoji like 😀 are east-asian width W; `…` and `★` are ambiguous (A) and count as 1. Discord's mobile/desktop fonts may still render some emoji at other widths.
 - Needs manual check: `/scoreboard` with a CJK/emoji-named player looks aligned in Discord.
 ---
+
+## 2026-10-10 - US-010
+- `.env.example`: `CS2_CHANNEL_ID` / `CS2_POLL_SECONDS` now say they're reserved for automatic match posts (not implemented), have no effect today, and that a malformed value still stops the bot at startup (matches README / docs/deployment.md "reserved ... not used yet").
+- config.py: comment that both values are reserved and validated to fail fast; parsing unchanged. store.py: one-line comment on `LinkStore.all_links` / `SqliteLinkStore.all_links` (used by the upcoming leaderboard and poller).
+- Files: .env.example, src/ninja_bot/config.py, src/ninja_bot/cs2/store.py
+---
