@@ -1,17 +1,19 @@
 {
   "project": "ninja-discord-bot",
-  "branchName": "ralph/download-hardening",
-  "description": "Harden /download: fixes for nine code review findings (clip size filter, input safety, exact durations, ladder dedupe, mp4 remux, cooldown, queue, async cleanup, deno pin)",
+  "branchName": "ralph/cs2-scoreboard",
+  "description": "CS2 scoreboard: /link, /scoreboard and /profile with a full Leetify-powered match embed, awards and rating breakdown",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Don't apply the whole-video size filter to clips",
-      "description": "As a user, I want a short clip of a long video to download so that clipping works on long videos.",
+      "title": "Dependencies and configuration",
+      "description": "As the owner, I want the CS2 settings and the HTTP dependency in place so later stories can build on them.",
       "acceptanceCriteria": [
-        "In `planning.py`, `format_selector(plan, height)` omits the `filesize<=?` / `filesize_approx<=?` filters when `plan.clip` is set (the clip's real size is verified after download by the existing check in `downloader.py`)",
-        "Without a clip the selector output is byte-for-byte unchanged (existing tests keep passing)",
-        "The docstring of `format_selector` explains why clips skip the size filter",
-        "Unit tests: selector with a clip has no `filesize` text for each ladder height; selector without a clip is unchanged",
+        "`aiohttp` is added as a direct dependency with `uv add aiohttp` (`pyproject.toml` and `uv.lock` updated)",
+        "`Config` in `config.py` gains fields with defaults so existing constructors keep working: `leetify_api_key: str | None = None`, `cs2_channel_id: int | None = None`, `cs2_poll_seconds: int = 300`, `data_dir: str = \"data\"`",
+        "`load_config` reads `LEETIFY_API_KEY` (empty or unset means `None`), `CS2_CHANNEL_ID` (optional positive int), `CS2_POLL_SECONDS` (positive int, default 300, via `_parse_positive_int`) and `DATA_DIR` (default `data`)",
+        "An invalid `CS2_CHANNEL_ID` or `CS2_POLL_SECONDS` (zero, negative, non-numeric) raises `ConfigError` naming the variable",
+        "`.env.example` lists the four new variables with empty/default values and a one-line comment each (no real key)",
+        "Unit tests in `tests/test_config.py` for defaults, valid values, empty key and each invalid case",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -21,13 +23,15 @@
     },
     {
       "id": "US-002",
-      "title": "Make timestamp parsing safe against huge input",
-      "description": "As a user, I want absurd `start`/`end` values to give the friendly clip error instead of a crash.",
+      "title": "CS2 error types and data models",
+      "description": "As a developer, I need typed models and user-safe errors for the CS2 feature.",
       "acceptanceCriteria": [
-        "`parse_timestamp` raises `InvalidClipError` when the trimmed input is longer than 32 characters, before any `int()`/`float()` conversion",
-        "`parse_timestamp` never raises anything but `InvalidClipError` for any string input (e.g. 5000 digits, 5000 digits followed by `m`, `1e400`, `inf`, `nan`, unicode digits)",
-        "`start` and `end` on `/download` are typed `app_commands.Range[str, 0, 32]`-style (max length 32) or equivalent so Discord enforces the bound client-side; `start`/`end` still default to `None` and stay optional",
-        "Unit tests for each oversize/odd input above and for the option's max length",
+        "New package `src/ninja_bot/cs2/` with `__init__.py`",
+        "`cs2/models.py` defines `Cs2Error(Exception)` with a `default_message` class attribute and a user-safe `.message` (same shape as `MediaError` in `media/models.py`), and subclasses `PlayerNotFoundError`, `PrivateProfileError`, `RateLimitedError`, `ApiError`, `InvalidSteamIdError`, `NotLinkedError`, `NoMatchesError`, each with a friendly `default_message`",
+        "Frozen dataclasses with `None` for any value the API may omit: `PlayerMatchStats` (steam64_id, name, team_number, kills, deaths, assists, hs_kills, damage, rounds, mvps, leetify_rating, accuracy_head, flash_assists, trade_kills, multi-kill counts 2k-5k, rounds_survived, reaction_time_ms, preaim, accuracy, spray_accuracy, friendly shots hit), `Match` (id, map_name, finished_at, team_scores, players), `RecentMatch` (id, finished_at, map_name, outcome, leetify_rating, score), `Profile` (steam64_id, name, winrate, total_matches, ratings aim/positioning/utility/clutch/opening, ranks, recent_matches)",
+        "`PlayerMatchStats` exposes derived properties: `kd_ratio`, `adr` (damage per round, `None` when rounds is 0 or unknown) and `hs_percent` (headshot kills / kills, `None` when kills is 0)",
+        "`Match` exposes `teams()` returning the two teams ordered by team number, each sorted by Leetify rating then kills descending (players with no rating last)",
+        "Unit tests for the derived properties (zero rounds, zero kills, missing values) and for `Match.teams()` ordering",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -37,14 +41,16 @@
     },
     {
       "id": "US-003",
-      "title": "Use the exact video duration when resolving clips",
-      "description": "As a user, I want clips near the very end of a video to work, so I don't get \"past the end\" for a video that really has those seconds.",
+      "title": "Parse match responses",
+      "description": "As a developer, I want `parse_match` to turn a Leetify match response into a `Match` so the rest of the code never touches raw JSON.",
       "acceptanceCriteria": [
-        "`VideoInfo` gains `duration_exact_s: float | None = None`, filled by `parse_info` from yt-dlp's `duration` (kept as float); `duration_s` stays the truncated int used for display and existing behaviour",
-        "`resolve_clip` accepts the exact `float` duration and uses it for the \"start past the end\", clamping and \"at least 1 second\" checks; `plan_download` passes `info.duration_exact_s` when present, else `float(info.duration_s)`",
-        "A video of 100.9 s: `start=100.2` is rejected only if the clip would be under 1 s, `start=50` with no end yields a clip ending at 100.9",
-        "Display of video duration (embed, error messages) is unchanged",
-        "Unit tests for `parse_info` with float durations, `resolve_clip` with float durations at the edges, and `plan_download` end-to-end with a 100.9 s video",
+        "`parse_match(raw: dict) -> Match` in `cs2/models.py` maps `MatchDetailsResponse` (`id`, `finished_at`, `map_name`, `team_scores`, `stats[]`) using tolerant helpers in the style of `_opt_str` / `_opt_int` / `_opt_float` in `media/models.py`",
+        "Per-player field names are mapped from the Leetify spec (`total_kills`, `total_deaths`, `total_assists`, `total_hs_kills`, `total_damage`, `rounds_count`, `leetify_rating`, `initial_team_number`, `multi2k`..`multi5k`, `flash_assist`, `reaction_time`, `preaim`, etc.)",
+        "Match-level `accuracy` values are decimals (0.5446) and are normalised to percentages (54.46) so they match profile units; values already above 1.0 are left alone",
+        "Missing, `null` or wrongly typed values become `None` and never raise; a player entry without a `steam64_id` is skipped",
+        "A response without a usable `id` or with no players raises `ApiError`",
+        "A hand-written fixture `tests/fixtures/leetify/match.json` (10 players, built from the Leetify swagger spec) is used by the tests",
+        "Unit tests cover the full fixture, a minimal match, `null` fields, wrong types, unit normalisation and the error cases",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -54,15 +60,13 @@
     },
     {
       "id": "US-004",
-      "title": "Only walk quality rungs that differ",
-      "description": "As the owner, I want the mp4 ladder to skip rungs that resolve to the same format so the LXC doesn't re-download and re-encode identical content.",
+      "title": "Parse profile responses",
+      "description": "As a developer, I want `parse_profile` to turn a Leetify profile response into a `Profile`.",
       "acceptanceCriteria": [
-        "`VideoInfo` gains `video_heights: tuple[int, ...] = ()` with the distinct heights of the video formats yt-dlp reports (`formats[*].height` where `vcodec` is not `none`), ascending; empty when unknown",
-        "`parse_info` fills it, ignoring missing/zero/non-int heights",
-        "`plan_download` builds `height_ladder` for mp4 as follows: if `video_heights` is empty use `HEIGHT_LADDER` unchanged; otherwise map each rung to the largest available height <= that rung (skip rungs with none) and de-duplicate while keeping descending order (e.g. available 144/360/480 -> `(480, 360)`; rung 240 maps to 144 -> `(480, 360, 144)`)",
-        "If no available height is <= the lowest rung but heights exist, the ladder contains the smallest available height",
-        "The downloader and `format_selector` need no changes beyond receiving the shorter ladder",
-        "Unit tests: unknown heights (unchanged ladder), exact matches, collapsing rungs, only-small video, only-large video (smallest available is used), `parse_info` height extraction",
+        "`parse_profile(raw: dict) -> Profile` in `cs2/models.py` maps `name`, `steam64_id`, `winrate` (fraction, kept as a fraction), `total_matches`, `rating` (aim, positioning, utility, clutch, opening, ct/t), `ranks` (premier, faceit level, leetify) and `recent_matches` (newest first)",
+        "`privacy_mode` values other than public raise `PrivateProfileError`",
+        "Missing or `null` sections become `None` / empty tuples and never raise; a response with no `steam64_id` raises `ApiError`",
+        "Fixture `tests/fixtures/leetify/profile.json` built from the spec; unit tests for the full fixture, a minimal profile, missing sections and the private case",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -72,13 +76,13 @@
     },
     {
       "id": "US-005",
-      "title": "Always produce a real mp4 for mp4 requests",
-      "description": "As a user, I want an mp4 request to return an mp4 even when the best source format is webm or mkv.",
+      "title": "Steam ID parsing",
+      "description": "As a user, I want to give my Steam profile URL or ID when linking so I don't have to look up a number.",
       "acceptanceCriteria": [
-        "`build_ydl_options` for mp4 plans adds a `FFmpegVideoRemuxer` postprocessor with `preferedformat: \"mp4\"` (yt-dlp's spelling) so non-mp4 outputs are remuxed",
-        "mp3 options are unchanged",
-        "`_find_output` keeps matching only the plan's extension, but when no matching file exists and other new media files do, `download` raises `DownloadError` with a clear message and logs the unexpected extensions at INFO (no silent \"no file\" message)",
-        "Unit tests: options contain the remuxer for mp4 and not for mp3; `_find_output`/`download` behaviour for a new `.webm` file only (error with message), for `.mp4` (success)",
+        "`cs2/steam.py` has `parse_steam_id(text: str) -> str` that accepts a 17-digit SteamID64 starting with `7656119`, or a `steamcommunity.com/profiles/<id>` URL (with or without scheme, `www.` and trailing slash)",
+        "Vanity URLs (`/id/<name>`), other hosts, empty and non-numeric input raise `InvalidSteamIdError`; the vanity-URL message tells the user to open their Steam profile and copy the 17-digit number from the `/profiles/` URL",
+        "Input longer than 200 characters is rejected before any parsing; regexes use `re.ASCII` (unicode digits are rejected)",
+        "Unit tests for each accepted form and each rejection, parametrized",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -88,15 +92,16 @@
     },
     {
       "id": "US-006",
-      "title": "Start the cooldown only after valid input",
-      "description": "As a user, I want a typo to not lock me out for 30 seconds.",
+      "title": "Leetify client",
+      "description": "As a developer, I want a Leetify client behind a Protocol so the cog and tests never touch the network.",
       "acceptanceCriteria": [
-        "New small class `UserCooldown` (in `cogs/media.py` or `media/cooldown.py`) with an injectable clock: `try_acquire(user_id) -> float` returns 0.0 and records the time when allowed, else the remaining seconds; `refund(user_id)` clears the user's record",
-        "The `@app_commands.checks.cooldown` decorator is removed from `/download`; `handle_download` validates URL and clip first, then calls `try_acquire(interaction.user.id)` and replies ephemerally with the existing `cooldown_message` when blocked",
-        "The cooldown is refunded when the request ends without posting a file (any `MediaError` or unexpected exception after the cooldown was taken), so a failed request can be retried immediately; a successful post keeps the 30-second cooldown",
-        "Invalid URL or invalid clip replies never consume the cooldown",
-        "`cog_app_command_error` no longer needs the `CommandOnCooldown` branch (remove it); other errors still produce the generic reply",
-        "Existing cooldown tests are replaced by tests for `UserCooldown` (allowed, blocked, remaining time, refund, different users independent) and for the cog flow (invalid input doesn't consume, success consumes, failure refunds)",
+        "`cs2/client.py` defines a `StatsProvider` Protocol with `async get_profile(steam64_id) -> Profile`, `async get_recent_matches(steam64_id) -> list[Match]` and `async get_match(game_id) -> Match`",
+        "`LeetifyClient` is the only module doing HTTP. It takes the API key (optional), a base URL (default `https://api-public.cs-prod.leetify.com`) and an injectable `fetch` callable (default uses `aiohttp.ClientSession` created lazily and closed by an `aclose()` method) so tests never use the network",
+        "The key is sent as `Authorization: Bearer <key>` only when set; it is never logged or included in error messages",
+        "Endpoints: `GET /v3/profile?steam64_id=`, `GET /v3/profile/matches?steam64_id=`, `GET /v2/matches/{gameId}`; the game id is URL-quoted",
+        "A request timeout (10 s) is applied; timeouts and connection errors become `ApiError`",
+        "Status mapping: 404 -> `PlayerNotFoundError`, 403 -> `PrivateProfileError`, 429 -> `RateLimitedError`, other non-2xx -> `ApiError`; non-JSON or non-object bodies -> `ApiError`",
+        "Unit tests with a stub `fetch` for every endpoint, every status mapping, timeout, bad JSON, and that the key does not appear in any error message",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -106,14 +111,14 @@
     },
     {
       "id": "US-007",
-      "title": "Bounded, visible queue for downloads",
-      "description": "As a user, I want to know when my request is waiting behind another download, and not lose it silently if the wait is too long.",
+      "title": "Link store",
+      "description": "As a user, I want my Steam link remembered so I only run `/link` once.",
       "acceptanceCriteria": [
-        "When `/download` is deferred and the semaphore is already held, the bot edits the original response to a short \"queued behind another download\" message (`interaction.edit_original_response`)",
-        "Waiting for the semaphore is limited by `QUEUE_TIMEOUT_SECONDS = 300` (module constant, `asyncio.wait_for` on `semaphore.acquire()`); on timeout the user gets a friendly \"the bot is busy, try again in a few minutes\" followup, the cooldown is refunded, and no download runs",
-        "The semaphore is always released after a download, including when the download raises",
-        "All `interaction.followup.send` / `edit_original_response` calls on the deferred path are wrapped so a `discord.HTTPException` (e.g. expired token) is logged and swallowed instead of propagating; the temp dir is still cleaned up",
-        "Tests with the fake interaction and fake downloader: queued message appears only when the semaphore is held; timeout path (patch the timeout constant to a tiny value); semaphore released after success and after an exception; an `HTTPException` from followup is swallowed and logged",
+        "`cs2/store.py` defines a `LinkStore` Protocol with `async get(discord_id: int) -> str | None`, `async set(discord_id, steam64_id) -> None`, `async remove(discord_id) -> bool` and `async all_links() -> dict[int, str]`",
+        "`SqliteLinkStore(path)` implements it with stdlib `sqlite3`; every blocking call goes through `asyncio.to_thread`; the parent directory is created if missing; the schema is created on first use",
+        "A `links(discord_id INTEGER PRIMARY KEY, steam64_id TEXT NOT NULL)` table; `set` replaces an existing link; two Discord users may link the same Steam ID (no uniqueness constraint)",
+        "`remove` returns `True` if a link was deleted, `False` otherwise",
+        "Unit tests on `tmp_path`: round trip, replace, remove, missing user, data survives a new store instance on the same file, directory auto-creation (use small sync helpers where ruff ASYNC240 complains)",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -123,13 +128,15 @@
     },
     {
       "id": "US-008",
-      "title": "Keep disk work off the event loop",
-      "description": "As the owner, I want large-file cleanup not to stall the bot's heartbeat.",
+      "title": "Scoreboard formatting helpers",
+      "description": "As a developer, I need pure formatting helpers so embeds are readable and stay within Discord limits.",
       "acceptanceCriteria": [
-        "`_download_deferred` creates its work directory with `tempfile.mkdtemp` via `asyncio.to_thread` and removes it with `shutil.rmtree(..., ignore_errors=True)` via `asyncio.to_thread` in a `finally`, replacing the synchronous `TemporaryDirectory` context manager",
-        "In `downloader.py`, `_snapshot`, `_find_output`, `_remove_new_files` and the output `stat()` calls run through `asyncio.to_thread` when called from `download`",
-        "The temp directory is removed in every outcome (success, each `MediaError`, unexpected exception, `HTTPException` while sending)",
-        "Existing behaviour and tests keep passing; tests that assert cleanup are updated to the new mechanism",
+        "`cs2/formatting.py` has `format_team_table(players, max_chars=1000) -> str` that returns a monospace code block with one row per player: truncated name, K/D/A, ADR, HS%, Leetify rating, and a star on the player with the most MVPs/best rating; missing values render as `-`",
+        "Names are truncated to 12 characters with `…`; backticks and newlines in names are stripped so they cannot break the code block",
+        "If the table would exceed `max_chars`, rows are dropped from the bottom and a `+N more` line is added; the result is always `<= max_chars`",
+        "`form_strip(recent)` returns the last up-to-5 results as emoji (win, loss, tie, unknown) plus the average Leetify rating, and handles an empty list",
+        "`format_rating(value)` shows signed Leetify ratings with 2 decimals (`+0.05`, `-0.03`, `-` for `None`)",
+        "Unit tests cover 5 and 10 player tables, long/odd names, missing values, the length cap, and the form strip",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -139,18 +146,107 @@
     },
     {
       "id": "US-009",
-      "title": "Pin deno and update docs",
-      "description": "As the owner, I want reproducible dev images and docs that match the new behaviour.",
+      "title": "Fun awards",
+      "description": "As a user, I want playful awards for each match so the scoreboard has personality.",
       "acceptanceCriteria": [
-        "`Dockerfile.dev` copies deno from a pinned tag: `COPY --from=denoland/deno:bin-2.9.7 /deno /usr/local/bin/deno` (2.9.7 is the version verified with yt-dlp 2026.8.19)",
-        "README mentions the pinned deno version next to the deno requirement and says to bump it deliberately when updating yt-dlp",
-        "README `/download` section notes: clips skip the whole-video size filter, queued requests show a message and time out after 5 minutes, and the cooldown only starts after a valid request",
-        "CLAUDE.md \"yt-dlp gotchas\" gains: mp4 requests are remuxed to mp4; the ladder only contains distinct heights",
-        "Add a note to progress.txt: \"needs docker rebuild check for pinned deno tag\" (not verifiable by Ralph)",
+        "`cs2/awards.py` has a frozen `Award(title, steam64_id, name, detail)` and `compute_awards(match, limit=5) -> list[Award]`",
+        "Awards implemented: Headhunter (best HS% with at least 5 kills), Utility Wizard (most flash assists, minimum 1), Trader (most trade kills, minimum 2), Ace Hunter (most 3k+ rounds, minimum 1), Lightning Reflexes (lowest reaction time), Ghost (highest rounds-survived percentage), Whiffer (lowest accuracy, minimum 10 kills worth of data), Friendly Fire Hazard (most friendly shots hit, minimum 3)",
+        "Each award goes to at most one player; ties are broken by higher kills, then name; a player can win at most 2 awards; categories whose data is missing for everyone are skipped",
+        "Results are ordered by a fixed priority list and truncated to `limit`",
+        "Each `detail` is a short human string with the number (e.g. `62% headshots`)",
+        "Unit tests for each award, ties, a player hitting the 2-award cap, missing data, an empty-player match, and the `limit`",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 9,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Match scoreboard embed",
+      "description": "As a user, I want one embed with the whole match so I can see how everyone played.",
+      "acceptanceCriteria": [
+        "`cs2/embed.py` has `build_match_embed(match, awards, focus_steam_id=None, profile=None) -> discord.Embed`",
+        "Title is `<Map> - <score A>:<score B>`; the embed colour is green when the focus player's team won, red when it lost, grey otherwise; a timestamp comes from `finished_at` when present",
+        "Two inline-false fields hold each team's table from `format_team_table` (team names `Team A` / `Team B`, the focus player's team is labelled `Your team`)",
+        "An `Awards` field lists the awards one per line; omitted when there are none",
+        "When `focus_steam_id` is in the match, a `<name>` field shows their K/D/A, ADR, HS%, rating, preaim, reaction time and multi-kills; when `profile` is also given, a `Leetify breakdown` field shows aim / positioning / utility / clutch / opening, and the form strip is added",
+        "Every field value is `<= 1024` characters, there are at most 25 fields and the total embed length is `<= 6000` for a 10-player match with 32-character names and all optional data present (verified in a test using `len(embed)`)",
+        "Optional parts are omitted, never rendered as empty fields or `None`",
+        "Unit tests for the full fixture, a minimal match, focus player missing from the match, win/loss/tie colours and the limits",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Cog skeleton with `/link` and `/unlink`",
+      "description": "As a user, I want to link and unlink my Steam account.",
+      "acceptanceCriteria": [
+        "`cogs/cs2.py` defines `Cs2(bot_dependencies...)` taking a `StatsProvider`, a `LinkStore` and a `UserCooldown` (from `media/cooldown.py`, 10 s) by injection; `setup(bot)` builds `LeetifyClient(bot.config.leetify_api_key)` and `SqliteLinkStore(Path(bot.config.data_dir) / \"cs2.sqlite3\")`",
+        "`\"ninja_bot.cogs.cs2\"` is added to `EXTENSIONS` in `bot.py`; the cog closes the client in `cog_unload`",
+        "`/link steam:<str>` calls `handle_link`: parses with `parse_steam_id`, verifies the profile exists by calling `get_profile`, stores the link, and replies **ephemerally** with the player's Leetify name; errors (`Cs2Error`) are shown ephemerally with `exc.message`",
+        "`/unlink` calls `handle_unlink`, replies ephemerally whether a link was removed or none existed",
+        "The `steam` option has a max length of 200 and a description; unexpected exceptions are logged and answered with a generic ephemeral message; `cog_app_command_error` falls back the same way as in `cogs/media.py`",
+        "Unit tests with a fake `StatsProvider` / in-memory `LinkStore` and a `MagicMock` interaction: success, invalid id, unknown player, private profile, API error, generic error, unlink with and without a link, the option metadata, and `setup` registering the cog",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "`/scoreboard` command",
+      "description": "As a user, I want `/scoreboard` to show a player's latest match as a full embed.",
+      "acceptanceCriteria": [
+        "`/scoreboard [player: discord.Member] [match: str]` calls `handle_scoreboard`; `player` defaults to the caller; `match` is an optional Leetify game id (max length 64) to show a specific match",
+        "The target must be linked, otherwise an ephemeral `NotLinkedError` message that tells the caller to run `/link` (or tells them which user is not linked)",
+        "Order: validate input and look up the link, take the cooldown, `defer(thinking=True)`, fetch the match (`get_match` when an id is given, else the first of `get_recent_matches`; an empty list raises `NoMatchesError`) and the profile, compute awards, post `build_match_embed(...)` with the target as the focus player",
+        "If the profile fetch fails with a `Cs2Error` the scoreboard is still posted without the breakdown",
+        "The cooldown is refunded when nothing was posted; all sends on the deferred path use a `_send_safely`-style wrapper that swallows `discord.HTTPException`",
+        "Errors: `Cs2Error` -> its `message`, `RateLimitedError` mentions trying again later; anything else is logged and gets the generic message",
+        "Unit tests with fakes: own latest match, another member, explicit match id, not linked (self and other), no matches, profile failure fallback, rate limited, generic error, cooldown taken and refunded, and the embed passed to `followup.send`",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "`/profile` command",
+      "description": "As a user, I want `/profile` to show a player's rating breakdown and recent form.",
+      "acceptanceCriteria": [
+        "`build_profile_embed(profile) -> discord.Embed` in `cs2/embed.py`: title is the player name, fields for ranks (only those present), winrate and match count, the five Leetify ratings (aim, positioning, utility, clutch, opening) with `rating_bar`-style visual bars from `formatting.py`, and the recent form strip; missing data is omitted; all Discord limits respected",
+        "`rating_bar(value, max_value)` in `cs2/formatting.py` returns a fixed-width bar and clamps out-of-range and `None` values",
+        "`/profile [player: discord.Member]` calls `handle_profile` with the same link lookup, cooldown, defer and error handling as `/scoreboard`",
+        "Unit tests for `rating_bar`, the embed (full, minimal, limits) and `handle_profile` (success, not linked, API errors, cooldown refund)",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Fixture capture script and documentation",
+      "description": "As the owner, I want to verify my fixtures against the real API and have the feature documented.",
+      "acceptanceCriteria": [
+        "`scripts/capture_leetify.py <steam64_id>` fetches a real profile and its latest match with `LEETIFY_API_KEY` from the environment, replaces `steam64_id` and `name` values with placeholders, and writes the results to `data/leetify-capture/` (gitignored); it never prints the key and refuses to run without `ENVIRONMENT=dev`",
+        "README gets a `/scoreboard` section: commands, `LEETIFY_API_KEY` and where to get it (leetify.com/app/developer), the optional variables, the `data/` directory (prod needs it to be writable and persistent), and a manual test checklist; `docs/deployment.md` gets the new variables in its settings table (`LEETIFY_API_KEY`, `CS2_CHANNEL_ID`, `CS2_POLL_SECONDS`, `DATA_DIR`) and a note that `data/` now holds `cs2.sqlite3` and must be backed up (link, scoreboard, profile, private profile, unlinked user, mobile layout)",
+        "`CLAUDE.md` architecture list gains the `cs2/` package and `cogs/cs2.py` with one line per module",
+        "Typecheck passes",
+        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+      ],
+      "priority": 14,
       "passes": true,
       "notes": ""
     }

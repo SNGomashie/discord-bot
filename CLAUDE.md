@@ -14,6 +14,16 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
 - `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + `UserCooldown` from `media/cooldown.py`).
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
+- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile` cog (thin wrapper; shared `UserCooldown`, `LeetifyClient` + `SqliteLinkStore` built in `setup`).
+- `src/ninja_bot/cs2/`: CS2 feature logic (Leetify API):
+  - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`.
+  - `steam.py`: `parse_steam_id` (SteamID64 or `/profiles/` URL).
+  - `client.py`: `StatsProvider` Protocol, `LeetifyClient` (the only CS2 module doing HTTP; injectable fetch).
+  - `store.py`: `LinkStore` Protocol, `SqliteLinkStore` (`<DATA_DIR>/cs2.sqlite3`).
+  - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name`.
+  - `awards.py`: `compute_awards` (fun match awards).
+  - `embed.py`: `build_match_embed`, `build_profile_embed`.
+- `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.
 - `tests/`: pytest (asyncio_mode=auto).
 
 ## Conventions
@@ -43,7 +53,7 @@ Review follow-ups get their own PRD/branch (e.g. `ralph/download-hardening`).
 Conventional Commits (`type: subject`), small and focused. Story ID goes in the body. Commits are authored as Sena Gomashie <40298891+SNGomashie@users.noreply.github.com> (repo-local git config; set it if missing). Commits made by Claude end with the `Co-Authored-By: Claude ...` trailer; PR descriptions end with the "Generated with Claude Code" line.
 
 ## Deployment (not automated yet)
-Prod runs in a Debian 13 LXC on Proxmox with the prod token (`ENVIRONMENT=prod`, no `GUILD_ID`). It needs ffmpeg and deno (see README). Agents never touch prod.
+Prod runs in a Debian 13 LXC on Proxmox with the prod token (`ENVIRONMENT=prod`, no `GUILD_ID`). It needs ffmpeg and deno. Setup, permissions, systemd unit and update steps are in `docs/deployment.md`; keep it current when adding env vars, intents or system dependencies. Agents never touch prod.
 
 ## yt-dlp gotchas
 - YouTube needs a JS runtime (deno) and `yt-dlp-ejs` (via the `yt-dlp[default]` extra); otherwise downloads 403. Check with `uv run yt-dlp -v -F <url>` and look for `JS runtimes:`.

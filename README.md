@@ -2,8 +2,11 @@
 
 Personal Discord bot for a private server. See CLAUDE.md for architecture and conventions.
 
-## Local setup
-1. Create a dev bot + private test server in the Discord Developer Portal.
+## Setup and deployment
+Full walkthrough in **[docs/deployment.md](docs/deployment.md)**: creating the Discord applications, required permissions and intents (no privileged intents; permission integer `52224`), the invite link, local dev, deploying to the Debian 13 LXC with systemd, updating, and troubleshooting.
+
+## Local setup (quick version)
+1. Create a dev bot + private test server in the Discord Developer Portal and invite the bot ([details](docs/deployment.md#1-create-a-discord-application)).
 2. `cp .env.example .env` and fill in `DISCORD_TOKEN` (dev bot) and `GUILD_ID` (test server).
 3. `uv sync`
 4. `./scripts/check.sh` then `uv run python -m ninja_bot`
@@ -13,7 +16,7 @@ Personal Discord bot for a private server. See CLAUDE.md for architecture and co
 
 **Clips:** add `start` (and optionally `end`) to post only part of the video, e.g. `/download url:<link> format:mp3 start:1:30 end:2:45`. Accepted time formats: plain seconds (`90`, `90.5`), `m:ss` / `h:mm:ss` (with optional tenths, e.g. `1:30.5`), and units in h/m/s order (`1h2m3s`, `2m`, `45s`, `1m30.5s`). `start` alone clips to the end of the video; `end` without `start` is rejected, as is an `end` at or before `start` or a `start` past the end of the video. An `end` beyond the video is clamped to its length. Clips must be at least 1 second long. `MAX_DURATION_SECONDS` and the upload size limit apply to the clip length, so you can clip a section from a video longer than the cap. Clips skip the whole-video size filter when picking a format (yt-dlp's size is for the full video); the clip's real file size is checked after download.
 
-**System dependencies:** ffmpeg (audio extraction and video merging) and **deno** (JavaScript runtime yt-dlp needs for YouTube; without it downloads fail with `HTTP Error 403`). Both are in `Dockerfile.dev`; deno is pinned to **2.9.7** (`denoland/deno:bin-2.9.7`, verified with yt-dlp 2026.8.19). Bump the deno tag deliberately when updating yt-dlp, and re-check YouTube downloads. On the Debian 13 prod LXC run `apt install ffmpeg unzip curl` and install deno (`curl -fsSL https://deno.land/install.sh | sh`, then put `~/.deno/bin` on the service's PATH). yt-dlp is installed with its `[default]` extra, which provides `yt-dlp-ejs`.
+**System dependencies:** ffmpeg (audio extraction and video merging) and **deno** (JavaScript runtime yt-dlp needs for YouTube; without it downloads fail with `HTTP Error 403`). Both are in `Dockerfile.dev`; deno is pinned to **2.9.7** (`denoland/deno:bin-2.9.7`, verified with yt-dlp 2026.8.19). Bump the deno tag deliberately when updating yt-dlp, and re-check YouTube downloads. Prod LXC install steps (ffmpeg, pinned deno, systemd) are in [docs/deployment.md](docs/deployment.md#3-production-debian-13-lxc-on-proxmox). yt-dlp is installed with its `[default]` extra, which provides `yt-dlp-ejs`.
 
 **yt-dlp upkeep:** sites change often. When extractors break, run `uv lock --upgrade-package yt-dlp`, then `uv sync`, `./scripts/check.sh`, and redeploy.
 
@@ -30,6 +33,31 @@ Personal Discord bot for a private server. See CLAUDE.md for architecture and co
 - [ ] `end` without `start` → ephemeral "give a start time too" reply
 - [ ] `start` beyond the video length → friendly error mentioning the video length
 - [ ] Short clip from a video longer than `MAX_DURATION_SECONDS` → downloads fine
+
+## /scoreboard (CS2)
+CS2 stats from the [Leetify](https://leetify.com) public API:
+- `/link steam:<id or link>` links your Discord account to your SteamID64 (17 digits) or a `steamcommunity.com/profiles/<id>` URL. Vanity `/id/<name>` URLs are not accepted. `/unlink` removes the link. Both replies are only visible to you.
+- `/scoreboard [player] [match]` posts the full scoreboard of your (or `player`'s) latest match, or of a specific Leetify match id: both team tables, fun awards, the focus player's stats, Leetify breakdown and recent form.
+- `/profile [player]` posts ranks, winrate, Leetify rating bars and recent form.
+
+`/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. Players need a public Leetify profile.
+
+**Settings** (see [`.env.example`](.env.example) and the [settings reference](docs/deployment.md#5-settings-reference)):
+- `LEETIFY_API_KEY`: get one at [leetify.com/app/developer](https://leetify.com/app/developer). Optional in config (without it requests are sent unauthenticated), but recommended.
+- `CS2_CHANNEL_ID` and `CS2_POLL_SECONDS` (default 300): reserved for automatically posting new matches; parsed and validated, but not used by any code yet.
+- `DATA_DIR` (default `data`): links are stored in `<DATA_DIR>/cs2.sqlite3`. In prod this directory must be writable by the service user and persistent (and backed up), or everyone has to `/link` again.
+
+**Checking the test fixtures:** the Leetify fixtures in `tests/fixtures/leetify/` are hand-written from the API docs. Run `uv run python scripts/capture_leetify.py <steam64_id>` (dev only, needs `LEETIFY_API_KEY`) to save the real profile, matches list and latest match, with Steam IDs and names replaced by placeholders, to `data/leetify-capture/` (gitignored), then compare field names and units with the fixtures.
+
+**Manual test checklist** (dev bot in the test server):
+- [ ] `/link` with a SteamID64, then with a profile URL → ephemeral confirmation; vanity URL → ephemeral hint
+- [ ] `/scoreboard` → embed of your latest match (team tables, awards, your stats, breakdown, form)
+- [ ] `/scoreboard player:@friend` and `/scoreboard match:<id>` → that player's / that match's scoreboard
+- [ ] `/profile` and `/profile player:@friend` → ranks, winrate, rating bars, form
+- [ ] Private Leetify profile → friendly "private profile" reply
+- [ ] Unlinked user (`/scoreboard player:@someone-unlinked`) → "not linked" reply
+- [ ] Mobile layout: team tables and rating bars stay readable on the Discord phone app
+- [ ] `/unlink` twice → removed, then "You don't have a linked Steam account."
 
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).
