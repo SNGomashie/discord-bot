@@ -16,11 +16,11 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
 - `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile` cog (thin wrapper; shared `UserCooldown`, `LeetifyClient` + `SqliteLinkStore` built in `setup`).
 - `src/ninja_bot/cs2/`: CS2 feature logic (Leetify API):
-  - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`.
+  - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`, `newest_first` (the one newest-first sort).
   - `steam.py`: `parse_steam_id` (SteamID64 or `/profiles/` URL).
-  - `client.py`: `StatsProvider` Protocol, `LeetifyClient` (the only CS2 module doing HTTP; injectable fetch).
+  - `client.py`: `StatsProvider` Protocol (includes `aclose`; wrappers must delegate it), `LeetifyClient` (the only CS2 module doing HTTP; injectable fetch).
   - `store.py`: `LinkStore` Protocol, `SqliteLinkStore` (`<DATA_DIR>/cs2.sqlite3`).
-  - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name`.
+  - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name` (names in code blocks), `escape_name` (names in embed text), `display_width` (table alignment).
   - `awards.py`: `compute_awards` (fun match awards).
   - `embed.py`: `build_match_embed`, `build_profile_embed`.
 - `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.

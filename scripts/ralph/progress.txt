@@ -104,3 +104,11 @@
 - config.py: comment that both values are reserved and validated to fail fast; parsing unchanged. store.py: one-line comment on `LinkStore.all_links` / `SqliteLinkStore.all_links` (used by the upcoming leaderboard and poller).
 - Files: .env.example, src/ninja_bot/config.py, src/ninja_bot/cs2/store.py
 ---
+
+## 2026-10-10 - US-011
+- README `/scoreboard` section: `/link` 15 s cooldown (after a valid request, not refunded), same-account re-link is a no-op, "match not found" for a wrong `match:` id, escaped names; four new manual checklist items.
+- CLAUDE.md architecture: `newest_first` (models.py), `aclose` on `StatsProvider` (client.py), `escape_name` / `display_width` (formatting.py).
+- tasks/prd-cs2-squad.md US-005 already says `CachedStatsProvider.aclose()` delegates to the inner provider; no edit needed.
+- Files: README.md, CLAUDE.md
+- needs manual check: the four new README checklist items (link throttle, already linked, match not found, markdown name).
+---
