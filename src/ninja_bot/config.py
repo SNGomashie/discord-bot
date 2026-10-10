@@ -15,6 +15,10 @@ class Config:
     token: str
     guild_id: int | None
     max_duration_seconds: int = 3600
+    leetify_api_key: str | None = None
+    cs2_channel_id: int | None = None
+    cs2_poll_seconds: int = 300
+    data_dir: str = "data"
 
     @property
     def is_dev(self) -> bool:
@@ -33,18 +37,31 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     if environment == "dev" and guild_id is None:
         raise ConfigError("GUILD_ID is required when ENVIRONMENT=dev")
     max_duration_seconds = _parse_positive_int(source, "MAX_DURATION_SECONDS", 3600)
+    leetify_api_key = source.get("LEETIFY_API_KEY", "").strip() or None
+    cs2_channel_id = _parse_optional_positive_int(source, "CS2_CHANNEL_ID")
+    cs2_poll_seconds = _parse_positive_int(source, "CS2_POLL_SECONDS", 300)
+    data_dir = source.get("DATA_DIR", "").strip() or "data"
     return Config(
         environment=environment,
         token=token,
         guild_id=guild_id,
         max_duration_seconds=max_duration_seconds,
+        leetify_api_key=leetify_api_key,
+        cs2_channel_id=cs2_channel_id,
+        cs2_poll_seconds=cs2_poll_seconds,
+        data_dir=data_dir,
     )
 
 
 def _parse_positive_int(source: Mapping[str, str], key: str, default: int) -> int:
+    value = _parse_optional_positive_int(source, key)
+    return default if value is None else value
+
+
+def _parse_optional_positive_int(source: Mapping[str, str], key: str) -> int | None:
     raw = source.get(key, "").strip()
     if not raw:
-        return default
+        return None
     try:
         value = int(raw)
     except ValueError:

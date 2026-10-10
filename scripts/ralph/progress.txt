@@ -1,7 +1,7 @@
 # Ralph progress log — started 2026-10-10 (feature: cs2-scoreboard; patterns carried over)
 
 ## Codebase Patterns
-- Config: optional env ints go through `_parse_positive_int(source, key, default)` in config.py (raises ConfigError on bad values). New Config fields need a default so existing constructors keep working.
+- Config: optional env ints go through `_parse_positive_int(source, key, default)` (or `_parse_optional_positive_int(source, key)` for values without a default, e.g. channel IDs) in config.py (raises ConfigError naming the variable). New Config fields need a default so existing constructors keep working.
 - yt-dlp has no type stubs; mypy override for `yt_dlp` / `yt_dlp.*` is in pyproject.toml.
 - Media errors: subclass MediaError and set `default_message`; `.message` is the user-facing text (safe to send to Discord).
 - DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size. Clipped plans get no size filter at all (yt-dlp filesize is for the whole video).
@@ -22,3 +22,10 @@
 - Disk work stays off the event loop: `_download_deferred` uses `asyncio.to_thread(tempfile.mkdtemp)` + `to_thread(shutil.rmtree, ignore_errors=True)` in `finally`; downloader filesystem helpers (`_snapshot`, `_find_output`, `_file_size`, `_remove_new_files`, `_unexpected_suffixes`) are sync and called via `to_thread`. Tests verify by monkeypatching `asyncio.to_thread` with a recorder (`ThreadRecorder` in test_media_cog.py).
 - YouTube extraction needs deno + yt-dlp-ejs (`yt-dlp[default]`); both are in the dev image. Tests never touch the network, so this only matters for manual runs.
 - CS2 feature (tasks/prd-cs2-scoreboard.md): Leetify fixtures in tests/fixtures/leetify/ are hand-written from the public swagger (https://api-public.cs-prod.leetify.com/swagger.json), not captured from the real API; field names/units are unverified until scripts/capture_leetify.py is run by the owner. Never read .env or print LEETIFY_API_KEY.
+
+## 2026-10-10 - US-001
+- Added aiohttp dependency (uv add); Config gains leetify_api_key, cs2_channel_id, cs2_poll_seconds, data_dir (all defaulted).
+- load_config reads LEETIFY_API_KEY (blank -> None), CS2_CHANNEL_ID (optional positive int), CS2_POLL_SECONDS (default 300), DATA_DIR (blank -> "data").
+- New `_parse_optional_positive_int` in config.py; `_parse_positive_int` builds on it. Errors name the env var.
+- Files: pyproject.toml, uv.lock, src/ninja_bot/config.py, tests/test_config.py, .env.example
+- Learnings: use `_parse_optional_positive_int` for optional ID-style env ints.
