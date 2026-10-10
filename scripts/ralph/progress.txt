@@ -35,6 +35,7 @@
 - CS2 /scoreboard (cogs/cs2.py): `handle_scoreboard` = `clean_match_id` + `_linked_steam_id` (ephemeral `NotLinkedError`; other members get `not_linked_message(display_name)`) -> `cooldown.try_acquire` (CS2 `cooldown_message`) -> defer -> `_scoreboard_deferred` (returns True only if the embed was posted; refund otherwise in `finally`). `_fetch_profile_or_none` turns profile `Cs2Error`s into `None`. Deferred sends go through the cog's own `_send_safely`. Reuse this shape for `/profile`. Tests: `scoreboard_cog(match, profile, links, **FakeStats kwargs)` with `FakeClock` cooldown; `FakeStats(matches=..., match_error=...)`.
 - Scripts in scripts/ are not covered by check.sh mypy (files = src); test them by loading via importlib (see tests/test_capture_leetify.py) and run `MYPYPATH=src uv run mypy --strict scripts/<file>.py`.
 - CS2 /profile (cogs/cs2.py, cs2/embed.py): `handle_scoreboard`/`handle_profile` share `_reply_lookup_error` (pre-defer ephemeral replies; logs "Unexpected error looking up a CS2 link") and `_run_with_cooldown(interaction, work)` (cooldown -> defer -> `work()` returning True if posted, refund otherwise). New stats commands: resolve the link, then pass a `_<name>_deferred` lambda. `build_profile_embed` fields: Ranks, Winrate, Matches (inline), Ratings (code block of `rating_bar`s; aim/positioning/utility out of `SCORE_MAX` 100, clutch/opening out of `SIGNED_RATING_MAX` 0.2, a unit guess), Recent form. `rating_bar` treats None/NaN/negatives as empty and clamps above max.
+- CS2 newest-first: use `newest_first(items)` from cs2/models.py (generic over anything with `finished_at: datetime | None`, returns a list, stable, undated last, no sentinel so it never compares aware vs naive). Don't write another sort.
 
 ## 2026-10-10 - US-001
 - `/link` now parses the Steam input, defers ephemerally (thinking) before calling Leetify, and sends all later replies via `_send_safely(interaction.followup.send(..., ephemeral=True))`. `cog_app_command_error` wraps both sends in `_send_safely`.
@@ -60,4 +61,10 @@
 - `LeetifyClient._get` now also catches `UnicodeDecodeError` around the fetch (warning with the exception type, no traceback, `ApiError` from None). `FetchFn` comment documents the exceptions an injected fetch may raise.
 - Files: src/ninja_bot/cs2/client.py, tests/test_cs2_client.py (UnicodeDecodeError case in the connection-error parametrization, incl. the key in the error object; log test asserting WARNING, no exc_info, no key).
 - Regression coverage for ClientError/OSError/timeout/non-JSON already existed (test_connection_errors_become_api_error, test_timeout, test_bad_json).
+---
+
+## 2026-10-10 - US-005
+- Added public generic `newest_first` (PEP 695 TypeVar bound to a `_Dated` Protocol with a read-only `finished_at` property) in cs2/models.py; `parse_profile` wraps it in `tuple(...)`, `LeetifyClient.get_recent_matches` returns it directly. Removed `client._newest_first`, `client._EPOCH`, models `_newest_first` and the `datetime` import in client.py.
+- Files: src/ninja_bot/cs2/models.py, src/ninja_bot/cs2/client.py, tests/test_cs2_models.py
+- Learnings: `list.sort(reverse=True)` is still stable; sorting (time, item) pairs by `pair[0]` avoids a `type: ignore` for the Optional key.
 ---

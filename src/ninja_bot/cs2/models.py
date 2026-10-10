@@ -4,7 +4,7 @@ import datetime
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 MatchOutcome = Literal["win", "loss", "tie"]
 
@@ -159,6 +159,20 @@ class RecentMatch:
     score: tuple[int, int] | None
 
 
+class _Dated(Protocol):
+    @property
+    def finished_at(self) -> datetime.datetime | None: ...
+
+
+def newest_first[T: _Dated](items: Iterable[T]) -> list[T]:
+    """Sort by `finished_at` descending (stable); undated items keep their order at the end."""
+    items = list(items)
+    # No sentinel for missing times, so tz-aware values are never compared to a naive one.
+    dated = [(at, item) for item in items if (at := item.finished_at) is not None]
+    dated.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in dated] + [item for item in items if item.finished_at is None]
+
+
 @dataclass(frozen=True)
 class Ranks:
     premier: int | None = None
@@ -268,10 +282,12 @@ def parse_profile(raw: dict[str, Any]) -> Profile:
         clutch=_opt_float(rating.get("clutch")),
         opening=_opt_float(rating.get("opening")),
         ranks=_parse_ranks(raw.get("ranks")),
-        recent_matches=_newest_first(
-            match
-            for entry in (recent if isinstance(recent, list) else [])
-            if isinstance(entry, dict) and (match := _parse_recent_match(entry)) is not None
+        recent_matches=tuple(
+            newest_first(
+                match
+                for entry in (recent if isinstance(recent, list) else [])
+                if isinstance(entry, dict) and (match := _parse_recent_match(entry)) is not None
+            )
         ),
         ct_leetify=_opt_float(rating.get("ct_leetify")),
         t_leetify=_opt_float(rating.get("t_leetify")),
@@ -310,12 +326,6 @@ def _score(value: Any) -> tuple[int, int] | None:
     if own is None or other is None:
         return None
     return (own, other)
-
-
-def _newest_first(matches: Iterable[RecentMatch]) -> tuple[RecentMatch, ...]:
-    """Sort by `finished_at` descending; matches without a time keep their order at the end."""
-    floor = datetime.datetime.min.replace(tzinfo=datetime.UTC)
-    return tuple(sorted(matches, key=lambda m: m.finished_at or floor, reverse=True))
 
 
 def _team_scores(value: Any) -> tuple[TeamScore, ...]:

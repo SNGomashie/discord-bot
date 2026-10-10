@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 
 from ninja_bot.cs2.models import (
@@ -11,7 +13,9 @@ from ninja_bot.cs2.models import (
     PlayerNotFoundError,
     PrivateProfileError,
     RateLimitedError,
+    RecentMatch,
     TeamScore,
+    newest_first,
 )
 
 
@@ -114,3 +118,62 @@ def test_teams_skips_players_without_team() -> None:
     team_a, team_b = _match(_player("a", team=2), _player("b", team=None)).teams()
     assert [p.steam64_id for p in team_a] == ["a"]
     assert team_b == ()
+
+
+def _at(hour: int) -> datetime.datetime:
+    return datetime.datetime(2026, 10, 1, hour, tzinfo=datetime.UTC)
+
+
+def _dated_match(match_id: str, finished_at: datetime.datetime | None) -> Match:
+    return Match(id=match_id, map_name=None, finished_at=finished_at, team_scores=(), players=())
+
+
+def _recent(match_id: str, finished_at: datetime.datetime | None) -> RecentMatch:
+    return RecentMatch(
+        id=match_id,
+        finished_at=finished_at,
+        map_name=None,
+        outcome=None,
+        leetify_rating=None,
+        score=None,
+    )
+
+
+def test_newest_first_matches_mixed_dated_and_undated() -> None:
+    items = [
+        _dated_match("u1", None),
+        _dated_match("old", _at(1)),
+        _dated_match("u2", None),
+        _dated_match("new", _at(5)),
+    ]
+    assert [m.id for m in newest_first(items)] == ["new", "old", "u1", "u2"]
+
+
+def test_newest_first_recent_matches_mixed_dated_and_undated() -> None:
+    items = [_recent("old", _at(1)), _recent("u1", None), _recent("new", _at(9))]
+    assert [m.id for m in newest_first(items)] == ["new", "old", "u1"]
+
+
+def test_newest_first_equal_timestamps_keep_order() -> None:
+    items = [_recent("a", _at(3)), _recent("b", _at(3)), _recent("c", _at(4)), _recent("d", _at(3))]
+    assert [m.id for m in newest_first(items)] == ["c", "a", "b", "d"]
+
+
+def test_newest_first_all_undated_keeps_order() -> None:
+    items = [_recent("a", None), _recent("b", None), _recent("c", None)]
+    assert [m.id for m in newest_first(items)] == ["a", "b", "c"]
+
+
+def test_newest_first_empty() -> None:
+    assert newest_first([]) == []
+
+
+def test_newest_first_tz_aware_times_with_undated_items() -> None:
+    plus_two = datetime.timezone(datetime.timedelta(hours=2))
+    items = [
+        _recent("u", None),
+        # 12:00+02:00 is 10:00 UTC, so it is older than 11:00 UTC.
+        _recent("offset", datetime.datetime(2026, 10, 1, 12, tzinfo=plus_two)),
+        _recent("utc", _at(11)),
+    ]
+    assert [m.id for m in newest_first(items)] == ["utc", "offset", "u"]

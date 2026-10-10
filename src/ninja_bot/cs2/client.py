@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -20,6 +19,7 @@ from ninja_bot.cs2.models import (
     PrivateProfileError,
     Profile,
     RateLimitedError,
+    newest_first,
     parse_match,
     parse_profile,
 )
@@ -28,8 +28,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api-public.cs-prod.leetify.com"
 REQUEST_TIMEOUT_SECONDS = 10.0
-
-_EPOCH = datetime.datetime.fromtimestamp(0, datetime.UTC)
 
 
 @dataclass(frozen=True)
@@ -84,7 +82,7 @@ class LeetifyClient:
                 matches.append(parse_match(entry))
             except ApiError:
                 continue
-        return _newest_first(matches)
+        return newest_first(matches)
 
     async def get_match(self, game_id: str) -> Match:
         path = f"/v2/matches/{quote(game_id, safe='')}"
@@ -157,13 +155,3 @@ def _raise_for_status(
     if status == 429:
         raise RateLimitedError()
     raise ApiError()
-
-
-def _newest_first(matches: list[Match]) -> list[Match]:
-    # Stable: undated matches keep their order, after the dated ones.
-    dated = sorted(
-        (m for m in matches if m.finished_at is not None),
-        key=lambda m: m.finished_at or _EPOCH,
-        reverse=True,
-    )
-    return dated + [m for m in matches if m.finished_at is None]
