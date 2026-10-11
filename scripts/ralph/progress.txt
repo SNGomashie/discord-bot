@@ -120,3 +120,9 @@
 - Tests: tests/test_session_store.py (leave-removes-votes inserts votes with raw SQL for now; US-006 can switch to `record_votes`).
 - Docs: README Data and storage (+ DATA_DIR row, layout block), docs/deployment.md backup notes + DATA_DIR row, CLAUDE.md architecture.
 - Learnings: SQLite `end` must be quoted as a column name.
+
+## 2026-10-11 - US-006
+- `sessions/store.py`: `Session` frozen dataclass; new tables `sessions` (roster comma-separated, `cancelled` flag), `session_reminders` (PK session_id+offset, `INSERT OR IGNORE`), `poll_nudges` (one row per nudge; count/last via COUNT/MAX per round). Methods: `record_votes` (INSERT OR REPLACE, one transaction), `votes(poll, round)` (JOIN on poll_slots round), `advance_round(poll_id, slots, window_start, now, message_id=None)` (deviation: explicit `now`, like `create_poll`; `message_id` kept when None via COALESCE; unknown poll -> ValueError), `confirm` (slot must belong to the poll else ValueError, nothing changed), `cancel_poll`, `get_session`, `upcoming_sessions` (start > now), `active_sessions` (end > now, any guild), `cancel_session`, `mark_reminder`, `reminders_sent`, `nudge_count`, `record_nudge`, `last_nudge`.
+- Nudge counters are per round, so a new round starts at 0 without deleting history (advance_round only clears stray rows for the new round number).
+- Tests: tests/test_session_store.py (leave-removes-votes now uses `record_votes`/`votes`; restart test covers every table).
+- Docs: README Data and storage (3 new tables, DATA_DIR row, backup note), docs/deployment.md backup + DATA_DIR, CLAUDE.md architecture.

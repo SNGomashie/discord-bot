@@ -1,17 +1,17 @@
-"""Session poll storage: polls, their round slots and players (one SQLite file)."""
+"""Session poll storage: polls, slots, players, votes, sessions, reminders, nudges (one file)."""
 
 from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
 from typing import Any, Protocol
 
-from ninja_bot.sessions.scoring import MAX_PLAYERS
+from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote
 from ninja_bot.sessions.slots import Slot
 
 STATUS_VOTING = "voting"
@@ -42,6 +42,17 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS poll_votes (poll_id INTEGER NOT NULL,"
     " user_id INTEGER NOT NULL, slot_id INTEGER NOT NULL, vote TEXT NOT NULL,"
     " PRIMARY KEY (poll_id, user_id, slot_id))",
+    "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY,"
+    " poll_id INTEGER NOT NULL, guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,"
+    " message_id INTEGER NULL, name TEXT NOT NULL, gm_id INTEGER NOT NULL,"
+    ' start REAL NOT NULL, "end" REAL NOT NULL, roster TEXT NOT NULL,'
+    " cancelled INTEGER NOT NULL DEFAULT 0)",
+    "CREATE INDEX IF NOT EXISTS sessions_guild_start ON sessions (guild_id, start)",
+    "CREATE TABLE IF NOT EXISTS session_reminders (session_id INTEGER NOT NULL,"
+    " offset_seconds INTEGER NOT NULL, PRIMARY KEY (session_id, offset_seconds))",
+    "CREATE TABLE IF NOT EXISTS poll_nudges (poll_id INTEGER NOT NULL,"
+    " round_number INTEGER NOT NULL, sent_at REAL NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS poll_nudges_round ON poll_nudges (poll_id, round_number)",
 )
 
 _POLL_COLUMNS = (
@@ -49,6 +60,9 @@ _POLL_COLUMNS = (
     " min_players, round_hours, round_number, window_start, status, created_at, round_started_at"
 )
 _SLOT_COLUMNS = 'id, poll_id, round_number, start, "end"'
+_SESSION_COLUMNS = (
+    'id, poll_id, guild_id, channel_id, message_id, name, gm_id, start, "end", roster, cancelled'
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +97,23 @@ class PollSlot:
     round_number: int
     start: float
     end: float
+
+
+@dataclass(frozen=True)
+class Session:
+    """A confirmed session (UTC Unix seconds); `message_id` is the poll's message, if any."""
+
+    id: int
+    poll_id: int
+    guild_id: int
+    channel_id: int
+    message_id: int | None
+    name: str
+    gm_id: int
+    start: float
+    end: float
+    roster: tuple[int, ...]
+    cancelled: bool
 
 
 def _join_days(days: Sequence[int]) -> str:
@@ -139,6 +170,43 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         status=str(status),
         created_at=float(created_at),
         round_started_at=float(round_started_at),
+    )
+
+
+def _join_ids(ids: Sequence[int]) -> str:
+    return ",".join(str(user_id) for user_id in ids)
+
+
+def _split_ids(text: str) -> tuple[int, ...]:
+    return tuple(int(user_id) for user_id in text.split(",")) if text else ()
+
+
+def _session(row: tuple[Any, ...]) -> Session:
+    (
+        session_id,
+        poll_id,
+        guild_id,
+        channel_id,
+        message_id,
+        name,
+        gm_id,
+        start,
+        end,
+        roster,
+        cancelled,
+    ) = row
+    return Session(
+        id=int(session_id),
+        poll_id=int(poll_id),
+        guild_id=int(guild_id),
+        channel_id=int(channel_id),
+        message_id=None if message_id is None else int(message_id),
+        name=str(name),
+        gm_id=int(gm_id),
+        start=float(start),
+        end=float(end),
+        roster=_split_ids(str(roster)),
+        cancelled=bool(cancelled),
     )
 
 
@@ -206,9 +274,75 @@ class SessionStore(Protocol):
         """Set the poll's status (one of `POLL_STATUSES`; anything else raises ValueError)."""
         ...
 
+    async def record_votes(self, poll_id: int, user_id: int, votes: Mapping[int, Vote]) -> None:
+        """Replace the user's votes on the given slot ids, atomically."""
+        ...
+
+    async def votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
+        """(user_id, slot_id) -> vote, for the slots of one round only."""
+        ...
+
+    async def advance_round(
+        self,
+        poll_id: int,
+        slots: Sequence[Slot],
+        window_start: date,
+        now: float,
+        message_id: int | None = None,
+    ) -> Poll:
+        """Start the next round: new slots, `voting`, `round_started_at = now`, zero nudges.
+
+        `message_id` replaces the poll message when given; otherwise it is kept.
+        """
+        ...
+
+    async def confirm(self, poll_id: int, slot_id: int, roster: Sequence[int]) -> Session:
+        """Mark the poll `confirmed` and insert its session at the slot's time, atomically."""
+        ...
+
+    async def cancel_poll(self, poll_id: int) -> None:
+        """Set the poll's status to `cancelled`."""
+        ...
+
+    async def get_session(self, session_id: int) -> Session | None:
+        """The session (cancelled or not), or None."""
+        ...
+
+    async def upcoming_sessions(self, guild_id: int, now: float) -> list[Session]:
+        """The guild's uncancelled sessions starting after `now`, soonest first."""
+        ...
+
+    async def active_sessions(self, now: float) -> list[Session]:
+        """Uncancelled sessions (any guild) whose end is after `now`, soonest first."""
+        ...
+
+    async def cancel_session(self, session_id: int) -> None:
+        """Mark the session cancelled (it stays stored)."""
+        ...
+
+    async def mark_reminder(self, session_id: int, offset_seconds: int) -> None:
+        """Remember that the reminder at that offset was handled; idempotent."""
+        ...
+
+    async def reminders_sent(self, session_id: int) -> set[int]:
+        """Offsets (seconds before start) already handled for the session."""
+        ...
+
+    async def nudge_count(self, poll_id: int, round_number: int) -> int:
+        """How many nudges were sent in that round."""
+        ...
+
+    async def record_nudge(self, poll_id: int, round_number: int, at: float) -> None:
+        """Remember a nudge sent at `at` in that round."""
+        ...
+
+    async def last_nudge(self, poll_id: int, round_number: int) -> float | None:
+        """When the round's latest nudge was sent, or None."""
+        ...
+
 
 class SqliteSessionStore:
-    """Session polls, slots and players in one SQLite file; I/O in a thread."""
+    """Session polls and sessions in one SQLite file; I/O in a thread."""
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
@@ -342,6 +476,163 @@ class SqliteSessionStore:
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE polls SET status = ? WHERE id = ?", (status, poll_id))
 
+    def _record_votes(self, poll_id: int, user_id: int, votes: Mapping[int, Vote]) -> None:
+        if not votes:
+            return
+        with closing(self._connect()) as conn, conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO poll_votes (poll_id, user_id, slot_id, vote)"
+                " VALUES (?, ?, ?, ?)",
+                [(poll_id, user_id, slot_id, str(vote)) for slot_id, vote in votes.items()],
+            )
+
+    def _votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT v.user_id, v.slot_id, v.vote FROM poll_votes v"
+                " JOIN poll_slots s ON s.id = v.slot_id AND s.poll_id = v.poll_id"
+                " WHERE v.poll_id = ? AND s.round_number = ?",
+                (poll_id, round_number),
+            ).fetchall()
+        return {(int(user_id), int(slot_id)): Vote(vote) for user_id, slot_id, vote in rows}
+
+    def _advance_round(
+        self,
+        poll_id: int,
+        slots: Sequence[Slot],
+        window_start: date,
+        now: float,
+        message_id: int | None,
+    ) -> Poll:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE polls SET round_number = round_number + 1, round_started_at = ?,"
+                " window_start = ?, status = ?, message_id = COALESCE(?, message_id)"
+                " WHERE id = ?",
+                (now, window_start.isoformat(), STATUS_VOTING, message_id, poll_id),
+            )
+            row = conn.execute(
+                f"SELECT {_POLL_COLUMNS} FROM polls WHERE id = ?", (poll_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"unknown poll: {poll_id}")
+            poll = _poll(row)
+            conn.executemany(
+                'INSERT INTO poll_slots (poll_id, round_number, start, "end") VALUES (?, ?, ?, ?)',
+                [(poll_id, poll.round_number, slot.start, slot.end) for slot in slots],
+            )
+            # Nudges are counted per round; drop any stray rows for the new round.
+            conn.execute(
+                "DELETE FROM poll_nudges WHERE poll_id = ? AND round_number = ?",
+                (poll_id, poll.round_number),
+            )
+        return poll
+
+    def _confirm(self, poll_id: int, slot_id: int, roster: Sequence[int]) -> Session:
+        with closing(self._connect()) as conn, conn:
+            poll_row = conn.execute(
+                f"SELECT {_POLL_COLUMNS} FROM polls WHERE id = ?", (poll_id,)
+            ).fetchone()
+            slot_row = conn.execute(
+                f"SELECT {_SLOT_COLUMNS} FROM poll_slots WHERE id = ? AND poll_id = ?",
+                (slot_id, poll_id),
+            ).fetchone()
+            if poll_row is None or slot_row is None:
+                raise ValueError(f"unknown poll {poll_id} or slot {slot_id}")
+            poll, slot = _poll(poll_row), _poll_slot(slot_row)
+            conn.execute("UPDATE polls SET status = ? WHERE id = ?", (STATUS_CONFIRMED, poll_id))
+            cursor = conn.execute(
+                "INSERT INTO sessions (poll_id, guild_id, channel_id, message_id, name, gm_id,"
+                ' start, "end", roster, cancelled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)',
+                (
+                    poll.id,
+                    poll.guild_id,
+                    poll.channel_id,
+                    poll.message_id,
+                    poll.name,
+                    poll.gm_id,
+                    slot.start,
+                    slot.end,
+                    _join_ids(roster),
+                ),
+            )
+            session_id = cursor.lastrowid
+            assert session_id is not None
+        return Session(
+            id=session_id,
+            poll_id=poll.id,
+            guild_id=poll.guild_id,
+            channel_id=poll.channel_id,
+            message_id=poll.message_id,
+            name=poll.name,
+            gm_id=poll.gm_id,
+            start=slot.start,
+            end=slot.end,
+            roster=tuple(roster),
+            cancelled=False,
+        )
+
+    def _get_session(self, session_id: int) -> Session | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return None if row is None else _session(row)
+
+    def _upcoming_sessions(self, guild_id: int, now: float) -> list[Session]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT {_SESSION_COLUMNS} FROM sessions"
+                " WHERE guild_id = ? AND cancelled = 0 AND start > ? ORDER BY start, id",
+                (guild_id, now),
+            ).fetchall()
+        return [_session(row) for row in rows]
+
+    def _active_sessions(self, now: float) -> list[Session]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT {_SESSION_COLUMNS} FROM sessions"
+                ' WHERE cancelled = 0 AND "end" > ? ORDER BY start, id',
+                (now,),
+            ).fetchall()
+        return [_session(row) for row in rows]
+
+    def _cancel_session(self, session_id: int) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE sessions SET cancelled = 1 WHERE id = ?", (session_id,))
+
+    def _mark_reminder(self, session_id: int, offset_seconds: int) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO session_reminders (session_id, offset_seconds)"
+                " VALUES (?, ?)",
+                (session_id, offset_seconds),
+            )
+
+    def _reminders_sent(self, session_id: int) -> set[int]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT offset_seconds FROM session_reminders WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+        return {int(offset) for (offset,) in rows}
+
+    def _nudge_stats(self, poll_id: int, round_number: int) -> tuple[int, float | None]:
+        with closing(self._connect()) as conn:
+            count, last = conn.execute(
+                "SELECT COUNT(*), MAX(sent_at) FROM poll_nudges"
+                " WHERE poll_id = ? AND round_number = ?",
+                (poll_id, round_number),
+            ).fetchone()
+        return int(count), None if last is None else float(last)
+
+    def _record_nudge(self, poll_id: int, round_number: int, at: float) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO poll_nudges (poll_id, round_number, sent_at) VALUES (?, ?, ?)",
+                (poll_id, round_number, at),
+            )
+
     async def create_poll(
         self,
         *,
@@ -399,3 +690,56 @@ class SqliteSessionStore:
 
     async def set_status(self, poll_id: int, status: str) -> None:
         await asyncio.to_thread(self._set_status, poll_id, status)
+
+    async def record_votes(self, poll_id: int, user_id: int, votes: Mapping[int, Vote]) -> None:
+        await asyncio.to_thread(self._record_votes, poll_id, user_id, dict(votes))
+
+    async def votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
+        return await asyncio.to_thread(self._votes, poll_id, round_number)
+
+    async def advance_round(
+        self,
+        poll_id: int,
+        slots: Sequence[Slot],
+        window_start: date,
+        now: float,
+        message_id: int | None = None,
+    ) -> Poll:
+        return await asyncio.to_thread(
+            self._advance_round, poll_id, tuple(slots), window_start, now, message_id
+        )
+
+    async def confirm(self, poll_id: int, slot_id: int, roster: Sequence[int]) -> Session:
+        return await asyncio.to_thread(self._confirm, poll_id, slot_id, tuple(roster))
+
+    async def cancel_poll(self, poll_id: int) -> None:
+        await asyncio.to_thread(self._set_status, poll_id, STATUS_CANCELLED)
+
+    async def get_session(self, session_id: int) -> Session | None:
+        return await asyncio.to_thread(self._get_session, session_id)
+
+    async def upcoming_sessions(self, guild_id: int, now: float) -> list[Session]:
+        return await asyncio.to_thread(self._upcoming_sessions, guild_id, now)
+
+    async def active_sessions(self, now: float) -> list[Session]:
+        return await asyncio.to_thread(self._active_sessions, now)
+
+    async def cancel_session(self, session_id: int) -> None:
+        await asyncio.to_thread(self._cancel_session, session_id)
+
+    async def mark_reminder(self, session_id: int, offset_seconds: int) -> None:
+        await asyncio.to_thread(self._mark_reminder, session_id, offset_seconds)
+
+    async def reminders_sent(self, session_id: int) -> set[int]:
+        return await asyncio.to_thread(self._reminders_sent, session_id)
+
+    async def nudge_count(self, poll_id: int, round_number: int) -> int:
+        count, _ = await asyncio.to_thread(self._nudge_stats, poll_id, round_number)
+        return count
+
+    async def record_nudge(self, poll_id: int, round_number: int, at: float) -> None:
+        await asyncio.to_thread(self._record_nudge, poll_id, round_number, at)
+
+    async def last_nudge(self, poll_id: int, round_number: int) -> float | None:
+        _, last = await asyncio.to_thread(self._nudge_stats, poll_id, round_number)
+        return last
