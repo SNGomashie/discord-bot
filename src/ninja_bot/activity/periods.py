@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 MONTH_RE = re.compile(r"(\d{4})-(\d{2})", re.ASCII)
 INVALID_MONTH_MESSAGE = "Use a month like `2026-09` (YYYY-MM)."
+FUTURE_MONTH_MESSAGE = "That month hasn't started yet."
 
 
 class InvalidMonthError(ValueError):
@@ -71,3 +72,17 @@ def parse_month(text: str) -> Month:
     if found is None:
         raise InvalidMonthError()
     return Month(int(found.group(1)), int(found.group(2)))
+
+
+def resolve_month(text: str | None, tz: ZoneInfo, now: float) -> Month:
+    """The month a command asked for: blank means the current local month.
+
+    Raises `InvalidMonthError` for bad text or a month after the current one.
+    """
+    current = month_of(now, tz)
+    if text is None or not text.strip():
+        return current
+    month = parse_month(text)
+    if month > current:
+        raise InvalidMonthError(FUTURE_MONTH_MESSAGE)
+    return month

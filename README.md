@@ -2,11 +2,12 @@
 
 A personal Discord bot for one private server of friends. It is built on discord.py 2.x (Python 3.12+), runs in a Proxmox LXC on a homelab, and makes no LLM calls. Everything it does is rule-based.
 
-It does three things:
+It does four things:
 
 - **Media**: `/download` fetches a video (or a clip of it) with yt-dlp and posts it as an mp3 or mp4.
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
+- **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats.
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -39,6 +40,8 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
 | `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
+| `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed |
+| `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -295,11 +298,32 @@ The bot records how long each member spends in voice channels. It always runs; t
 - **Intents:** only the Voice States intent (part of the defaults, not privileged). No Server Members or Presences intent is needed.
 - Sessions are stored in `activity.sqlite3`; see [Data and storage](#data-and-storage).
 
+### /activity
+
+`/activity [month]` posts the server's voice overview for one month, publicly:
+
+- **Leaderboard:** everyone with voice time that month, most time first: `🥇 @member **12h 30m** · 18 days` (total time and active days). Members with the same total share a rank. At most 25 rows; the rest are counted as `+N more` in the footer. A day counts as active with at least 5 minutes in voice (summed over that day's sessions).
+- **Wall of shame:** the 3 members with the least time (🐌), including members who were in voice in an earlier month but not at all in this one (`0m`).
+- **Awards:** 🦉 Night owl (most time between 00:00 and 06:00), 🏃 Marathon (longest single session), 📅 Most consistent (most active days; ties broken by total time), 📈 Biggest climber and 📉 Biggest drop (change in total time against the month before; only when that month has data), 🐦 Early bird (most time between 06:00 and 09:00). Tied winners share the award; an award nobody earned is left out.
+- **Together:** the pair of members who spent the most time in the same channel at the same time (at least 10 minutes), the busiest hour and weekday, and the server's total voice time.
+- A month without any voice time shows "Nobody was in voice in <month>." instead.
+
+### /myactivity
+
+`/myactivity [user] [month]` posts one member's month (default: you), publicly: total voice time and rank, active days out of the days in the month, current and longest streak of active days, number of sessions with the longest and average session, a strip with one square per day (🟩 active, ⬜ not), and any awards they won.
+
+### Months, cooldown and errors
+
+- **`month`** is `YYYY-MM` (for example `2026-09`; spaces around it are ignored). Leave it empty for the current month. Months, days, hours and streaks all use `ACTIVITY_TIMEZONE` (see [Configuration](#configuration)); the embed footer names it. The current month runs up to now, including sessions that are still open.
+- **Cooldown:** 10 s per user, shared by both commands, taken only after the month is valid. It is refunded when the reply is an error, when `/activity` finds an empty month, or when the reply could not be sent.
+- **Errors** are private replies: a month that isn't `YYYY-MM` ("Use a month like `2026-09` (YYYY-MM).") or hasn't started yet ("That month hasn't started yet."), a member without voice time that month ("You weren't in voice in <month>." / "**Name** wasn't in voice in <month>."), and "Something went wrong while loading voice activity. Please try again later." for anything unexpected.
+- Members appear as mentions, but nobody is pinged.
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
 
-- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
+- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats, Voice activity and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
 - **Detail** (`command` set): the command's summary and explanation, then Usage, Parameters (required or optional, choices, accepted formats), Examples and Notes.
 - **Command names:** `command` has autocomplete (names that start with what you typed first, then names that contain it, up to 25). Case and a leading `/` are ignored, so `/Link` works like `link`.
 - **Unknown names** get a private reply, "There is no command with that name.", with up to 3 similar names ("Did you mean: /download?") or a pointer to `/help`.
@@ -364,7 +388,7 @@ src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help), activity.py (voice tracking listener + heartbeat)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),

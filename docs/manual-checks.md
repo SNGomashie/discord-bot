@@ -76,9 +76,19 @@ Check the `voice_sessions` table in `data/activity.sqlite3` after each step (for
 - [ ] Restart (or kill) the bot while in voice and wait a few minutes before starting it again: the old row ends at its last heartbeat (not at the restart time), and a new row opens for you on start
 - [ ] A bot joining voice gets no row
 
+### /activity and /myactivity
+
+- [ ] `/activity` posts the current month publicly: leaderboard with mentions (nobody is pinged), wall of shame, awards, Together, footer `Times in <ACTIVITY_TIMEZONE>`
+- [ ] `/activity month:2020-01` (no data) shows "Nobody was in voice in January 2020." and a second call right after is not throttled
+- [ ] `/activity month:sept` and `/activity month:2099-01` give private errors
+- [ ] `/myactivity` shows your month publicly (title is your server name, day strip, streaks); `/myactivity user:@friend month:<YYYY-MM>` shows theirs
+- [ ] `/myactivity` for a member without voice time that month gives a private "wasn't in voice" reply
+- [ ] A second `/activity` or `/myactivity` within 10 s gives a private "Slow down!" reply
+- [ ] The embeds render cleanly on the phone app
+
 ## /help
 
-- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats and Utility groups, and a footer hint
+- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint
 - [ ] Typing `/help command:` offers all commands, narrows as you type (`do` -> `download`)
 - [ ] `/help command:download` shows usage `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]`, parameter notes for clips and examples
 - [ ] `/help command:/Link` (capital, leading slash) works the same as `link`

@@ -20,6 +20,8 @@ EXPECTED_NAMES = {
     "scoreboard",
     "profile",
     "leaderboard",
+    "activity",
+    "myactivity",
     "help",
 }
 
@@ -43,7 +45,7 @@ def test_every_expected_command_has_an_entry() -> None:
 
 def test_groups_are_unique_and_in_display_order() -> None:
     keys = [group.key for group in GROUPS]
-    assert len(keys) == len(set(keys)) == 3
+    assert len(keys) == len(set(keys)) == 4
     assert all(group.title for group in GROUPS)
 
 

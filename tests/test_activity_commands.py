@@ -1,0 +1,275 @@
+"""/activity and /myactivity: wiring, month handling, cooldown and replies."""
+
+from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+import pytest
+
+from ninja_bot.activity.embed import EMPTY_MONTH_MESSAGE
+from ninja_bot.activity.periods import FUTURE_MONTH_MESSAGE, INVALID_MONTH_MESSAGE, Month
+from ninja_bot.activity.store import Session
+from ninja_bot.cogs.activity import (
+    COOLDOWN_SECONDS,
+    GENERIC_ERROR_MESSAGE,
+    Activity,
+    cooldown_message,
+    no_activity_message,
+)
+from ninja_bot.media.cooldown import UserCooldown
+
+USER_ID = 42
+OTHER_ID = 7
+# 2026-10-15 12:00 UTC: "this month" is October 2026.
+NOW = datetime(2026, 10, 15, 12, tzinfo=UTC).timestamp()
+
+
+class FakeClock:
+    def __init__(self, now: float = NOW) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class FakeStore:
+    """Only what the commands read; `sessions_between` mirrors the SQL window."""
+
+    def __init__(self, sessions: list[Session] | None = None, fail: bool = False) -> None:
+        self.sessions = sessions or []
+        self.fail = fail
+        self.windows: list[tuple[float, float]] = []
+
+    async def sessions_between(self, start_ts: float, end_ts: float) -> list[Session]:
+        if self.fail:
+            raise RuntimeError("database is locked")
+        self.windows.append((start_ts, end_ts))
+        return [
+            s
+            for s in self.sessions
+            if s.start_ts < end_ts and (s.end_ts is None or s.end_ts > start_ts)
+        ]
+
+    async def known_users(self) -> set[int]:
+        return {s.user_id for s in self.sessions}
+
+
+def ts(day: int, hour: int, month: int = 10) -> float:
+    return datetime(2026, month, day, hour, tzinfo=UTC).timestamp()
+
+
+def session(user_id: int, start: float, hours: float, session_id: int = 1) -> Session:
+    end = start + hours * 3600
+    return Session(session_id, user_id, 10, start, end, end)
+
+
+def make_cog(store: Any, clock: FakeClock | None = None) -> Activity:
+    clock = clock or FakeClock()
+    return Activity(
+        MagicMock(), store, 1, clock=clock, cooldown=UserCooldown(COOLDOWN_SECONDS, clock)
+    )
+
+
+def make_interaction(user_id: int = USER_ID) -> MagicMock:
+    interaction = MagicMock()
+    interaction.user.id = user_id
+    interaction.user.display_name = "Caller"
+    interaction.response.send_message = AsyncMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    return interaction
+
+
+def make_member(user_id: int, name: str) -> MagicMock:
+    member = MagicMock()
+    member.id = user_id
+    member.display_name = name
+    return member
+
+
+def reply(interaction: MagicMock) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    interaction.response.send_message.assert_awaited_once()
+    args, kwargs = interaction.response.send_message.call_args
+    return args, kwargs
+
+
+def busy_store() -> FakeStore:
+    return FakeStore(
+        [
+            session(USER_ID, ts(1, 18), 3, 1),
+            session(OTHER_ID, ts(2, 18), 1, 2),
+            session(USER_ID, ts(20, 18, month=9), 2, 3),
+        ]
+    )
+
+
+def assert_public_embed(interaction: MagicMock) -> discord.Embed:
+    _, kwargs = reply(interaction)
+    assert not kwargs.get("ephemeral")
+    assert kwargs["allowed_mentions"].users is False
+    embed = kwargs["embed"]
+    assert isinstance(embed, discord.Embed)
+    return embed
+
+
+async def test_activity_posts_the_current_month_publicly() -> None:
+    store = busy_store()
+    interaction = make_interaction()
+    await make_cog(store).handle_activity(interaction, None)
+    embed = assert_public_embed(interaction)
+    assert "October 2026" in (embed.title or "")
+    assert f"<@{USER_ID}>" in embed.fields[0].value
+    # This month and the month before (for climber/drop awards).
+    assert store.windows == [
+        (ts(1, 0), datetime(2026, 11, 1, tzinfo=UTC).timestamp()),
+        (ts(1, 0, month=9), ts(1, 0)),
+    ]
+
+
+async def test_activity_takes_an_explicit_month() -> None:
+    interaction = make_interaction()
+    await make_cog(busy_store()).handle_activity(interaction, " 2026-09 ")
+    embed = assert_public_embed(interaction)
+    assert "September 2026" in (embed.title or "")
+
+
+async def test_activity_uses_the_configured_timezone() -> None:
+    # 2026-10-31 23:30 UTC is already November in Amsterdam (UTC+1 after DST ends).
+    clock = FakeClock(datetime(2026, 10, 31, 23, 30, tzinfo=UTC).timestamp())
+    cog = Activity(MagicMock(), FakeStore(), 1, clock=clock, timezone="Europe/Amsterdam")
+    interaction = make_interaction()
+    await cog.handle_activity(interaction, None)
+    assert "November 2026" in (assert_public_embed(interaction).title or "")
+
+
+@pytest.mark.parametrize(
+    ("month", "message"),
+    [
+        ("september", INVALID_MONTH_MESSAGE),
+        ("2026-13", INVALID_MONTH_MESSAGE),
+        ("2026-11", FUTURE_MONTH_MESSAGE),
+        ("2030-01", FUTURE_MONTH_MESSAGE),
+    ],
+)
+async def test_bad_or_future_month_is_a_private_error(month: str, message: str) -> None:
+    store = busy_store()
+    for handle in ("activity", "myactivity"):
+        cog = make_cog(store)
+        interaction = make_interaction()
+        if handle == "activity":
+            await cog.handle_activity(interaction, month)
+        else:
+            await cog.handle_myactivity(interaction, None, month)
+        assert reply(interaction) == ((message,), {"ephemeral": True})
+        # Invalid input never takes the cooldown.
+        assert cog.cooldown.try_acquire(USER_ID) == 0.0
+    assert store.windows == []
+
+
+async def test_empty_month_posts_the_empty_state_and_refunds() -> None:
+    cog = make_cog(FakeStore())
+    interaction = make_interaction()
+    await cog.handle_activity(interaction, None)
+    embed = assert_public_embed(interaction)
+    assert embed.description == EMPTY_MONTH_MESSAGE.format(month="October 2026")
+    assert cog.cooldown.try_acquire(USER_ID) == 0.0
+
+
+async def test_cooldown_is_shared_and_blocks_a_second_request() -> None:
+    clock = FakeClock()
+    cog = make_cog(busy_store(), clock)
+    await cog.handle_activity(make_interaction(), None)
+
+    blocked = make_interaction()
+    clock.now += 4
+    await cog.handle_myactivity(blocked, None, None)
+    assert reply(blocked) == ((cooldown_message(6),), {"ephemeral": True})
+
+    # Other members have their own cooldown.
+    other = make_interaction(OTHER_ID)
+    await cog.handle_myactivity(other, None, None)
+    assert_public_embed(other)
+
+    clock.now += 6
+    again = make_interaction()
+    await cog.handle_activity(again, None)
+    assert_public_embed(again)
+
+
+def test_cooldown_message_rounds_up() -> None:
+    assert cooldown_message(0.2) == ("Slow down! You can use activity commands again in 1 second.")
+    assert cooldown_message(9.1).endswith("in 10 seconds.")
+
+
+async def test_store_errors_get_the_generic_reply_and_refund(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    for handle in ("activity", "myactivity"):
+        cog = make_cog(FakeStore(fail=True))
+        interaction = make_interaction()
+        if handle == "activity":
+            await cog.handle_activity(interaction, None)
+        else:
+            await cog.handle_myactivity(interaction, None, None)
+        assert reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+        assert cog.cooldown.try_acquire(USER_ID) == 0.0
+    assert "Unexpected error" in caplog.text
+
+
+async def test_failed_send_refunds() -> None:
+    cog = make_cog(busy_store())
+    interaction = make_interaction()
+    interaction.response.send_message.side_effect = discord.HTTPException(
+        MagicMock(status=500), "boom"
+    )
+    await cog.handle_activity(interaction, None)
+    assert cog.cooldown.try_acquire(USER_ID) == 0.0
+
+
+async def test_myactivity_defaults_to_the_caller() -> None:
+    interaction = make_interaction()
+    await make_cog(busy_store()).handle_myactivity(interaction, None, None)
+    embed = assert_public_embed(interaction)
+    assert embed.title == "Caller · October 2026"
+
+
+async def test_myactivity_for_another_member_and_month() -> None:
+    interaction = make_interaction()
+    cog = make_cog(busy_store())
+    await cog.handle_myactivity(interaction, make_member(OTHER_ID, "Friend"), "2026-10")
+    embed = assert_public_embed(interaction)
+    assert embed.title == "Friend · October 2026"
+    assert cog.cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_myactivity_without_data_is_a_private_error_and_refunds() -> None:
+    cog = make_cog(busy_store())
+    own = make_interaction(99)
+    await cog.handle_myactivity(own, None, None)
+    assert reply(own) == (
+        (no_activity_message(None, Month(2026, 10)),),
+        {"ephemeral": True},
+    )
+    assert cog.cooldown.try_acquire(99) == 0.0
+
+    other = make_interaction()
+    await make_cog(busy_store()).handle_myactivity(
+        other, make_member(OTHER_ID, "Fr*end"), "2026-09"
+    )
+    assert reply(other) == (
+        ("**Fr\\*end** wasn't in voice in September 2026.",),
+        {"ephemeral": True},
+    )
+
+
+def test_no_activity_message_for_the_caller() -> None:
+    assert no_activity_message(None, Month(2026, 9)) == "You weren't in voice in September 2026."
+
+
+def test_commands_and_parameters_have_descriptions() -> None:
+    for command in (Activity.activity, Activity.myactivity):
+        assert command.description
+        for param in command.parameters:
+            assert str(param.description).strip()
+            assert not param.required

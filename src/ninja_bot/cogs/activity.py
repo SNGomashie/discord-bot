@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
+from ninja_bot.activity.embed import build_monthly_embed, build_profile_embed
+from ninja_bot.activity.formatting import month_label
+from ninja_bot.activity.periods import InvalidMonthError, Month, resolve_month
+from ninja_bot.activity.report import MonthlyReport, build_monthly_report, user_profile
 from ninja_bot.activity.store import ActivityStore, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
+from ninja_bot.cs2.formatting import escape_name
+from ninja_bot.media.cooldown import UserCooldown
 
 if TYPE_CHECKING:
     from ninja_bot.bot import NinjaBot
@@ -18,6 +27,35 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 HEARTBEAT_SECONDS = 60.0
+COOLDOWN_SECONDS = 10.0
+# Longer than any `YYYY-MM` (with spaces); longer input is rejected by Discord.
+MAX_MONTH_LENGTH = 20
+GENERIC_ERROR_MESSAGE = "Something went wrong while loading voice activity. Please try again later."
+
+
+def cooldown_message(retry_after: float) -> str:
+    """User-facing reply for the activity cooldown, rounded up to whole seconds."""
+    seconds = max(1, math.ceil(retry_after))
+    unit = "second" if seconds == 1 else "seconds"
+    return f"Slow down! You can use activity commands again in {seconds} {unit}."
+
+
+def no_activity_message(name: str | None, month: Month) -> str:
+    """Reply for a member without voice time; `name` is None for the caller."""
+    label = month_label(month.year, month.month)
+    if name is None:
+        return f"You weren't in voice in {label}."
+    return f"**{escape_name(name)}** wasn't in voice in {label}."
+
+
+async def _send_safely(send: Awaitable[object]) -> bool:
+    """Await a Discord send; log and swallow HTTP errors (e.g. an expired token)."""
+    try:
+        await send
+    except discord.HTTPException:
+        log.warning("Could not send activity response", exc_info=True)
+        return False
+    return True
 
 
 def _channel_id(state: discord.VoiceState) -> int | None:
@@ -53,11 +91,17 @@ class Activity(commands.Cog):
         store: ActivityStore,
         guild_id: int | None = None,
         clock: Callable[[], float] = time.time,
+        timezone: str = "UTC",
+        cooldown: UserCooldown | None = None,
     ) -> None:
         self.bot = bot
         self.store = store
         self.guild_id = guild_id
         self.clock = clock
+        # Months, days and hours are local to ACTIVITY_TIMEZONE (validated by config).
+        self.tz = ZoneInfo(timezone)
+        # Shared by /activity and /myactivity; refunded unless an embed with data was posted.
+        self.cooldown = cooldown if cooldown is not None else UserCooldown(COOLDOWN_SECONDS)
         self._reconciled = False
 
     async def cog_unload(self) -> None:
@@ -127,7 +171,154 @@ class Activity(commands.Cog):
     async def _before_heartbeat(self) -> None:
         await self.bot.wait_until_ready()
 
+    @app_commands.command(name="activity", description="Show the server's voice activity")
+    @app_commands.describe(month="Which month, as YYYY-MM (defaults to this month)")
+    async def activity(
+        self,
+        interaction: discord.Interaction,
+        month: app_commands.Range[str, 1, MAX_MONTH_LENGTH] | None = None,
+    ) -> None:
+        await self.handle_activity(interaction, month)
+
+    @app_commands.command(name="myactivity", description="Show a member's voice activity")
+    @app_commands.describe(
+        user="Whose activity to show (defaults to you)",
+        month="Which month, as YYYY-MM (defaults to this month)",
+    )
+    async def myactivity(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member | None = None,
+        month: app_commands.Range[str, 1, MAX_MONTH_LENGTH] | None = None,
+    ) -> None:
+        await self.handle_myactivity(interaction, user, month)
+
+    async def handle_activity(self, interaction: discord.Interaction, month: str | None) -> None:
+        try:
+            target = resolve_month(month, self.tz, self.clock())
+        except InvalidMonthError as exc:
+            await interaction.response.send_message(exc.message, ephemeral=True)
+            return
+        await self._run_with_cooldown(
+            interaction, lambda: self._activity_reply(interaction, target)
+        )
+
+    async def handle_myactivity(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User | discord.Member | None,
+        month: str | None,
+    ) -> None:
+        try:
+            target = resolve_month(month, self.tz, self.clock())
+        except InvalidMonthError as exc:
+            await interaction.response.send_message(exc.message, ephemeral=True)
+            return
+        member = user if user is not None else interaction.user
+        await self._run_with_cooldown(
+            interaction, lambda: self._profile_reply(interaction, member, target)
+        )
+
+    async def _run_with_cooldown(
+        self, interaction: discord.Interaction, work: Callable[[], Awaitable[bool]]
+    ) -> None:
+        """Take the caller's cooldown and run `work`; refund unless it posted.
+
+        No defer: the store is local and fast, and replying directly lets "no data"
+        errors stay private while embeds are public.
+        """
+        user_id = interaction.user.id
+        retry_after = self.cooldown.try_acquire(user_id)
+        if retry_after > 0:
+            await interaction.response.send_message(cooldown_message(retry_after), ephemeral=True)
+            return
+        posted = False
+        try:
+            posted = await work()
+        finally:
+            if not posted:
+                self.cooldown.refund(user_id)
+
+    async def _activity_reply(self, interaction: discord.Interaction, month: Month) -> bool:
+        """Post the monthly overview; True only if it listed anyone."""
+        try:
+            report = await self.monthly_report(month)
+            embed = build_monthly_embed(report)
+        except Exception:
+            log.exception("Unexpected error building the activity overview")
+            await _send_safely(
+                interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
+            )
+            return False
+        sent = await _send_safely(
+            interaction.response.send_message(
+                embed=embed, allowed_mentions=discord.AllowedMentions.none()
+            )
+        )
+        # The empty-month embed is a valid reply, but it shouldn't cost the cooldown.
+        return sent and bool(report.leaderboard)
+
+    async def _profile_reply(
+        self,
+        interaction: discord.Interaction,
+        member: discord.User | discord.Member,
+        month: Month,
+    ) -> bool:
+        """Post one member's month; True only if the embed was posted."""
+        try:
+            report = await self.monthly_report(month)
+            profile = user_profile(report, member.id, member.display_name)
+            if profile is None:
+                own = member.id == interaction.user.id
+                message = no_activity_message(None if own else member.display_name, month)
+                await _send_safely(interaction.response.send_message(message, ephemeral=True))
+                return False
+            embed = build_profile_embed(profile)
+        except Exception:
+            log.exception("Unexpected error building an activity profile")
+            await _send_safely(
+                interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
+            )
+            return False
+        return await _send_safely(
+            interaction.response.send_message(
+                embed=embed, allowed_mentions=discord.AllowedMentions.none()
+            )
+        )
+
+    async def monthly_report(self, month: Month) -> MonthlyReport:
+        """Load `month` and the month before from the store and build the report."""
+        now = self.clock()
+        previous = month.previous()
+        sessions = await self.store.sessions_between(
+            month.start(self.tz).timestamp(), month.end(self.tz).timestamp()
+        )
+        previous_sessions = await self.store.sessions_between(
+            previous.start(self.tz).timestamp(), previous.end(self.tz).timestamp()
+        )
+        known_users = await self.store.known_users()
+        return build_monthly_report(sessions, previous_sessions, known_users, month, self.tz, now)
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        log.error("App command error in Activity cog", exc_info=error)
+        if interaction.response.is_done():
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE, ephemeral=True))
+        else:
+            await _send_safely(
+                interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
+            )
+
 
 async def setup(bot: NinjaBot) -> None:
     store = SqliteActivityStore(Path(bot.config.data_dir) / "activity.sqlite3")
-    await bot.add_cog(Activity(bot, store, bot.config.guild_id))
+    await bot.add_cog(
+        Activity(
+            bot,
+            store,
+            bot.config.guild_id,
+            timezone=bot.config.activity_timezone,
+            cooldown=UserCooldown(COOLDOWN_SECONDS),
+        )
+    )

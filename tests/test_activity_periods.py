@@ -6,10 +6,13 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from ninja_bot.activity.periods import (
+    FUTURE_MONTH_MESSAGE,
+    INVALID_MONTH_MESSAGE,
     InvalidMonthError,
     Month,
     month_of,
     parse_month,
+    resolve_month,
 )
 
 UTC_TZ = ZoneInfo("UTC")
@@ -127,3 +130,21 @@ def test_parse_month_rejects_invalid_text(text: str) -> None:
 def test_month_constructor_rejects_out_of_range(month: int) -> None:
     with pytest.raises(InvalidMonthError):
         Month(2026, month)
+
+
+def test_resolve_month_defaults_to_the_current_local_month() -> None:
+    now = datetime(2026, 10, 31, 23, 30, tzinfo=UTC).timestamp()
+    assert resolve_month(None, ZoneInfo("UTC"), now) == Month(2026, 10)
+    assert resolve_month("  ", ZoneInfo("Europe/Amsterdam"), now) == Month(2026, 11)
+    assert resolve_month("2026-10", ZoneInfo("UTC"), now) == Month(2026, 10)
+    assert resolve_month("2020-01", ZoneInfo("UTC"), now) == Month(2020, 1)
+
+
+def test_resolve_month_rejects_future_and_bad_months() -> None:
+    now = datetime(2026, 10, 15, tzinfo=UTC).timestamp()
+    with pytest.raises(InvalidMonthError) as future:
+        resolve_month("2026-11", ZoneInfo("UTC"), now)
+    assert future.value.message == FUTURE_MONTH_MESSAGE
+    with pytest.raises(InvalidMonthError) as bad:
+        resolve_month("Oct", ZoneInfo("UTC"), now)
+    assert bad.value.message == INVALID_MONTH_MESSAGE
