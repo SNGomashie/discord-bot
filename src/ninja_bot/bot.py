@@ -20,6 +20,8 @@ EXTENSIONS = [
 class NinjaBot(commands.Bot):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
+        # Privileged; only needed to read Toasty replies to ;pokemon.
+        intents.message_content = config.toasty_bot_id is not None
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.config = config
 

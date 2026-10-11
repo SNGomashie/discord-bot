@@ -68,8 +68,11 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
 | `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log). A relative path is relative to the process's working directory. |
+| `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report. Unset means no monthly auto-post. Positive integer. |
+| `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
+| `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
 
-**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent (no Message Content, no Server Members, no Presences). Members are looked up over the REST API instead.
+**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead.
 
 **Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channel needs a few extra things; see [Auto-posted matches](#auto-posted-matches). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
