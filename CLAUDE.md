@@ -9,9 +9,10 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - Live smoke test (needs dev token, manual): `uv run python scripts/smoke.py`
 
 ## Architecture
-- `src/ninja_bot/bot.py`: `NinjaBot`, loads extensions, syncs slash commands to `GUILD_ID` in dev.
+- `src/ninja_bot/bot.py`: `NinjaBot`, loads extensions, syncs slash commands to `GUILD_ID` when it is set (required in dev), globally otherwise.
 - `src/ninja_bot/config.py`: env-based config (`load_config` takes an optional dict for tests).
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
+- `src/ninja_bot/cogs/core.py`: `/ping`.
 - `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + `UserCooldown` from `media/cooldown.py`).
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
 - `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile`, `/leaderboard` cog (thin wrapper; shared `UserCooldown`, `CachedStatsProvider(LeetifyClient)` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`) plus the auto-post `tasks.loop` (only with `CS2_CHANNEL_ID`; logic in `run_poll_cycle`, driven by `AutoPost(bot, MatchPoller, channel_id, poll_seconds)`).
@@ -54,6 +55,11 @@ Features are built with the Ralph loop. Repo: https://github.com/SNGomashie/disc
 5. **Review and test**: run `/code-review`, then do the "needs manual check" items from `progress.txt` against the dev bot in the test server (`uv run python scripts/smoke.py`, then `/command`).
 6. **PR** from `ralph/<feature>` to `main` on GitHub (summary, what changed, manual checks, known follow-ups). Keep the per-story commits (no squash). Delete the branch after merge.
 Review follow-ups get their own PRD/branch (e.g. `ralph/download-hardening`).
+
+## Documentation
+- `README.md` is the complete user and contributor reference: commands, every env var, behaviour, limits, storage, known limitations. Update it in the same change as any user-visible behaviour, setting or limit.
+- `docs/deployment.md`: Discord app, prod LXC, updates, troubleshooting (ops only; don't duplicate README behaviour). `docs/manual-checks.md`: the Discord-only checks per feature; add new ones there, not in the README.
+- `CHANGELOG.md`: one entry per merged PR (newest first); add it when writing the PR.
 
 ## Commits
 Conventional Commits (`type: subject`), small and focused. Story ID goes in the body. Commits are authored as Sena Gomashie <40298891+SNGomashie@users.noreply.github.com> (repo-local git config; set it if missing). Commits made by Claude end with the `Co-Authored-By: Claude ...` trailer; PR descriptions end with the "Generated with Claude Code" line.
