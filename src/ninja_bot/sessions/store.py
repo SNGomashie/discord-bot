@@ -270,6 +270,10 @@ class SessionStore(Protocol):
         """The guild's `voting` and `awaiting_confirm` polls, oldest first."""
         ...
 
+    async def voting_polls(self) -> list[Poll]:
+        """Polls in `voting` in every guild, oldest first."""
+        ...
+
     async def set_status(self, poll_id: int, status: str) -> None:
         """Set the poll's status (one of `POLL_STATUSES`; anything else raises ValueError)."""
         ...
@@ -467,6 +471,14 @@ class SqliteSessionStore:
                 f"SELECT {_POLL_COLUMNS} FROM polls WHERE guild_id = ? AND status IN (?, ?)"
                 " ORDER BY created_at, id",
                 (guild_id, *OPEN_STATUSES),
+            ).fetchall()
+        return [_poll(row) for row in rows]
+
+    def _voting_polls(self) -> list[Poll]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT {_POLL_COLUMNS} FROM polls WHERE status = ? ORDER BY created_at, id",
+                (STATUS_VOTING,),
             ).fetchall()
         return [_poll(row) for row in rows]
 
@@ -687,6 +699,9 @@ class SqliteSessionStore:
 
     async def open_polls(self, guild_id: int) -> list[Poll]:
         return await asyncio.to_thread(self._open_polls, guild_id)
+
+    async def voting_polls(self) -> list[Poll]:
+        return await asyncio.to_thread(self._voting_polls)
 
     async def set_status(self, poll_id: int, status: str) -> None:
         await asyncio.to_thread(self._set_status, poll_id, status)

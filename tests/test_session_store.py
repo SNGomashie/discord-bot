@@ -165,6 +165,16 @@ async def test_open_polls_filters_status_and_guild(tmp_path: Path) -> None:
     assert awaiting.status == STATUS_AWAITING_CONFIRM
 
 
+async def test_voting_polls_spans_guilds(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    first = await _create(store, now=1000.0)
+    awaiting = await _create(store, now=2000.0)
+    elsewhere = await _create(store, guild_id=OTHER_GUILD, now=3000.0)
+    await store.set_status(awaiting.id, STATUS_AWAITING_CONFIRM)
+
+    assert [p.id for p in await store.voting_polls()] == [first.id, elsewhere.id]
+
+
 async def test_set_status_rejects_unknown(tmp_path: Path) -> None:
     store = _store(tmp_path)
     poll = await _create(store)

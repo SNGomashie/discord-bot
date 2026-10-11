@@ -81,6 +81,7 @@
 - Session service (sessions/service.py): "not set" `min_players`/`round_hours` are stored as 0 (store columns are NOT NULL; `evaluate_round` uses `min_players or len(players)`). Join/leave/vote refuse anything not `voting` (incl. unknown poll ids) with `POLL_CLOSED`. `store.join` returns False for both already-joined and full, so the service checks `players` first. Refusal text: `JOIN_MESSAGES`/`VOTE_MESSAGES` (service) -> constants in sessions/content.py. Service tests use the real `SqliteSessionStore` in tmp_path + `FakeClock` (2026-11-02 12:00 UTC, Europe/Amsterdam) in tests/test_session_service.py.
 - Session round close (sessions/service.py): the offered top slots are not stored; `confirm` recomputes them with `_evaluate` (votes can't change outside `voting`, since join/leave/vote refuse). Refusals for confirm/cancel raise `SessionRefused(message)`; close_round returns `NotVoting`/`NotAllowed` outcomes instead. A next window with no slots (DST gap/cap) = `RoundFailed(FailReason.NO_SLOTS)`; test it with `sun` `02:30` `weeks=1` starting 2027-03-21 (Amsterdam spring-forward 2027-03-28).
 - Session input (sessions/slots.py): `InvalidSessionInput(message)` is the one parse error (user-facing `.message`, ValueError). `parse_days`/`parse_times` check the raw text length (`MAX_DAYS_LENGTH`/`MAX_TIMES_LENGTH`, reuse as `app_commands.Range` max) before splitting; empty comma parts (`fri,,sat`, trailing comma) are rejected. Times regex is anchored (`fullmatch`) with re.ASCII.
+- Session reminders (sessions/reminders.py): `SessionNotifier.due_reminders()` itself marks overtaken earlier offsets (`skipped_offsets`) as sent, so the cog only posts + `confirm_reminder`; `due_nudges()` reads `store.voting_polls()` (all guilds). Cog must call `confirm_*` after every send attempt.
 
 
 ## 2026-10-11 - US-001
@@ -144,4 +145,12 @@
 - Tests: tests/test_session_service.py (fit, advance, last round, NO_SLOTS via DST gap, concurrent double close, permissions, roster, refusals, cancel, auto-close reasons).
 - Docs: CLAUDE.md Architecture (no user-visible behaviour yet).
 - Files: src/ninja_bot/sessions/service.py, src/ninja_bot/sessions/content.py, tests/test_session_service.py, CLAUDE.md
+---
+
+## 2026-10-11 - US-009
+- New sessions/reminders.py: `REMINDER_OFFSETS` (86400, 3600), `NUDGE_INTERVAL_SECONDS`, `MAX_NUDGES`; pure `due_reminder`/`skipped_offsets`/`due_nudge`; `SessionNotifier(store, clock)` with `due_reminders` (also marks skipped offsets), `due_nudges`, `confirm_reminder`, `confirm_nudge`.
+- Store: new `voting_polls()` (voting polls across guilds, oldest first) for the nudge scan.
+- Tests: tests/test_session_reminders.py (boundaries, bot down across 24 h, never after start, nudge spacing/cap/status, restart persistence with the real store), tests/test_session_store.py (`voting_polls`).
+- Docs: CLAUDE.md Architecture, README layout block (no user-visible behaviour yet).
+- Files: src/ninja_bot/sessions/reminders.py, src/ninja_bot/sessions/store.py, tests/test_session_reminders.py, tests/test_session_store.py, CLAUDE.md, README.md
 ---
