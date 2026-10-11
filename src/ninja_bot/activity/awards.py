@@ -131,8 +131,9 @@ def compute_awards(
 ) -> list[Award]:
     """Awards for `month` in a fixed order; open sessions end at `now` (as in `monthly_stats`).
 
-    Climber/drop compare total time with `previous_stats` and only appear when that
-    month had data; users missing from either month count as 0 there.
+    Climber/drop compare total time with `previous_stats` and only appear once `month`
+    has ended (`now` is past its end) and that previous month had data; users missing
+    from either month count as 0 there.
     """
     session_list = list(sessions)
     totals = {user_id: user.total_seconds for user_id, user in stats.items()}
@@ -156,7 +157,7 @@ def compute_awards(
             tiebreak=totals,
         )
     )
-    if previous_stats:
+    if previous_stats and now >= month.end(tz).timestamp():
         users = set(stats) | set(previous_stats)
         change = {
             user_id: totals.get(user_id, 0.0)

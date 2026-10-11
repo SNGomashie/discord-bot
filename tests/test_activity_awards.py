@@ -218,6 +218,26 @@ def test_no_climber_or_drop_without_previous_month() -> None:
     assert of(awards, AwardKey.BIGGEST_DROP) == []
 
 
+def test_no_climber_or_drop_while_month_is_running() -> None:
+    stats = {1: user_stats(total=10 * HOUR), 2: user_stats(total=HOUR)}
+    previous = {1: user_stats(total=2 * HOUR), 2: user_stats(total=6 * HOUR)}
+    sessions = [session(ts(2026, 10, 2, 1), ts(2026, 10, 2, 3))]
+    now = ts(2026, 10, 3, 12)
+    awards = compute_awards(stats, previous, sessions, OCTOBER, UTC_TZ, now)
+    assert of(awards, AwardKey.BIGGEST_CLIMBER) == []
+    assert of(awards, AwardKey.BIGGEST_DROP) == []
+    assert of(awards, AwardKey.NIGHT_OWL) == [(1, 2 * HOUR)]  # other awards unchanged
+
+
+def test_climber_and_drop_once_month_has_ended() -> None:
+    stats = {1: user_stats(total=10 * HOUR), 2: user_stats(total=HOUR)}
+    previous = {1: user_stats(total=2 * HOUR), 2: user_stats(total=6 * HOUR)}
+    now = OCTOBER.end(UTC_TZ).timestamp()
+    awards = compute_awards(stats, previous, [], OCTOBER, UTC_TZ, now)
+    assert of(awards, AwardKey.BIGGEST_CLIMBER) == [(1, 8 * HOUR)]
+    assert of(awards, AwardKey.BIGGEST_DROP) == [(2, 5 * HOUR)]
+
+
 def test_awards_come_in_fixed_order() -> None:
     sessions = [
         session(ts(2026, 10, 5, 1), ts(2026, 10, 5, 8), user_id=1),

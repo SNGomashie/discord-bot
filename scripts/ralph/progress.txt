@@ -159,3 +159,10 @@
 - `_run_ending_on(days, last_day, *, ongoing)` in activity/stats.py: for the current month a quiet today falls back to yesterday; ended months unchanged; `longest_streak` untouched.
 - Files: src/ninja_bot/activity/stats.py, tests/test_activity_stats.py (quiet morning, active today, two quiet days, the 1st), README.md (/myactivity streak rules). help/content.py made no claim about it, unchanged.
 ---
+
+## 2026-10-11 - US-004
+- `compute_awards` (activity/awards.py) only adds Biggest climber / Biggest drop when `now >= month.end(tz)` (month over) and `previous_stats` is non-empty; other awards unchanged.
+- Tests: running month on day 3 (no climber/drop, night owl still awarded), ended month at exactly `month.end` (both awarded). Existing tests use `LATER` (Dec 1) so they keep passing.
+- README activity Awards bullet says completed months only.
+- Files: src/ninja_bot/activity/awards.py, tests/test_activity_awards.py, README.md
+---
