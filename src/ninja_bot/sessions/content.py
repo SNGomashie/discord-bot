@@ -35,3 +35,53 @@ UNKNOWN_POLL_MESSAGE = "There's no open poll with that id; it may be finished or
 UNKNOWN_SESSION_MESSAGE = (
     "There's no upcoming session with that id; it may have started or been cancelled."
 )
+
+# Poll message.
+ROUND_LABEL = "Round {round} of {max}"
+GM_LABEL = "GM {gm}"
+DURATION_LABEL = "{hours} h sessions"
+MIN_PLAYERS_LABEL = "at least {count} players"
+DESCRIPTION_SEPARATOR = " · "
+SLOT_LINE = "`{index}` {start} · ✅ {yes} · 🤔 {if_needed}"
+DEADLINE_LINE = "Round closes {deadline}"
+JOINED_FIELD = "Joined"
+JOINED_CONTINUED_FIELD = "Joined (cont.)"
+WAITING_FIELD = "Waiting for"
+MORE_LINE = "+{count} more"
+POLL_FOOTER = (
+    "Press Join, then Vote. ✅ works · 🤔 only if needed. Times show in your own time zone."
+)
+
+# Round results.
+RESULT_DESCRIPTION = "A date fits! {gm}, pick one with **Confirm**."
+RESULT_SLOT_LINE = "**{rank}.** {start} · ✅ {yes} · 🤔 {if_needed}"
+CANT_MAKE_IT_LINE = "Can't make it: {players}"
+EVERYONE_CAN_LINE = "Everyone can make it."
+NEXT_ROUND_DESCRIPTION = (
+    "No date fit everyone, so the poll moves on to **round {round} of {max}** with"
+    " {slots} new slots from {first} to {last}."
+)
+NEXT_ROUND_PENDING_FIELD = "Still need a vote from"
+NO_FIT_DESCRIPTION = "No date fit after {rounds} rounds."
+NO_SLOTS_DESCRIPTION = "No date fit, and the next window has no slots left to try."
+NO_FIT_ADVICE = "Try a new poll with fewer days, more weeks, or a lower `min_players`."
+
+# Confirmed session.
+SESSION_TITLE = "📅 {name}"
+SESSION_WHEN = "{start} ({relative})"
+SESSION_GM_FIELD = "GM"
+SESSION_LENGTH_FIELD = "Length"
+LENGTH_LABEL = "{hours} h"
+SESSION_ROSTER_FIELD = "Players"
+SESSION_ROSTER_CONTINUED_FIELD = "Players (cont.)"
+
+# /sessions list.
+LIST_TITLE = "Session polls and sessions"
+LIST_POLLS_FIELD = "Open polls"
+LIST_SESSIONS_FIELD = "Upcoming sessions"
+LIST_EMPTY_MESSAGE = "No open polls or upcoming sessions. Start one with `/session_poll`."
+LIST_POLL_LINE = "{name} · {round}"
+LIST_POLL_WAITING = "waiting for {players}"
+LIST_POLL_ALL_VOTED = "everyone voted"
+LIST_POLL_AWAITING_CONFIRM = "waiting for the GM to confirm"
+LIST_SESSION_LINE = "**{name}** · {start} ({relative}) · GM {gm}"

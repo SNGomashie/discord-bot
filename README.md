@@ -452,7 +452,7 @@ src/ninja_bot/
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
-  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel), reminders (which reminders and nudges are due), content (user-facing strings)
+  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md

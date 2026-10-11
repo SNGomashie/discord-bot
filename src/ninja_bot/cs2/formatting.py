@@ -139,19 +139,19 @@ def clean_name(name: str | None, width: int | None = None) -> str:
     return "".join(kept) + "…"
 
 
-def escape_name(name: str | None) -> str:
+def escape_name(name: str | None, max_length: int = ESCAPED_NAME_LENGTH) -> str:
     """A player name safe for embed text outside code blocks, so it shows as plain text.
 
     Control characters and newlines are dropped and the name is truncated to
-    `ESCAPED_NAME_LENGTH` characters before escaping (so an escape is never cut in half).
+    `max_length` characters before escaping (so an escape is never cut in half).
     `escape_markdown` only escapes complete `[text](url)` links, so every link bracket or
     parenthesis it left unescaped (an even run of backslashes before it) is escaped too.
     """
     cleaned = "".join(c for c in name or "" if c.isprintable()).strip()
     if not cleaned:
         return "?"
-    if len(cleaned) > ESCAPED_NAME_LENGTH:
-        cleaned = cleaned[: ESCAPED_NAME_LENGTH - 1] + "…"
+    if len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 1] + "…"
     escaped = discord.utils.escape_markdown(cleaned, ignore_links=False)
     return _UNESCAPED_LINK_CHAR.sub(r"\1\\\2", escaped)
 
