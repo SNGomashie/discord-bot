@@ -172,3 +172,9 @@
 - Tests (tests/test_activity_autopost.py): build fails once then posts once; build fails every cycle (logged with traceback each time, never confirmed); unexpected send error confirmed, not retried. Existing tests cover send fails / succeeds.
 - Docs: README Monthly auto-post "One post per month" bullet, docs/deployment.md "No monthly activity post" troubleshooting row.
 ---
+
+## 2026-10-11 - US-006
+- `MIN_YEAR = 2015` in activity/periods.py; `parse_month` (so also `resolve_month`) rejects earlier years with `INVALID_MONTH_MESSAGE`. `Month` keeps its 1..9998 bound, so `previous()` of `2015-01` is fine and local timestamps can't overflow for accepted (non-future) months. `9999-12` is rejected by `Month.__post_init__` (same message).
+- Tests: tests/test_activity_periods.py (0001-01, 2014-12, 9999-12, 2015-13 rejected; 2015-01 previous/start/end in UTC, Amsterdam, Kiritimati, Pago_Pago), tests/test_activity_commands.py (both commands reply privately with the format message; 2015-01 builds /activity and /myactivity in UTC, Kiritimati, Pago_Pago).
+- Docs: README /activity `month` bullet (earliest month) and Errors bullet. help/content.py states no range, unchanged.
+---

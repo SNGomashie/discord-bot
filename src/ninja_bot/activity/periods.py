@@ -11,6 +11,10 @@ from zoneinfo import ZoneInfo
 MONTH_RE = re.compile(r"(\d{4})-(\d{2})", re.ASCII)
 INVALID_MONTH_MESSAGE = "Use a month like `2026-09` (YYYY-MM)."
 FUTURE_MONTH_MESSAGE = "That month hasn't started yet."
+# Discord launched in 2015; earlier months are rejected like bad text. Leaves a
+# year of room above the `Month` lower bound, so `previous()` never fails and
+# local timestamps never overflow for an accepted month.
+MIN_YEAR = 2015
 
 
 class InvalidMonthError(ValueError):
@@ -67,9 +71,9 @@ def month_of(timestamp: float, tz: ZoneInfo) -> Month:
 
 
 def parse_month(text: str) -> Month:
-    """Parse `YYYY-MM`; raises `InvalidMonthError` otherwise."""
+    """Parse `YYYY-MM` from `MIN_YEAR` on; raises `InvalidMonthError` otherwise."""
     found = MONTH_RE.fullmatch(text.strip())
-    if found is None:
+    if found is None or int(found.group(1)) < MIN_YEAR:
         raise InvalidMonthError()
     return Month(int(found.group(1)), int(found.group(2)))
 

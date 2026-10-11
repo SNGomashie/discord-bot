@@ -163,6 +163,10 @@ async def test_activity_uses_the_configured_timezone() -> None:
     [
         ("september", INVALID_MONTH_MESSAGE),
         ("2026-13", INVALID_MONTH_MESSAGE),
+        ("2015-13", INVALID_MONTH_MESSAGE),
+        ("0001-01", INVALID_MONTH_MESSAGE),
+        ("2014-12", INVALID_MONTH_MESSAGE),
+        ("9999-12", INVALID_MONTH_MESSAGE),
         ("2026-11", FUTURE_MONTH_MESSAGE),
         ("2030-01", FUTURE_MONTH_MESSAGE),
     ],
@@ -180,6 +184,22 @@ async def test_bad_or_future_month_is_a_private_error(month: str, message: str) 
         # Invalid input never takes the cooldown.
         assert cog.cooldown.try_acquire(USER_ID) == 0.0
     assert store.windows == []
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Pacific/Kiritimati", "Pacific/Pago_Pago"])
+async def test_earliest_month_builds_a_report(timezone: str) -> None:
+    sessions = [session(USER_ID, datetime(2015, 1, 10, 18, tzinfo=UTC).timestamp(), 2)]
+    store = FakeStore(sessions)
+    cog = Activity(MagicMock(), store, 1, clock=FakeClock(), timezone=timezone)
+    interaction = make_interaction()
+    await cog.handle_activity(interaction, "2015-01")
+    assert "January 2015" in (assert_public_embed(interaction).title or "")
+
+    # A fresh cog: the first post took the shared cooldown.
+    cog = Activity(MagicMock(), store, 1, clock=FakeClock(), timezone=timezone)
+    mine = make_interaction()
+    await cog.handle_myactivity(mine, None, "2015-01")
+    assert assert_public_embed(mine).title == "Caller · January 2015"
 
 
 async def test_empty_month_posts_the_empty_state_and_refunds() -> None:

@@ -315,9 +315,9 @@ The bot records how long each member spends in voice channels. It always runs; t
 
 ### Months, cooldown and errors
 
-- **`month`** is `YYYY-MM` (for example `2026-09`; spaces around it are ignored). Leave it empty for the current month. Months, days, hours and streaks all use `ACTIVITY_TIMEZONE` (see [Configuration](#configuration)); the embed footer names it. The current month runs up to now, including sessions that are still open.
+- **`month`** is `YYYY-MM` (for example `2026-09`; spaces around it are ignored). Leave it empty for the current month. The earliest accepted month is `2015-01` (`MIN_YEAR`, the year Discord launched). Months, days, hours and streaks all use `ACTIVITY_TIMEZONE` (see [Configuration](#configuration)); the embed footer names it. The current month runs up to now, including sessions that are still open.
 - **Cooldown:** 10 s per user, shared by both commands, taken only after the month is valid. It is refunded when the reply is an error, when `/activity` finds an empty month (no voice time and no Pokémon data), or when the reply could not be sent.
-- **Errors** are private replies: a month that isn't `YYYY-MM` ("Use a month like `2026-09` (YYYY-MM).") or hasn't started yet ("That month hasn't started yet."), a member without voice time that month ("You weren't in voice in <month>." / "**Name** wasn't in voice in <month>."), and "Something went wrong while loading voice activity. Please try again later." for anything unexpected.
+- **Errors** are private replies: a month that isn't `YYYY-MM` or is before `2015-01` ("Use a month like `2026-09` (YYYY-MM).") or hasn't started yet ("That month hasn't started yet."), a member without voice time that month ("You weren't in voice in <month>." / "**Name** wasn't in voice in <month>."), and "Something went wrong while loading voice activity. Please try again later." for anything unexpected.
 - Members appear as mentions, but nobody is pinged.
 
 ### Monthly auto-post

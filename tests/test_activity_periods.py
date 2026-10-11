@@ -8,6 +8,7 @@ import pytest
 from ninja_bot.activity.periods import (
     FUTURE_MONTH_MESSAGE,
     INVALID_MONTH_MESSAGE,
+    MIN_YEAR,
     InvalidMonthError,
     Month,
     month_of,
@@ -116,13 +117,17 @@ def test_parse_month(text: str, expected: Month) -> None:
         "september",
         "２０２６-０９",
         "0000-01",
+        "0001-01",
+        "2014-12",
+        "9999-12",
+        "2015-13",
     ],
 )
 def test_parse_month_rejects_invalid_text(text: str) -> None:
     with pytest.raises(InvalidMonthError) as excinfo:
         parse_month(text)
     assert isinstance(excinfo.value, ValueError)
-    assert excinfo.value.message
+    assert excinfo.value.message == INVALID_MONTH_MESSAGE
     assert str(excinfo.value) == excinfo.value.message
 
 
@@ -148,3 +153,24 @@ def test_resolve_month_rejects_future_and_bad_months() -> None:
     with pytest.raises(InvalidMonthError) as bad:
         resolve_month("Oct", ZoneInfo("UTC"), now)
     assert bad.value.message == INVALID_MONTH_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "tz", [UTC_TZ, AMSTERDAM, ZoneInfo("Pacific/Kiritimati"), ZoneInfo("Pacific/Pago_Pago")]
+)
+def test_earliest_accepted_month_has_a_safe_previous_month(tz: ZoneInfo) -> None:
+    month = parse_month(f"{MIN_YEAR}-01")
+    assert month == Month(MIN_YEAR, 1)
+    previous = month.previous()
+    assert previous == Month(MIN_YEAR - 1, 12)
+    assert previous.start(tz).timestamp() < month.start(tz).timestamp()
+    assert month.end(tz).timestamp() > month.start(tz).timestamp()
+
+
+def test_resolve_month_rejects_months_before_min_year() -> None:
+    now = datetime(2026, 10, 15, tzinfo=UTC).timestamp()
+    for text in ("0001-01", "2014-12"):
+        with pytest.raises(InvalidMonthError) as excinfo:
+            resolve_month(text, UTC_TZ, now)
+        assert excinfo.value.message == INVALID_MONTH_MESSAGE
+    assert resolve_month("2015-01", UTC_TZ, now) == Month(2015, 1)
