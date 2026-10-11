@@ -1,0 +1,211 @@
+{
+  "_comment": "Derived from replies.md (copied from the Discord UI). Raw form is assumed: mentions are <@id>; cases with assumed=true are variations, not observed replies. Replace with raw dev-bot captures when available. Cases with from_toasty=false are replies by another bot: nothing may be recorded for them (the parser alone would still read them).",
+  "cases": [
+    {
+      "name": "catch_trailing_char",
+      "assumed": false,
+      "invoker_content": "; pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Mimikyu!J",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Mimikyu",
+        "shiny": false
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "catch_plain",
+      "assumed": false,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Frillish!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Frillish",
+        "shiny": false
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "catch_article_an",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught an Eevee!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Eevee",
+        "shiny": false
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "catch_punctuated_name",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Mr. Mime!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Mr. Mime",
+        "shiny": false
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "shiny_all_in_content",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Shiny Herdier!\nShiny Herdier has been registered to your Pokédex",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Herdier",
+        "shiny": true
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "shiny_text_in_embed",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "",
+      "reply_embeds": [
+        {
+          "description": "<@111111111111111111>, you've caught a Shiny Herdier!\nShiny Herdier has been registered to your Pokédex"
+        }
+      ],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Herdier",
+        "shiny": true
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "cooldown",
+      "assumed": false,
+      "invoker_content": "; pokemon",
+      "reply_content": " You need to wait 1h 50m 16s before catching another Pokemon!\n\n Skip the wait! Upvote Toasty to reset your catch cooldown (once every 24h).",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "cooldown",
+        "wait_seconds": 6616
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "cooldown_minutes_only",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "You need to wait 5m 3s before catching another Pokemon!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "cooldown",
+        "wait_seconds": 303
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "cooldown_unparseable_duration",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "You need to wait a bit before catching another Pokemon!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "cooldown",
+        "wait_seconds": null
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "catch_gender_symbol",
+      "assumed": true,
+      "from_toasty": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Nidoran♀!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Nidoran♀",
+        "shiny": false
+      }
+    },
+    {
+      "name": "catch_in_embed_field",
+      "assumed": true,
+      "from_toasty": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "",
+      "reply_embeds": [
+        {
+          "title": "Catch!",
+          "fields": [
+            {
+              "name": "Result",
+              "value": "<@111111111111111111>, you've caught a Farfetch'd!"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Farfetch'd",
+        "shiny": false
+      }
+    },
+    {
+      "name": "unrelated_reply",
+      "assumed": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "Here is your Pokédex page.",
+      "reply_embeds": [],
+      "expected": null,
+      "from_toasty": true
+    },
+    {
+      "name": "non_toasty_reply",
+      "assumed": true,
+      "from_toasty": false,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Magikarp!",
+      "reply_embeds": [],
+      "expected": null
+    }
+  ],
+  "invokers": [
+    {
+      "content": ";pokemon",
+      "is_command": true
+    },
+    {
+      "content": "; pokemon",
+      "is_command": true
+    },
+    {
+      "content": ";POKEMON",
+      "is_command": true
+    },
+    {
+      "content": ";Pokemon",
+      "is_command": true
+    },
+    {
+      "content": ";pokemon list",
+      "is_command": false
+    },
+    {
+      "content": "pokemon",
+      "is_command": false
+    },
+    {
+      "content": "!pokemon",
+      "is_command": false
+    },
+    {
+      "content": "I think ;pokemon is fun",
+      "is_command": false
+    }
+  ]
+}

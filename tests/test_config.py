@@ -1,5 +1,7 @@
+import discord
 import pytest
 
+from ninja_bot.bot import NinjaBot
 from ninja_bot.config import ConfigError, load_config
 
 
@@ -81,3 +83,52 @@ def test_empty_data_dir_uses_default() -> None:
 def test_cs2_ints_invalid_raise(key: str, value: str) -> None:
     with pytest.raises(ConfigError, match=key):
         load_config({**PROD, key: value})
+
+
+def test_activity_settings_default() -> None:
+    cfg = load_config(dict(PROD))
+    assert cfg.activity_channel_id is None
+    assert cfg.activity_timezone == "UTC"
+    assert cfg.toasty_bot_id is None
+
+
+def test_activity_settings_custom_values() -> None:
+    cfg = load_config(
+        {
+            **PROD,
+            "ACTIVITY_CHANNEL_ID": "123456789",
+            "ACTIVITY_TIMEZONE": " Europe/Amsterdam ",
+            "TOASTY_BOT_ID": "987654321",
+        }
+    )
+    assert cfg.activity_channel_id == 123456789
+    assert cfg.activity_timezone == "Europe/Amsterdam"
+    assert cfg.toasty_bot_id == 987654321
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_activity_timezone_uses_default(value: str) -> None:
+    assert load_config({**PROD, "ACTIVITY_TIMEZONE": value}).activity_timezone == "UTC"
+
+
+@pytest.mark.parametrize("key", ["ACTIVITY_CHANNEL_ID", "TOASTY_BOT_ID"])
+@pytest.mark.parametrize("value", ["abc", "1.5", "0", "-10"])
+def test_activity_ids_invalid_raise(key: str, value: str) -> None:
+    with pytest.raises(ConfigError, match=key):
+        load_config({**PROD, key: value})
+
+
+@pytest.mark.parametrize("value", ["Not/AZone", "Europe", "../etc/passwd", "/etc/localtime"])
+def test_activity_timezone_invalid_raises(value: str) -> None:
+    with pytest.raises(ConfigError, match="ACTIVITY_TIMEZONE"):
+        load_config({**PROD, "ACTIVITY_TIMEZONE": value})
+
+
+@pytest.mark.parametrize(("toasty", "expected"), [(None, False), ("42", True)])
+def test_message_content_intent_only_with_toasty(toasty: str | None, expected: bool) -> None:
+    env = dict(PROD) if toasty is None else {**PROD, "TOASTY_BOT_ID": toasty}
+    bot = NinjaBot(load_config(env))
+    assert bot.intents.message_content is expected
+    default = discord.Intents.default()
+    default.message_content = expected
+    assert bot.intents == default

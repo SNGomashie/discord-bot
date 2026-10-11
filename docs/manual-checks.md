@@ -64,9 +64,65 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] Wrong channel ID or missing Embed Links: one warning in the log, no crash
 - [ ] Leetify rate limit: one skipped cycle (see the log), then posting resumes. If it can't be triggered, note it as unverifiable (covered by unit tests)
 
+## Activity tracking
+
+Check the `voice_sessions` table in `data/activity.sqlite3` after each step (for example `sqlite3 data/activity.sqlite3 'SELECT * FROM voice_sessions ORDER BY id DESC LIMIT 5'`).
+
+- [ ] Join a voice channel: a new row with an empty `end_ts`; `last_seen` advances about once a minute
+- [ ] Mute, deafen and start/stop a stream: no new row
+- [ ] Move to another voice channel: the old row gets an `end_ts`, a new row opens for the new channel
+- [ ] Move to the server's AFK channel: the row is closed and no new one opens; moving back opens a new one
+- [ ] Leave voice: the row gets an `end_ts`
+- [ ] Restart (or kill) the bot while in voice and wait a few minutes before starting it again: the old row ends at its last heartbeat (not at the restart time), and a new row opens for you on start
+- [ ] A bot joining voice gets no row
+
+### /activity and /myactivity
+
+- [ ] `/activity` posts the current month publicly: leaderboard with mentions (nobody is pinged), wall of shame, awards, Together, footer `Times in <ACTIVITY_TIMEZONE>`
+- [ ] The wall of shame names only members seen in voice within the last 90 days of the viewed month (or since) who were already known by its end; `/activity` for an old month does not list members who joined later
+- [ ] A member who left the server no longer appears on the wall of shame (in `/activity` and the monthly post); the next lowest member fills the spot
+- [ ] `/activity month:2020-01` (no data) shows "Nobody was in voice in January 2020." and a second call right after is not throttled
+- [ ] `/activity month:sept` and `/activity month:2099-01` give private errors
+- [ ] `/myactivity` shows your month publicly (title is your server name, day strip, streaks); `/myactivity user:@friend month:<YYYY-MM>` shows theirs
+- [ ] `/myactivity` for a member without voice time that month gives a private "wasn't in voice" reply
+- [ ] A second `/activity` or `/myactivity` within 10 s gives a private "Slow down!" reply
+- [ ] The embeds render cleanly on the phone app
+
+### Monthly auto-post (with `ACTIVITY_CHANNEL_ID` set)
+
+To force a post on the dev bot, give a past month some voice time and make sure it isn't marked posted, then restart (the check runs right after start):
+
+```sh
+sqlite3 data/activity.sqlite3 "INSERT INTO voice_sessions (user_id, channel_id, start_ts, end_ts, last_seen) VALUES (<your user id>, 1, strftime('%s','2026-01-10 20:00'), strftime('%s','2026-01-10 22:00'), strftime('%s','2026-01-10 22:00'))"
+sqlite3 data/activity.sqlite3 "DELETE FROM reports_posted WHERE month_key >= '2026-01'"
+```
+
+The inserted session makes January the first month with data, so every ended month from January on that has voice time is posted, one per hour (oldest first). Delete the row again afterwards (`DELETE FROM voice_sessions WHERE channel_id = 1`).
+
+- [ ] After the restart the overview for the oldest such month appears in the channel within a minute; nobody is pinged
+- [ ] `SELECT * FROM reports_posted` now lists that month; another restart does not post it again
+- [ ] Remove the bot's Send Messages (or Embed Links) in the channel and repeat: one warning `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is missing ...` in the log, nothing posted, and the month is not in `reports_posted`; restoring the permission posts it within an hour (or on restart)
+- [ ] Without `ACTIVITY_CHANNEL_ID` nothing is posted
+
+### Toasty `;pokemon` (with `TOASTY_BOT_ID` set)
+
+Enable **Message Content Intent** for the dev application first. Check the rows with `sqlite3 data/activity.sqlite3 "SELECT * FROM pokemon_events ORDER BY ts DESC LIMIT 5"`.
+
+- [ ] Send `;pokemon` and get a catch: a `catch` row with your user ID, the Pokémon name (without `Shiny `) and `shiny` 0
+- [ ] A shiny catch (whenever one happens) gives `shiny` 1 and the name without `Shiny `
+- [ ] `;pokemon` again during the cooldown: a `cooldown` row with an empty `pokemon`
+- [ ] `; pokemon` (with a space) is recorded too; `;pokemon list` and someone else's message are not
+- [ ] Note whether Toasty edits its reply or puts the text in an embed, and replace the `assumed` cases in `tests/fixtures/toasty/replies.json` with what you see
+- [ ] Without `TOASTY_BOT_ID` (and the intent off in the portal) the bot starts and records nothing
+- [ ] With `TOASTY_BOT_ID` set but **Message Content Intent** off in the portal, the bot stops at startup with `PrivilegedIntentsRequired`
+- [ ] A Toasty reply to a `;pokemon` the bot didn't see (sent while it was offline) is not recorded
+- [ ] After a few catches (one shiny if you're lucky) and 3 cooldown hits, `/activity` shows a **Pokémon** field: top catchers with medals (no pings), the shiny line, `🏆 Most caught`, `⏳ Impatient: @you (3 cooldown hits)` and the `🎯 Server` line; Impatient is not in the Awards field
+- [ ] `/myactivity` shows `N catches · N shinies · N cooldown hits` and the Impatient award; a member who didn't play shows zeros
+- [ ] A shiny can be faked with `sqlite3 data/activity.sqlite3 "INSERT INTO pokemon_events VALUES (1, <your user id>, strftime('%s','now'), 'catch', 'Pikachu', 1)"` if Toasty doesn't cooperate; delete the row afterwards
+
 ## /help
 
-- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats and Utility groups, and a footer hint
+- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint
 - [ ] Typing `/help command:` offers all commands, narrows as you type (`do` -> `download`)
 - [ ] `/help command:download` shows usage `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]`, parameter notes for clips and examples
 - [ ] `/help command:/Link` (capital, leading slash) works the same as `link`

@@ -2,11 +2,12 @@
 
 A personal Discord bot for one private server of friends. It is built on discord.py 2.x (Python 3.12+), runs in a Proxmox LXC on a homelab, and makes no LLM calls. Everything it does is rule-based.
 
-It does three things:
+It does four things:
 
 - **Media**: `/download` fetches a video (or a clip of it) with yt-dlp and posts it as an mp3 or mp4.
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
+- **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -18,6 +19,7 @@ It does three things:
 - [/download](#download)
 - [CS2 stats](#cs2-stats)
 - [Auto-posted matches](#auto-posted-matches)
+- [Activity tracking](#activity-tracking)
 - [/help](#help)
 - [Data and storage](#data-and-storage)
 - [Troubleshooting](#troubleshooting)
@@ -27,7 +29,7 @@ It does three things:
 
 ## Commands at a glance
 
-All commands are slash commands. There are no prefix commands, and the bot reads no messages. Unless noted, anyone who can see a command can run it.
+All commands are slash commands. There are no prefix commands, and the bot reads no messages except Toasty's replies to `;pokemon` when [Toasty tracking](#toasty-pokemon-catches) is turned on. Unless noted, anyone who can see a command can run it.
 
 | Command | Parameters | Reply | Cooldown (per user) |
 |---|---|---|---|
@@ -38,6 +40,8 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
 | `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
+| `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
+| `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -67,11 +71,14 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `LEETIFY_API_KEY` | none | no, recommended | Sent to Leetify as a bearer token. Get one at [leetify.com/app/developer](https://leetify.com/app/developer). Without it, requests are sent unauthenticated. |
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
-| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log). A relative path is relative to the process's working directory. |
+| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions, Toasty `;pokemon` events and posted monthly reports). A relative path is relative to the process's working directory. |
+| `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report (see [Monthly auto-post](#monthly-auto-post)). Unset means no monthly auto-post. Positive integer. |
+| `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
+| `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
 
-**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent (no Message Content, no Server Members, no Presences). Members are looked up over the REST API instead.
+**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
 
-**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channel needs a few extra things; see [Auto-posted matches](#auto-posted-matches). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
+**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
 **Logging:** INFO level to stderr (journald captures it under systemd). On start the bot logs `Logged in as <name> (env=<ENVIRONMENT>)`.
 
@@ -279,13 +286,80 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 
 `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`
 
-where the cause is `missing` (not found), `not a text channel`, or `missing View Channel, Send Messages or Embed Links`. The warning repeats only after the channel has worked again.
+where the cause is `missing` (not found), `not a text channel`, `missing View Channel, Send Messages or Embed Links`, or `unavailable (Discord error)` (Discord failed to look the channel up, e.g. an outage; the next cycle tries again). The warning repeats only after the channel has worked again.
+
+## Activity tracking
+
+The bot records how long each member spends in voice channels. It always runs; there is nothing to turn on.
+
+- **What is counted:** time connected to any voice or stage channel of the server (`GUILD_ID` when set, otherwise every server the bot is in). Muting, deafening, streaming or camera changes don't split or stop a session; moving to another channel ends the session and starts a new one in the new channel. Bots are never tracked.
+- **AFK excluded:** the server's AFK channel counts as not being in voice. Being moved there (by Discord or by hand) ends the session; leaving it for a normal channel starts a new one.
+- **Restarts:** every open session gets a heartbeat once a minute. When the bot starts, sessions left open by the previous run (a crash, restart or update) are closed at their last heartbeat, so the downtime is not counted, and everyone currently in a non-AFK voice channel gets a fresh session. Time spent in voice while the bot was offline is lost (up to a minute before the stop as well).
+- **Intents:** only the Voice States intent (part of the defaults, not privileged). No Server Members or Presences intent is needed.
+- Sessions are stored in `activity.sqlite3`; see [Data and storage](#data-and-storage).
+
+### /activity
+
+`/activity [month]` posts the server's voice overview for one month, publicly:
+
+- **Leaderboard:** everyone with voice time that month, most time first: `🥇 @member **12h 30m** · 18 days` (total time and active days). Members with the same total share a rank. At most 25 rows; the rest are counted as `+N more` in the footer. A day counts as active with at least 5 minutes in voice (summed over that day's sessions).
+- **Wall of shame:** the 3 members with the least time (🐌), including members with no voice time that month (`0m`). Only members the bot already knew by the end of that month (first voice session before it ended) who were in voice within the 90 days before its end (or any time since) can appear, so long-gone members and people who joined later are left out. Members who have left the server are skipped too (checked with Discord when the overview is built), and the next lowest member takes their place.
+- **Awards:** 🦉 Night owl (most time between 00:00 and 06:00), 🏃 Marathon (longest single session), 📅 Most consistent (most active days; ties broken by total time), 📈 Biggest climber and 📉 Biggest drop (change in total time against the month before; only for completed months, and only when the month before has data), 🐦 Early bird (most time between 06:00 and 09:00). Tied winners share the award; an award nobody earned is left out.
+- **Together:** the pair of members who spent the most time in the same channel at the same time (at least 10 minutes), the busiest hour and weekday, and the server's total voice time.
+- **Pokémon:** only when the month has [Toasty ;pokemon](#toasty-pokemon-catches) data, see [Pokémon stats](#pokémon-stats).
+- A month without any voice time shows "Nobody was in voice in <month>." instead (still with the Pokémon field when there are catches or cooldowns).
+
+### /myactivity
+
+`/myactivity [user] [month]` posts one member's month (default: you), publicly: total voice time and rank, active days out of the days in the month, current and longest streak of active days, number of sessions with the longest and average session, a strip with one square per day (🟩 active, ⬜ not), and any awards they won (including ⏳ Impatient). Streaks count active days in a row within the viewed month only, so they restart on the 1st. For an ended month the current streak is the run ending on its last day; for the current month it ends today, or yesterday while you haven't been in voice yet today, so a quiet morning doesn't break it. When the month has Pokémon data, a **Pokémon** field shows their catches, shinies and cooldown hits (`0 catches · 0 shinies · 0 cooldown hits` if they didn't play). A member with Pokémon data but no voice time that month gets the "wasn't in voice" reply.
+
+### Months, cooldown and errors
+
+- **`month`** is `YYYY-MM` (for example `2026-09`; spaces around it are ignored). Leave it empty for the current month. The earliest accepted month is `2015-01` (`MIN_YEAR`, the year Discord launched). Months, days, hours and streaks all use `ACTIVITY_TIMEZONE` (see [Configuration](#configuration)); the embed footer names it. The current month runs up to now, including sessions that are still open.
+- **Cooldown:** 10 s per user, shared by both commands, taken only after the month is valid. It is refunded when the reply is an error, when `/activity` finds an empty month (no voice time and no Pokémon data), or when the reply could not be sent.
+- **Errors** are private replies: a month that isn't `YYYY-MM` or is before `2015-01` ("Use a month like `2026-09` (YYYY-MM).") or hasn't started yet ("That month hasn't started yet."), a member without voice time that month ("You weren't in voice in <month>." / "**Name** wasn't in voice in <month>."), and "Something went wrong while loading voice activity. Please try again later." for anything unexpected.
+- Members appear as mentions, but nobody is pinged.
+
+### Monthly auto-post
+
+With `ACTIVITY_CHANNEL_ID` set, the bot posts the `/activity` overview of the previous month in that channel automatically, once per month. Without it there is no auto-post (the commands still work).
+
+- **When:** the bot checks once an hour (and right after it starts) whether a month has ended at midnight in `ACTIVITY_TIMEZONE`. The post for September arrives within an hour after 1 October 00:00 local time.
+- **One post per month:** a posted month is recorded in `reports_posted` (see [Data and storage](#data-and-storage)) and never posted again. A month is also recorded when the send fails (for example Discord refuses it), so a broken post is not retried every hour. If the overview itself can't be built (an unexpected error, logged as `Could not build the activity overview for <YYYY-MM>; retrying`), the month is not recorded and the next hourly check tries again.
+- **Catching up:** if the bot was offline when a month ended, it posts the missed months oldest first, one per hourly check. Months before the first recorded voice session and months without any voice time are skipped.
+- **Channel:** the bot needs **View Channel, Send Messages and Embed Links** there (Send Messages in Threads for a thread); a text channel, a thread or a voice channel's text chat. If the channel can't be used, nothing is sent and the month stays unposted, so it is posted once the channel works. The bot logs one warning per cause:
+
+  `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>`
+
+  where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links`, or `unavailable (Discord error)` (a Discord error while looking the channel up; the next hourly check tries again).
+- Members appear as mentions, but nobody is pinged.
+
+### Toasty ;pokemon catches
+
+With `TOASTY_BOT_ID` set to the user ID of the Toasty bot, the bot also records what members catch with Toasty's `;pokemon` command. Without it nothing is read or recorded.
+
+- **What is tracked:** a member's message that is exactly `;pokemon` (any case, one optional space after the `;`, nothing else; `;pokemon list` doesn't count), then Toasty's reply to that message within 5 minutes. A reply `you've caught a <Name>!` is recorded as a catch of that Pokémon (`Shiny <Name>` as a shiny catch); `You need to wait ... before catching another Pokemon!` is recorded as a cooldown. The reply's text and embeds are both read, and an edited reply is read again (a reply is never counted twice). The catch goes to the author of the `;pokemon` message, not to whoever the reply mentions.
+- **What is stored:** only the parsed fields (who, when, catch or cooldown, the Pokémon name and whether it was shiny) in `pokemon_events`; never the message text. See [Data and storage](#data-and-storage). Toasty events alone never put a member on the wall of shame; only voice sessions do.
+- **Ignored:** `;pokemon` sent by bots, other Toasty messages, replies by other bots, replies to messages the bot didn't see (or saw more than 5 minutes earlier), and other servers when `GUILD_ID` is set.
+- **Message Content intent:** reading these messages needs the privileged **Message Content** intent. The bot requests it only when `TOASTY_BOT_ID` is set, and it must also be enabled in the Developer Portal (see [Configuration](#configuration)).
+
+#### Pokémon stats
+
+When a month has Toasty events (catches or cooldowns), `/activity`, the monthly auto-post and `/myactivity` include a **Pokémon** field. In `/activity` and the auto-post it shows, in this order:
+
+- **Top catchers:** members with at least one catch, most catches first: `🥇 @member **12 catches**`. Members with the same count share a rank. At most 5 rows, then `+N more`.
+- **Shinies:** `✨ @member: shiny <Name>` per shiny catch, oldest first; at most 5, then `✨ +N more`.
+- **Most caught:** `🏆 Most caught: <Name> (3)`, or every tied Pokémon in name order (`Eevee, Pikachu (2 each)`; at most 5 names, then `+N more`).
+- **⏳ Impatient:** the member(s) whose `;pokemon` hit Toasty's cooldown most often that month, only with at least 3 hits: `⏳ Impatient: @member (5 cooldown hits)`. It is listed here, not in the Awards field; on `/myactivity` it appears under the member's awards.
+- **Server totals:** `🎯 Server: 12 catches · 4 cooldown hits`.
+
+Pokémon names are shown as plain text (markdown escaped) and cut at 32 characters. A month counts by the reply's time in `ACTIVITY_TIMEZONE`. The monthly auto-post only happens for months with voice time, so a month with only Pokémon data is not auto-posted (it still shows in `/activity`).
 
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
 
-- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
+- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats, Voice activity and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
 - **Detail** (`command` set): the command's summary and explanation, then Usage, Parameters (required or optional, choices, accepted formats), Examples and Notes.
 - **Command names:** `command` has autocomplete (names that start with what you typed first, then names that contain it, up to 25). Case and a leading `/` are ignored, so `/Link` works like `link`.
 - **Unknown names** get a private reply, "There is no command with that name.", with up to 3 similar names ("Did you mean: /download?") or a pointer to `/help`.
@@ -295,7 +369,9 @@ where the cause is `missing` (not found), `not a text channel`, or `missing View
 
 ## Data and storage
 
-The only persistent data is the CS2 database at `<DATA_DIR>/cs2.sqlite3`. It is created on first use (the directory too) and holds three tables:
+The bot keeps two SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
+
+The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds three tables:
 
 | Table | Columns | Purpose |
 |---|---|---|
@@ -303,7 +379,15 @@ The only persistent data is the CS2 database at `<DATA_DIR>/cs2.sqlite3`. It is 
 | `posted_matches` | `match_id` (primary key), `posted_at` | Matches already auto-posted; pruned to the newest 500. |
 | `seeded_players` | `steam64_id` (primary key) | Players whose old matches were recorded silently. |
 
-In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing it means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
+The activity database at `<DATA_DIR>/activity.sqlite3` holds three tables:
+
+| Table | Columns | Purpose |
+|---|---|---|
+| `voice_sessions` | `id` (primary key), `user_id`, `channel_id`, `start_ts`, `end_ts`, `last_seen` | One row per stretch of voice time (Unix timestamps). `end_ts` is empty while the member is still connected; `last_seen` is the last heartbeat, used to close sessions left open by a crash or restart. Never pruned. |
+| `reports_posted` | `month_key` (primary key, `YYYY-MM`), `posted_at` | Months whose activity overview was already auto-posted. |
+| `pokemon_events` | `message_id` (primary key, Toasty's reply), `user_id`, `ts`, `kind` (`catch` or `cooldown`), `pokemon` (empty for cooldowns), `shiny` | One row per Toasty reply to a member's `;pokemon` (only with `TOASTY_BOT_ID`; see [Toasty ;pokemon catches](#toasty-pokemon-catches)). No message text. Never pruned. |
+
+In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
 
 ## Troubleshooting
 
@@ -319,6 +403,8 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 | "Too large" for a video that should fit | The upload limit is the server's (10 MiB by default). Clip it, or use a boosted server. |
 | `/link` by name says "Steam couldn't be reached" | Steam is down or rate limiting. Link with the 17-digit SteamID64 instead. |
 | Auto-posts: nothing is posted | Check `CS2_CHANNEL_ID`, the channel permissions (see the log warning), that the player's Leetify profile is public, and that the match is under 3 hours old. A new link's old matches are deliberately not posted. |
+| `PrivilegedIntentsRequired` at startup | `TOASTY_BOT_ID` is set but **Message Content Intent** is off in the Developer Portal. Enable it, or unset `TOASTY_BOT_ID`. |
+| No monthly activity post | Check `ACTIVITY_CHANNEL_ID` and the channel permissions (see the log warning). The post comes within an hour after the month ends in `ACTIVITY_TIMEZONE`, and only for months with voice time. |
 
 ## Known limitations
 
@@ -330,6 +416,12 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **One download at a time**, bot-wide, with no persistent queue.
+- **Voice only:** activity counts time connected to voice channels. Text messages, reactions, streaming and camera time are not counted (Toasty `;pokemon` replies are the only messages read).
+- **No history before the feature:** Discord keeps no voice history, so tracking starts when the bot first runs with this feature; earlier months are empty.
+- **Month boundaries:** months, days and hours use `ACTIVITY_TIMEZONE` (default `UTC`). Changing it later shifts which sessions fall into which day and month, and a month already auto-posted is not posted again.
+- **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
+- **Toasty catches:** only recorded while the bot is online, and only when Toasty replies to a `;pokemon` message (catches by any other route, or replies to a message the bot missed, are not seen). The reply formats are derived from a few observed replies, so a Toasty wording change can stop the recording without an error.
+- **Monthly post after a crash:** a month is recorded as posted right after the send. If the bot stops between the two, that month's overview is posted again after the restart.
 
 ## Development
 
@@ -339,14 +431,16 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
+  posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
+  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
-tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/ and tests/fixtures/steam/
+tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md
 tasks/            the PRD of every feature, written before it was built
 ```

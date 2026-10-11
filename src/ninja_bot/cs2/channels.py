@@ -13,6 +13,8 @@ type PostChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
 CHANNEL_MISSING = "missing"
 CHANNEL_NOT_TEXT = "not a text channel"
 CHANNEL_NO_PERMISSIONS = "missing View Channel, Send Messages or Embed Links"
+# Fetching the channel failed for another reason (e.g. a Discord outage); retried next cycle.
+CHANNEL_UNAVAILABLE = "unavailable (Discord error)"
 
 
 def is_post_channel(channel: object) -> TypeGuard[PostChannel]:

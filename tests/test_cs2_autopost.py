@@ -8,7 +8,12 @@ import pytest
 
 from ninja_bot.cogs.cs2 import AutoPost, Cs2
 from ninja_bot.cs2.awards import compute_awards
-from ninja_bot.cs2.channels import CHANNEL_MISSING, CHANNEL_NO_PERMISSIONS, CHANNEL_NOT_TEXT
+from ninja_bot.cs2.channels import (
+    CHANNEL_MISSING,
+    CHANNEL_NO_PERMISSIONS,
+    CHANNEL_NOT_TEXT,
+    CHANNEL_UNAVAILABLE,
+)
 from ninja_bot.cs2.embed import build_announcement_embed
 from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import Match, PlayerMatchStats, TeamScore
@@ -270,6 +275,26 @@ async def test_forbidden_fetch_counts_as_missing(caplog: pytest.LogCaptureFixtur
     await cog.run_poll_cycle()
     assert poller.poll_calls == 0
     assert CHANNEL_MISSING in caplog.text
+
+
+async def test_fetch_http_error_skips_the_cycle(caplog: pytest.LogCaptureFixture) -> None:
+    bot = make_bot(None)
+    bot.fetch_channel = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=503), "Service Unavailable")
+    )
+    poller = FakePoller([], [new_match("m1")])
+    cog = make_cog(poller, bot)
+    with caplog.at_level(logging.WARNING):
+        await cog.run_poll_cycle()
+        await cog.run_poll_cycle()
+    assert poller.poll_calls == 0
+    assert (
+        caplog.text.count(
+            f"Not posting CS2 matches: the CS2_CHANNEL_ID channel is {CHANNEL_UNAVAILABLE}"
+        )
+        == 1
+    )
+    assert "Unexpected error" not in caplog.text
 
 
 async def test_non_text_channel_warns_once(caplog: pytest.LogCaptureFixture) -> None:

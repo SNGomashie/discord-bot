@@ -27,12 +27,12 @@ Do this once for dev and once for prod.
    - Click **Reset Token** and copy it right away. It is shown once. This is `DISCORD_TOKEN`. If it ever leaks, reset it here and update `.env`.
    - Turn **Public Bot** off so nobody else can add your bot to their servers. Discord refuses to save this while the app has a default install link, with the error *"A private application cannot have a default authorization link. Make sure the default authorization link is set to None on the Installation tab."* So first open the **Installation** tab, set **Install Link** to **None**, save, and then turn Public Bot off on the Bot tab. You then add the bot with the manual [invite link](#invite-link) below, which works for you as the server owner.
    - Leave **Requires OAuth2 Code Grant** off.
-   - Leave all three **Privileged Gateway Intents** off (see below).
+   - Leave the **Privileged Gateway Intents** off, except **Message Content Intent** when you set `TOASTY_BOT_ID` (see below).
 4. Optionally set the name, avatar and banner. Prod and dev should look different so you never mix them up.
 
 ### Intents
 
-The bot uses `discord.Intents.default()`, which only needs the non-privileged intents. It does not read message content, member lists or presences, so **no privileged intent has to be enabled**. `/scoreboard` shows linked friends by their server name by looking each one up over REST (`fetch_member`, at most ten per scoreboard), which needs neither the Server Members intent nor an extra permission. If you ever add a feature that needs one (for example Message Content), enable it in the portal *and* add it in [bot.py](../src/ninja_bot/bot.py). Request only what a feature needs.
+The bot uses `discord.Intents.default()`, which only needs the non-privileged intents. It never reads member lists or presences. It reads message content only when `TOASTY_BOT_ID` is set: then it requests the privileged **Message Content** intent (to read Toasty's replies to `;pokemon`), and you must turn on **Message Content Intent** on the *Bot* tab of that application, or Discord refuses the connection at startup (`PrivilegedIntentsRequired`). Without `TOASTY_BOT_ID`, **no privileged intent has to be enabled**. `/scoreboard` shows linked friends by their server name by looking each one up over REST (`fetch_member`, at most ten per scoreboard), which needs neither the Server Members intent nor an extra permission. If you ever add a feature that needs another one, enable it in the portal *and* add it in [bot.py](../src/ninja_bot/bot.py). Request only what a feature needs.
 
 ### Permissions
 
@@ -47,7 +47,9 @@ All commands are slash commands, which Discord delivers as interactions, and rep
 
 Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator, no role or member management.
 
-**Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel` or `missing View Channel, Send Messages or Embed Links`, and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
+**Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links` or `unavailable (Discord error)` (a temporary Discord failure; retried next cycle), and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
+
+**Activity channel (`ACTIVITY_CHANNEL_ID`):** the monthly activity overview is a normal message too, with the same requirements: **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread) in that channel. Otherwise the bot logs one warning, `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>` (same causes as above), and posts nothing until the channel works. See the [README](../README.md#monthly-auto-post).
 
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
@@ -154,6 +156,11 @@ LEETIFY_API_KEY=<leetify api key>
 # Optional: auto-post new CS2 matches of linked players here.
 # CS2_CHANNEL_ID=<channel id>
 # CS2_POLL_SECONDS=300
+# Optional: monthly activity report channel and its time zone.
+# ACTIVITY_CHANNEL_ID=<channel id>
+# ACTIVITY_TIMEZONE=Europe/Amsterdam
+# Optional: track Toasty ;pokemon catches (enable Message Content Intent in the portal first).
+# TOASTY_BOT_ID=<toasty user id>
 ```
 
 Use the **prod** token only here, never in the dev container or on your workstation.
@@ -192,7 +199,7 @@ systemctl status ninja-bot
 journalctl -u ninja-bot -f       # live logs
 ```
 
-The bot logs at INFO level to stderr, which journald keeps along with stdout. The bot finds `.env` through `python-dotenv`'s default search (`load_dotenv()` with no path), which works here because the install is editable and the file sits in the repo root; a variable already set in the unit (for example `Environment=`) wins over `.env`. The unit's `WorkingDirectory` still matters because the default `DATA_DIR` (`data`) is relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which contains the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. If you set `DATA_DIR`, the same applies to that directory. The tables and their meaning are described in the [README](../README.md#data-and-storage).
+The bot logs at INFO level to stderr, which journald keeps along with stdout. The bot finds `.env` through `python-dotenv`'s default search (`load_dotenv()` with no path), which works here because the install is editable and the file sits in the repo root; a variable already set in the unit (for example `Environment=`) wins over `.env`. The unit's `WorkingDirectory` still matters because the default `DATA_DIR` (`data`) is relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which contains the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. It also holds `activity.sqlite3`: the recorded **voice sessions** (Discord has no voice history, so losing it loses the history for good), the log of which monthly activity overviews were already posted (an old copy can make a month's overview be posted again), and, with `TOASTY_BOT_ID`, the recorded Toasty `;pokemon` events (no message text). If you set `DATA_DIR`, the same applies to that directory. The tables and their meaning are described in the [README](../README.md#data-and-storage).
 
 ### 3.6 Verify
 
@@ -255,7 +262,10 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | `LEETIFY_API_KEY` | optional | recommended | Leetify public API key for `/link`, `/scoreboard`, `/profile` ([leetify.com/app/developer](https://leetify.com/app/developer)). Empty = requests go unauthenticated |
 | `CS2_CHANNEL_ID` | optional | optional | Channel for automatic CS2 match posts (new matches of linked players). Unset = no auto-posts. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `CS2_POLL_SECONDS` | optional | optional | How often (seconds) to check Leetify for new matches when `CS2_CHANNEL_ID` is set. Default `300`. Each cycle makes one Leetify request per linked player, so don't set it very low |
-| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log). Default `data` (relative to `WorkingDirectory`) |
+| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log; `activity.sqlite3`: voice sessions, Toasty `;pokemon` events and posted monthly reports). Default `data` (relative to `WorkingDirectory`) |
+| `ACTIVITY_CHANNEL_ID` | optional | optional | Channel for the automatic monthly activity report (previous month, posted once after the month ends in `ACTIVITY_TIMEZONE`). Unset = no monthly auto-post. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
+| `ACTIVITY_TIMEZONE` | optional | optional | IANA time zone name for activity month boundaries. Default `UTC`; an unknown name is a `ConfigError` at startup |
+| `TOASTY_BOT_ID` | optional | optional | User ID of the Toasty bot. Set = track `;pokemon` catches and request the Message Content intent, which must also be enabled in the Developer Portal. Unset = no Toasty tracking |
 
 ## 6. Troubleshooting
 
@@ -277,6 +287,9 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | Auto-posts: nothing is posted | Check in order: `CS2_CHANNEL_ID` is set in `.env` and is the right channel ID (Developer Mode, right-click the channel, **Copy Channel ID**), then restart; the bot has View Channel, Send Messages and Embed Links in that channel (the log says `Not posting CS2 matches: the CS2_CHANNEL_ID channel is ...`); the player's Leetify profile is public (private profiles are skipped); Leetify has the match (new matches can take a while to show up there, and matches older than 3 hours are never posted). A newly linked player's existing matches are deliberately not posted, only matches after the link |
 | Auto-posts: a match is not posted for a while | The full match lookup on Leetify keeps failing, or Leetify is rate limiting the bot (logs: `Skipping match ... in the match poller` or `Leetify rate limited ...`). The bot never posts a partial scoreboard: it retries the match every cycle until it is posted or passes the 3-hour age limit, after which it is dropped. Nothing to fix unless it persists; check outbound access to Leetify |
 | Auto-posts: old matches reposted | The posted-match log in `cs2.sqlite3` lost entries: the file was deleted or swapped for an old backup, or `DATA_DIR`/`WorkingDirectory` changed and the bot opened a different file. An old copy is the risky case: players count as seeded but recent posts are missing, so matches from the last 3 hours can be posted again (older ones never are). A deleted file loses all links too, so after everyone `/link`s again they are seeded silently and nothing old is posted. Keep `data/` persistent and backed up, and restore the newest backup |
+| `PrivilegedIntentsRequired` at startup | `TOASTY_BOT_ID` is set, so the bot requests the Message Content intent, but **Message Content Intent** is off on the application's *Bot* tab. Turn it on (step 1), or unset `TOASTY_BOT_ID` |
+| No monthly activity post | Check that `ACTIVITY_CHANNEL_ID` is set and is the right channel ID, then restart; the bot has View Channel, Send Messages and Embed Links there (the log says `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is ...`). The check runs hourly and right after start, and posts only after the month has ended in `ACTIVITY_TIMEZONE` and only months with voice time. A month in `reports_posted` is never posted again (it is recorded after every send attempt, even a failed one). If building the overview fails, the month is not recorded and the next hourly check retries it; the journal shows `Could not build the activity overview for <YYYY-MM>; retrying` with the traceback (`journalctl -u ninja-bot`). Behaviour: [README](../README.md#monthly-auto-post) |
+| Toasty catches are not recorded | Check that `TOASTY_BOT_ID` is Toasty's user ID (Developer Mode, right-click Toasty, **Copy User ID**) and the bot restarted; that **Message Content Intent** is on in the Developer Portal (otherwise the bot does not start at all); that the bot can see the channel (**View Channel**); and that the member sent exactly `;pokemon` and Toasty replied to it. Errors while saving show as `Failed to record a Toasty reply` in the logs. Behaviour: [README](../README.md#toasty-pokemon-catches) |
 | Disk fills up | Temporary download folders are removed after each request. If the bot is killed mid-download, a leftover `ninja-dl-*` folder can remain; with `PrivateTmp=true` it is cleared when the service stops or restarts |
 
 ## 7. Security checklist
@@ -284,6 +297,6 @@ Read from the environment (and `.env`; real environment variables win). See [con
 - [ ] Prod token exists only in the prod `.env` (mode `600`, owner `ninja`)
 - [ ] Dev and prod are separate applications with separate tokens
 - [ ] **Public Bot** is off on both applications
-- [ ] No privileged intents and no Administrator permission
+- [ ] No Administrator permission, and no privileged intents except Message Content when (and only when) `TOASTY_BOT_ID` is set
 - [ ] `.env` is not in git (it is gitignored) and has never been pasted into chat, issues or logs
 - [ ] The service runs as the unprivileged `ninja` user

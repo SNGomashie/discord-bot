@@ -30,11 +30,13 @@ class CommandHelp:
 
 MEDIA = "media"
 CS2 = "cs2"
+ACTIVITY = "activity"
 UTILITY = "utility"
 
 GROUPS: tuple[HelpGroup, ...] = (
     HelpGroup(MEDIA, "Media"),
     HelpGroup(CS2, "CS2 stats"),
+    HelpGroup(ACTIVITY, "Voice activity"),
     HelpGroup(UTILITY, "Utility"),
 )
 
@@ -163,6 +165,48 @@ COMMANDS: tuple[CommandHelp, ...] = (
         },
     ),
     CommandHelp(
+        name="activity",
+        group=ACTIVITY,
+        summary="Show who spent the most time in voice this month, plus awards and shame.",
+        details=(
+            "Shows the server's voice leaderboard for a month: total time and active days "
+            "per member, the wall of shame (least time), fun awards and who hung out "
+            "together most. Time in the AFK channel doesn't count. "
+            "If Toasty tracking is on, it also shows the top Pokémon catchers, shinies, "
+            "the most caught Pokémon and the Impatient award (most ;pokemon cooldown hits). "
+            "Days and hours use the server's activity timezone."
+        ),
+        examples=(
+            "/activity",
+            "/activity month:2026-09",
+        ),
+        notes=("Members with the same time share a rank.",),
+        parameter_notes={
+            "month": "A month like 2026-09 (YYYY-MM). Leave it empty for this month.",
+        },
+    ),
+    CommandHelp(
+        name="myactivity",
+        group=ACTIVITY,
+        summary="Show your (or a member's) voice time, streaks and awards for a month.",
+        details=(
+            "Shows one member's month in voice: total time and rank, active days, "
+            "current and longest streak, sessions, a day-by-day strip and any awards won. "
+            "If Toasty tracking is on, it also shows their Pokémon catches, shinies and "
+            ";pokemon cooldown hits. "
+            "Pick another member with user."
+        ),
+        examples=(
+            "/myactivity",
+            "/myactivity user:@friend month:2026-09",
+        ),
+        notes=("If the member wasn't in voice that month, only you see the reply.",),
+        parameter_notes={
+            "user": "A server member. Leave it empty for yourself.",
+            "month": "A month like 2026-09 (YYYY-MM). Leave it empty for this month.",
+        },
+    ),
+    CommandHelp(
         name="ping",
         group=UTILITY,
         summary="Check that the bot is online and see its latency.",
@@ -195,7 +239,8 @@ OVERVIEW_INTRO = "Everything this bot can do. All commands are slash commands."
 GETTING_STARTED_TITLE = "Getting started"
 GETTING_STARTED = (
     "Link your Steam account with /link, then use /scoreboard, /profile and /leaderboard "
-    "for CS2 stats. Use /download to get a video or its audio as a file."
+    "for CS2 stats. Use /activity and /myactivity to see who spends the most time in voice. "
+    "Use /download to get a video or its audio as a file."
 )
 
 USAGE_FIELD = "Usage"

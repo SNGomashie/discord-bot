@@ -1,6 +1,8 @@
-# Ralph progress log — started 2026-10-11 (feature: help-command; patterns carried over)
+# Ralph progress log — started 2026-10-11 (feature: activity-tracking; patterns carried over)
 
 ## Codebase Patterns
+- Local-time splitting: `periods.split_local(start, end, tz, "hour"|"day")` yields (piece_start, piece_end, local) in real seconds with the DST no-advance guard; use it instead of hand-rolled cursor loops. On the fall-back day the repeated 02:00 hour is one 2-hour piece (local.hour 2).
+- Auto-post channels (src/ninja_bot/posting.py): `PostChannelResolver(bot, warning_template, channel_id).resolve()` is the one get_channel -> fetch_channel -> is_post_channel -> channel_problem flow (warn once per cause, cleared on success; non-NotFound/Forbidden HTTP errors = `CHANNEL_UNAVAILABLE`). Cogs build it only when the channel id is set (`self._post_channel` None = auto-post off) and keep a local `_send_safely` that just binds the `send_safely(send, what)` log label.
 - Help (tasks/prd-help-command.md): every /help string lives in `src/ninja_bot/help/content.py` (`COMMANDS` of `CommandHelp`, `GROUPS`, text constants incl. `OTHER_GROUP_TITLE`, `SUGGESTIONS_TEXT` `{names}`/`NO_SUGGESTIONS` for the `{suggestions}` slot, `PUBLIC_COOLDOWN_MESSAGE` with `{seconds}`/`{unit}`). Tests import the constants and check structure only, never prose. content.py must not import discord/ninja_bot (checked with ast in tests/test_help_content.py).
 - The cog's `stats` is a `CachedStatsProvider` wrapping `LeetifyClient` (cs2/cache.py); profiles are cached 5 min, so code that needs fresh profile data must bypass/clear it. New StatsProvider wrappers must delegate `aclose`.
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` (or `_parse_optional_positive_int(source, key)` for values without a default, e.g. channel IDs) in config.py (raises ConfigError naming the variable). New Config fields need a default so existing constructors keep working.
@@ -9,6 +11,7 @@
 - DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size. Clipped plans get no size filter at all (yt-dlp filesize is for the whole video).
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
+- Activity wall of shame vs departed members: `MonthlyReport.shame_pool` holds every candidate (lowest first); `without_departed(report, departed)` refills `shame`. The cog's `departed_members` reuses cs2 `member_lookup` + `MemberCache` and treats `None` + `cache.not_members` hit as "left" (errors aren't cached, so they keep the candidate). Activity test interactions set `guild = None`; `FakeGuild(departed=, failing=)` is in tests/test_activity_commands.py.
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
 - /download cooldown is `UserCooldown` (media/cooldown.py, injectable clock) on the cog instance, not an app_commands check: `handle_download` takes it after URL/clip validation and refunds in a `finally` unless `_download_deferred` returns True (file posted). Tests inject `Media(downloader, 3600, UserCooldown(30, FakeClock()))`.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
@@ -64,66 +67,146 @@
 - Squad hardening (tasks/prd-cs2-squad-hardening.md): anything that announces a match must use `full_match(..., strict=True)` (a failed lookup must leave the match unposted, never post a partial one); `MatchPoller.poll()` returns a `PollResult` with `rate_limited`, and the cog owns the one-cycle backoff. Discord lookups cache only definitive results (a name or `NotFound`), never transient HTTP errors. Network reads of external bodies go through `read_capped`, never a single `content.read(n)` (it returns only the next chunk).
 - CS2 member names (cogs/cs2.py): `member_lookup(guild, cache)` with `MemberCache(clock, max_size)` on the cog (`Cs2(..., members=)`): `names` TtlCache 300 s, `not_members` 60 s (value True), keyed `(guild.id, user_id)`, plus `pending` tasks so concurrent lookups share one `fetch_member` (awaited via `asyncio.shield`). Fake guilds need an `id` (`FakeGuild(members, guild_id=1)` in tests/test_cs2_cog.py; `make_guild` in tests/test_cs2_identities.py).
 - Help cog (cogs/help.py): `command_infos(tree_commands)` keeps only `app_commands.Command` (str() on locale_str descriptions, choice values as str); `help_reply(infos, command)` returns an Embed or the unknown-command str. Tests build the tree from `Cog.__cog_app_commands__` of the real cog classes (`tree_commands()` in tests/test_help_cog.py) and a MagicMock bot whose `tree.get_commands` returns them.
+- Activity config: `ACTIVITY_TIMEZONE` is validated by `_parse_timezone` in config.py (ZoneInfo; catches `ZoneInfoNotFoundError` and `ValueError` for path-like names) and kept as a str on `Config`; build the `ZoneInfo` where it's used. `NinjaBot(config)` can be constructed in sync tests (no event loop needed) to inspect `bot.intents`.
+- Activity months (activity/periods.py): `Month(year, month)` is the one month definition (`key`, `start/end(tz)` aware local datetimes, end exclusive, `days`, `previous/next`); `month_of(ts, tz)`, `parse_month` -> `InvalidMonthError` (ValueError, user-facing `.message`; the constructor also rejects month 0/13 and years outside 1..9998). Aware datetimes sharing one tzinfo subtract as wall-clock time (DST ignored): compare `.timestamp()`s for real durations. `format_hours`/`day_strip` in activity/formatting.py.
+- Activity store (activity/store.py): `Session(id, user_id, channel_id, start_ts, end_ts, last_seen)` frozen dataclass lives here (stats.py reuses it). `SqliteActivityStore` mirrors cs2/store.py. `open_session` closes any open session of the user at `now` in the same transaction (one `with conn`). `close_stale(default_end=None) -> int` ends open sessions at `MAX(start_ts, COALESCE(last_seen, default_end, start_ts))` and returns the count. `sessions_between(start, end)` = `start_ts < end AND (end_ts IS NULL OR end_ts > start)` (half-open window), ordered by start_ts, id. Tests: tests/test_activity_store.py.
+- Activity tracker (activity/tracker.py, cogs/activity.py): `plan_transition` maps AFK to None on both sides, then compares. Move goes through `open_session` alone (it closes the open session first, atomically). The heartbeat loop is started from the first `on_ready` *after* `reconcile` (not in `cog_load`): `wait_until_ready` raises on a bot that never logged in (drift-test fixture), and a heartbeat before `close_stale` would stamp stale sessions with the restart time. Cog tests: `FakeStore`, SimpleNamespace guilds/members/states (`make_guild(voice={channel: [members]})`) in tests/test_activity_cog.py; crash test uses the real SqliteActivityStore + FakeClock.
+- Activity stats (activity/stats.py): `monthly_stats(sessions, month, tz, now)` only returns users with positive clipped time; splits sessions at local midnights (`datetime.combine(day+1, time(), tzinfo=tz).timestamp()`, so DST days are 23/25 real hours); active-day threshold is summed per local day across sessions; `current_streak` ends on the last day for ended months; for the current month `_run_ending_on(..., ongoing=True)` ends it on today, or yesterday if today isn't active yet (so the 1st with no activity = 0). `rank` -> `RankedRow(rank, user_id, value)`; `shame_list` returns `(user_id, seconds)` tuples, lowest first, ties by user id.
+- Activity awards (activity/awards.py): `compute_awards` and `social_stats` take a trailing `now` (open sessions end there, like `monthly_stats`) beyond the PRD signature. Marathon/consistent/climber/drop come from `UserStats`; night owl/early bird and busiest hour/weekday from `_hour_pieces` (local hour split; aware datetime + timedelta is wall-clock, so the boundary is guarded to always move forward). Award values are seconds except MOST_CONSISTENT (days); BIGGEST_DROP is positive. A tie yields one `Award` per user (lowest id first). `top_pair` sums same-channel overlap across channels, then drops pairs < `MIN_PAIR_SECONDS`.
+- Activity report/embeds (activity/report.py, activity/embed.py): `MonthlyReport` holds per-user `stats` plus leaderboard/shame/awards/social, so `user_profile(report, user_id, display_name)` needs no extra queries; build both from `build_monthly_report(sessions, previous_sessions, known_users, month, tz, now)`. Embed lines use `<@id>` mentions only (names show via Discord; the profile title uses `escape_name(display_name)`). Month/weekday names come from `MONTH_NAMES`/`WEEKDAY_NAMES` in activity/formatting.py (locale-independent). cs2 `pack_lines` is public and reused.
+- Activity commands (cogs/activity.py): `/activity`/`/myactivity` reply with `response.send_message` directly (no defer: the store is local, and it lets "no data" errors be ephemeral while embeds are public). `resolve_month(text, tz, now)` (periods.py) runs before the cooldown; `Activity._run_with_cooldown(interaction, work)` refunds unless `work()` returns True (empty month -> posted but refunded). `Activity.monthly_report(month)` loads month + previous month + known users and builds the report; reuse it for the auto-post (US-009). Tests: `FakeStore`/`make_cog`/`make_interaction` in tests/test_activity_commands.py.
+- Activity auto-post (activity/reporter.py, cogs/activity.py): `MonthlyReporter(store, tz, clock)`; `due_month` walks months from `month_of(store.first_session_start())` up to (not incl.) the current local month, returning the first that is unposted and has positive clipped time (`clip`); empty months are skipped, never marked. `Activity(..., channel_id=)` starts `report_loop` (hourly, `REPORT_CHECK_SECONDS`) in `cog_load` only with a channel. `run_report_cycle`: due -> `_post_channel` (cs2 `channel_problem`; problems warn once and leave the month unposted) -> `_post_report` (build + send in try, `confirm` in finally). Tests: tests/test_activity_autopost.py (real SqliteActivityStore + FakeClock, `make_channel`/`make_bot`), tests/test_activity_reporter.py.
+- Pokémon stats (activity/pokemon_stats.py): `pokemon_stats` filters events to the local month itself; `impatient_awards` returns `Award`s with `AwardKey.IMPATIENT` (value = hits) that go into `MonthlyReport.awards`, but `build_monthly_embed` renders keys in `POKEMON_AWARDS` in the Pokémon field instead of Awards. `UserProfile.pokemon` is None when the month has no Pokémon data (zeros otherwise). The Pokémon field always ends with a `🎯 Server:` totals line so a cooldown-only month never yields an empty (skipped) field. Command `FakeStore` needs `pokemon_events_between`.
+- Toasty (activity/pokemon.py, cogs/activity.py): `PokemonTracker(store, toasty_bot_id, guild_id, pending)` is a separate cog added in `setup` only with `TOASTY_BOT_ID` (shares the Activity store). Commands are remembered in `PendingCommands` (not consumed on lookup, so duplicate deliveries and edits still pair); events use the reply's `created_at` and `message_id` (INSERT OR IGNORE = idempotent). Embeds go to the parser as `embed.to_dict()`. Fixtures in tests/fixtures/toasty/replies.json carry `from_toasty` (false = other bot, must record nothing). Cog tests: `make_message`/`make_tracker` (real SqliteActivityStore) in tests/test_activity_pokemon.py.
 
 ## 2026-10-11 - US-001
-- Added `src/ninja_bot/help/` package with `content.py` (CommandHelp/HelpGroup dataclasses, GROUPS media/cs2/utility, COMMANDS for all 8 commands, all help text constants) and `tests/test_help_content.py` (structure, limits, examples start with `/<name>`, no discord/ninja_bot imports).
-- Content taken from the code: clip formats from media/clip.py `parse_timestamp`, end needs start + end after start + clip >= 1 s; Steam input forms from cs2/steam.py; metrics from `Metric`/`metric_label`; /link and /unlink replies are ephemeral, stats and /download replies are public.
-- No docs changed: nothing user-visible until the cog lands (docs are US-009).
-- Learnings: `ruff format` keeps long string literals, so split them by hand (E501).
+- Config gains `activity_channel_id`, `activity_timezone` ("UTC"), `toasty_bot_id`; `_parse_timezone` raises ConfigError naming the variable. NinjaBot sets `intents.message_content = config.toasty_bot_id is not None`.
+- Files: src/ninja_bot/config.py, src/ninja_bot/bot.py, tests/test_config.py, README.md (Configuration rows + Intents), .env.example, docs/deployment.md (portal step, Intents, prod .env example, settings reference, checklist).
+- Needs manual check: with TOASTY_BOT_ID set and Message Content Intent off in the portal, the bot fails at startup with PrivilegedIntentsRequired; with it on, it connects.
+---
+## 2026-10-11 - US-002
+- New package `ninja_bot.activity`: periods.py (`Month`, `month_of`, `parse_month`, `InvalidMonthError`) and formatting.py (`format_hours` truncates, NaN/inf/negative -> `0m`; `day_strip` 🟩/⬜ with a space every 7 days, days outside the month ignored).
+- Files: src/ninja_bot/activity/{__init__,periods,formatting}.py, tests/test_activity_periods.py, tests/test_activity_formatting.py. No docs (internal helpers).
+---
+## 2026-10-11 - US-003
+- `activity/store.py`: `ActivityStore` Protocol, `Session`, `SqliteActivityStore` (voice_sessions + index on (user_id, start_ts), reports_posted). `close_stale` returns how many sessions it closed (useful for logging in US-004).
+- Files: src/ninja_bot/activity/store.py, tests/test_activity_store.py, README.md (Data and storage, DATA_DIR row, layout), docs/deployment.md (backup notes, DATA_DIR), CLAUDE.md (activity Architecture entries).
+---
+## 2026-10-11 - US-004
+- `activity/tracker.py` (`Open`/`Close`/`Move`/`Nothing`, `plan_transition`) and `cogs/activity.py` (`Activity(bot, store, guild_id, clock)`: voice listener ignoring bots and other guilds when GUILD_ID is set, 60 s heartbeat loop, `reconcile` on first on_ready, `members_in_voice`). Registered in EXTENSIONS.
+- Files: src/ninja_bot/activity/tracker.py, src/ninja_bot/cogs/activity.py, src/ninja_bot/bot.py, tests/test_activity_tracker.py, tests/test_activity_cog.py, README.md (Activity tracking section, contents, Intents note, layout, Known limitations), docs/manual-checks.md (Activity tracking), CLAUDE.md (Architecture).
+- Needs manual check: docs/manual-checks.md "Activity tracking" (join / mute / move / AFK / leave / restart mid-session / bots).
 ---
 
-## 2026-10-11 - US-002
-- Added `src/ninja_bot/help/commands.py`: frozen `ParamInfo`/`CommandInfo` (choices/params default to `()`), `usage_line` (`/name url:<url> [format:mp3|mp4]`), `parameter_lines` (`name (required|optional): description` + ` Choices: a, b` + ` <note>` on the same line, cut to `MAX_PARAMETER_LINE` = 300 with `…`). No discord import.
-- Tests: tests/test_help_commands.py.
-- Docs: none user-visible yet; Architecture/README layout updates are in the final docs story (US-008 style), as with US-001.
-- Learnings: notes for parameters missing from `info.params` are ignored; an empty note string adds nothing.
+## 2026-10-11 - US-005
+- `activity/stats.py`: `UserStats`, `RankedRow`, `ACTIVE_DAY_MIN_SECONDS`, `clip`, `monthly_stats`, `rank`, `shame_list` (pure).
+- Files: src/ninja_bot/activity/stats.py, tests/test_activity_stats.py, CLAUDE.md (Architecture), README.md (layout block). No user-facing docs yet (surfaced in US-008).
+---
+## 2026-10-11 - US-006
+- `activity/awards.py`: `AwardKey`, `Award`, label constants, `compute_awards`, `TopPair`, `SocialStats`, `social_stats` (pure).
+- Files: src/ninja_bot/activity/awards.py, tests/test_activity_awards.py, CLAUDE.md (Architecture), README.md (layout block). No user-facing docs yet (surfaced in US-008).
+---
+## 2026-10-11 - US-007
+- `activity/report.py` (`MonthlyReport`, `UserProfile`, `build_monthly_report`, `user_profile`, `SHAME_LIMIT` 3) and `activity/embed.py` (`build_monthly_embed`, `build_profile_embed`, `format_awards`, `format_together`, `format_leaderboard_row`, `format_shame`); `month_label`/`hour_range`/`plural` added to activity/formatting.py; cs2 `_pack_lines` -> `pack_lines`.
+- Files: src/ninja_bot/activity/{report,embed,formatting}.py, src/ninja_bot/cs2/embed.py, tests/test_activity_embed.py, CLAUDE.md (Architecture), README.md (layout block). User-facing docs come with US-008.
+- Needs manual check: how the overview/profile embeds look in Discord (after US-008).
+---
+## 2026-10-11 - US-008
+- `/activity [month]` and `/myactivity [user] [month]` in cogs/activity.py (`Activity(..., timezone=, cooldown=)`, `COOLDOWN_SECONDS` 10, `GENERIC_ERROR_MESSAGE`, `cooldown_message`, `no_activity_message`, `monthly_report`, `cog_app_command_error`); `resolve_month` + `FUTURE_MONTH_MESSAGE` in activity/periods.py; help group "Voice activity" + two CommandHelp entries; GETTING_STARTED mentions them.
+- Files: src/ninja_bot/cogs/activity.py, src/ninja_bot/activity/periods.py, src/ninja_bot/help/content.py, tests/test_activity_commands.py, tests/test_activity_periods.py, tests/test_help_content.py, README.md (intro, commands table, /activity, /myactivity, months/cooldown/errors sections, /help groups, layout), docs/manual-checks.md, CLAUDE.md (Architecture).
+- Needs manual check: docs/manual-checks.md "/activity and /myactivity" (embed look, no pings, private errors, cooldown).
+---
+## 2026-10-11 - US-009
+- `activity/reporter.py` (`MonthlyReporter`), `ActivityStore.first_session_start`, hourly `report_loop` + `run_report_cycle` in cogs/activity.py (`channel_id=` from `ACTIVITY_CHANNEL_ID`). Channel problems (missing/not text/permissions) warn once and do not confirm, so the month posts once the channel is fixed; any send attempt (incl. failures) and embed errors confirm.
+- Files: src/ninja_bot/activity/{reporter,store}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{reporter,autopost,store}.py, README.md (Monthly auto-post section, Configuration row, Known limitations, layout), docs/deployment.md (Permissions, settings reference), docs/manual-checks.md (Monthly auto-post), CLAUDE.md (Architecture).
+- Needs manual check: docs/manual-checks.md "Monthly auto-post" (forced past-month post, no repeat after restart, permission warning).
+---
+## 2026-10-11 - US-010
+- `activity/pokemon.py` (`is_pokemon_command`, `parse_reply`, `parse_duration`, `Catch`, `Cooldown`, `PendingCommands`), `pokemon_events` table + `PokemonEvent`, `record_pokemon_event`/`pokemon_events_between` in activity/store.py (known_users includes event users), `PokemonTracker` cog (on_message/on_message_edit) registered only with TOASTY_BOT_ID. Fixtures: added gender symbol, embed field and non-Toasty cases, `from_toasty` flag.
+- Files: src/ninja_bot/activity/{pokemon,store}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{pokemon,store}.py, tests/fixtures/toasty/replies.json, README.md (Toasty section, Data and storage, Known limitations, layout), docs/deployment.md (backup notes, DATA_DIR, troubleshooting), docs/manual-checks.md (Toasty), CLAUDE.md (Architecture).
+- Needs manual check: docs/manual-checks.md "Toasty ;pokemon" (catch, shiny, cooldown; confirm the real raw reply format and whether Toasty edits/uses embeds).
 
-## 2026-10-11 - US-003
-- Added `src/ninja_bot/help/embed.py`: `build_overview_embed(commands)` -> title/intro/footer from content.py, `Getting started` field, one field per `GROUPS` entry (lines `` `usage_line` · summary `` in `COMMANDS` order), trailing `OTHER_GROUP_TITLE` field for registered commands without a `CommandHelp` (Discord description). Unregistered entries skipped, empty groups omitted. Limits: `_fit_lines` (+N more) per field at `FIELD_VALUE_LIMIT` 1024, `_fit_total` drops trailing fields over `EMBED_TOTAL_LIMIT` 6000 (read at call time), max 25 fields. `HELP_COLOUR` blurple.
-- Tests: tests/test_help_embed.py (`info_for(name)` builds a CommandInfo with one param per documented parameter note).
-- Docs: none user-visible yet (final docs story).
-- Learnings: GETTING_STARTED mentions /download etc., so "command not shown" tests must look at group fields only (`fields[1:]`) and match the backticked usage.
+## 2026-10-11 - US-011
+- `activity/pokemon_stats.py` (`PokemonUserStats`, `ShinyCatch`, `PokemonStats`, `pokemon_stats`, `impatient_awards`, `IMPATIENT_MIN_COOLDOWNS` 3); `AwardKey.IMPATIENT`; `build_monthly_report(..., pokemon_events)`, `MonthlyReport.pokemon`, `UserProfile.pokemon`; `Pokémon` field in both embeds (`MAX_POKEMON_CATCHERS`/`MAX_SHINY_LINES`/`MAX_TOP_SPECIES` 5); `Activity.monthly_report` loads the month's events; `/activity` keeps the cooldown for a month with only Pokémon data.
+- Files: src/ninja_bot/activity/{pokemon_stats,awards,report,embed}.py, src/ninja_bot/cogs/activity.py, src/ninja_bot/help/content.py, tests/test_activity_{pokemon_stats,embed,commands}.py, README.md (/activity, /myactivity, cooldown, Pokémon stats subsection, commands table, layout), docs/manual-checks.md (Toasty), CLAUDE.md (Architecture).
+- Decisions: months with only Pokémon data are not auto-posted (reporter needs voice time) and `/myactivity` still needs voice time; both documented in README.
+- Needs manual check: docs/manual-checks.md "Toasty ;pokemon" Pokémon field items.
+---
+## 2026-10-11 - US-012
+- Final docs pass, checked against the code (constants, messages, loops). Most docs were already current from the per-story updates.
+- README: "reads no messages" now names the Toasty exception; DATA_DIR row lists Toasty events; invite note links the monthly auto-post channel; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post; Known limitations add voice only / no history before the feature / month boundaries in ACTIVITY_TIMEZONE.
+- docs/deployment.md: fixed the activity.sqlite3 backup sentence; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post. docs/manual-checks.md: Toasty startup-without-intent and unseen-command checks. CLAUDE.md: intent rule names the conditional Message Content intent.
+- Relative links/anchors checked with a small script (the only hit was an example `[x](y)` in a code span).
+- Needs manual check: everything in docs/manual-checks.md "Activity tracking", "Monthly auto-post", "Toasty ;pokemon".
+
+
+---
+# Review follow-ups (tasks/prd-activity-tracking-review.md): first run archived in scripts/ralph/archive/2026-10-11-activity-tracking/
+
+# Review follow-ups (tasks/prd-activity-tracking-review.md) — story IDs restart at US-001
+
+## 2026-10-11 - Review US-001
+- `known_users()` replaced by `voice_user_ranges()` (store Protocol + Sqlite: MIN/MAX start_ts per voice user; Pokémon-only users not included). `shame_candidates(ranges, month_end_ts)` + `SHAME_LOOKBACK_DAYS` 90 in activity/stats.py; `build_monthly_report` takes `voice_user_ranges` and shames candidates | users with time that month.
+- Sessions after the viewed month count as "last seen" (someone back since is still a candidate).
+- Files: src/ninja_bot/activity/{store,stats,report}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{store,stats,embed,commands}.py, README.md (Wall of shame bullet, Toasty storage note), CLAUDE.md, docs/manual-checks.md.
+- Needs manual check: docs/manual-checks.md wall of shame item (old month with a later-joined member).
+---
+## 2026-10-11 - Review US-002
+- `MonthlyReport.shame_pool`, `drop_departed(pool, departed, limit)`, `without_departed(report, departed)` in activity/report.py; `Activity.monthly_report(month, guild=None)` + `departed_members(guild, report)` (lookups lowest first, stop at SHAME_LIMIT kept; NotFound = departed, HTTP errors keep the candidate and aren't cached). `/activity` passes `interaction.guild`, the monthly post `channel.guild`; `/myactivity` doesn't (no shame list). `Activity(..., members=MemberCache)`.
+- Files: src/ninja_bot/activity/report.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{embed,commands,autopost}.py, README.md (Wall of shame bullet), docs/manual-checks.md, CLAUDE.md.
+- Needs manual check: docs/manual-checks.md departed-member wall of shame item.
+---
+---
+## 2026-10-11 - US-003 (review follow-ups)
+- `_run_ending_on(days, last_day, *, ongoing)` in activity/stats.py: for the current month a quiet today falls back to yesterday; ended months unchanged; `longest_streak` untouched.
+- Files: src/ninja_bot/activity/stats.py, tests/test_activity_stats.py (quiet morning, active today, two quiet days, the 1st), README.md (/myactivity streak rules). help/content.py made no claim about it, unchanged.
 ---
 
 ## 2026-10-11 - US-004
-- Added `build_command_embed(info, help_entry)` to `src/ninja_bot/help/embed.py`: title `/<name>` (cut to `TITLE_LIMIT` 256), description `summary\n\ndetails` (or the Discord description when there is no entry), fields Usage (code block), Parameters (`parameter_lines`), Examples (one code block, one example per line), Notes (`• note`); empty fields omitted. Lines are dropped from the bottom with `+N more` (`_fit_lines` / `_fit_code_block`, the marker sits outside the code block), then `_fit_total` drops trailing fields.
-- Tests: tests/test_help_embed.py (params/choices/notes, no params, `help_entry=None`, oversized notes/params/title, total limit, every real COMMANDS entry within limits and untrimmed).
-- No docs change: /help is not registered until the cog story.
+- `compute_awards` (activity/awards.py) only adds Biggest climber / Biggest drop when `now >= month.end(tz)` (month over) and `previous_stats` is non-empty; other awards unchanged.
+- Tests: running month on day 3 (no climber/drop, night owl still awarded), ended month at exactly `month.end` (both awarded). Existing tests use `LATER` (Dec 1) so they keep passing.
+- README activity Awards bullet says completed months only.
+- Files: src/ninja_bot/activity/awards.py, tests/test_activity_awards.py, README.md
+---
 
 ## 2026-10-11 - US-005
-- Added `src/ninja_bot/help/lookup.py` (no discord): `normalize_name` (strip, one leading `/`, lower), `find_command` (returns the original name from `names`; empty input -> None), `suggest(text, names, limit=3)` and `autocomplete_names(current, names, limit=AUTOCOMPLETE_LIMIT)` share `_ranked` (deduped, prefix matches then substring matches, each alphabetical by normalised name; empty text = all names). Autocomplete limit is capped at 25 (`AUTOCOMPLETE_LIMIT`).
-- Tests: tests/test_help_lookup.py (parametrized).
-- No docs change: /help is not registered until the cog story.
+- `_post_report` (cogs/activity.py) builds the report + embed first; a build error is logged with `log.exception("Could not build the activity overview for %s; retrying")` and the month is not confirmed (next hourly cycle retries). `confirm` stays in a `finally` around the send only, so every send attempt (HTTP or unexpected error) is confirmed.
+- Tests (tests/test_activity_autopost.py): build fails once then posts once; build fails every cycle (logged with traceback each time, never confirmed); unexpected send error confirmed, not retried. Existing tests cover send fails / succeeds.
+- Docs: README Monthly auto-post "One post per month" bullet, docs/deployment.md "No monthly activity post" troubleshooting row.
 ---
 
 ## 2026-10-11 - US-006
-- Added `src/ninja_bot/cogs/help.py` (`Help` cog, `/help command:`; `command_infos`, `help_reply`, `unknown_command_message` with up to 3 `/name` suggestions; replies ephemeral with `AllowedMentions.none()`; `cog_app_command_error` private generic reply + log, send errors swallowed) and registered it in `EXTENSIONS`.
-- Tests: tests/test_help_cog.py.
-- Docs: minimal now (README commands row + layout, removed "No help command" limitation, CLAUDE.md Architecture line); the full /help section, public flag and manual checks are US-009.
-- Needs manual check: `/help` and `/help command:download` in the test server (private reply, works in DMs).
+- `MIN_YEAR = 2015` in activity/periods.py; `parse_month` (so also `resolve_month`) rejects earlier years with `INVALID_MONTH_MESSAGE`. `Month` keeps its 1..9998 bound, so `previous()` of `2015-01` is fine and local timestamps can't overflow for accepted (non-future) months. `9999-12` is rejected by `Month.__post_init__` (same message).
+- Tests: tests/test_activity_periods.py (0001-01, 2014-12, 9999-12, 2015-13 rejected; 2015-01 previous/start/end in UTC, Amsterdam, Kiritimati, Pago_Pago), tests/test_activity_commands.py (both commands reply privately with the format message; 2015-01 builds /activity and /myactivity in UTC, Kiritimati, Pago_Pago).
+- Docs: README /activity `month` bullet (earliest month) and Errors bullet. help/content.py states no range, unchanged.
 ---
 
 ## 2026-10-11 - US-007
-- `/help` gets `command` autocomplete (`autocomplete_choices` over `autocomplete_names`, cog method `help_command_autocomplete`) and an optional `public: bool` flag.
-- Public replies use `UserCooldown(PUBLIC_COOLDOWN_SECONDS=15.0)`, taken only after the command resolves to an embed; unknown names are always private and never take it. A failing public send refunds and re-raises (cog error handler logs it). Throttle text: `public_cooldown_message` formats `PUBLIC_COOLDOWN_MESSAGE` (ceil, singular/plural).
-- README commands table row for /help updated (public, cooldown); the full /help section is US-009.
-- Files: src/ninja_bot/cogs/help.py, tests/test_help_cog.py, README.md
-- Learnings: in tests, call `Help.help.callback(cog, interaction, command, public)` positionally; the autocomplete callback is a plain cog method you can await directly.
-- Needs manual check: autocomplete suggestions appear while typing `command`; `public:true` posts visibly in the channel; a second public call within 15 s gets the private cooldown reply.
+- `posted_months() -> set[str]` on `ActivityStore` + `SqliteActivityStore`; `MonthlyReporter.due_month` fetches it once and only calls `_has_data` for unposted months (all posted: 2 store calls). `report_posted` kept (tests/other callers).
+- `Activity.monthly_report` computes the month's start/end once (previous month window ends at `start`).
+- New index `voice_sessions_start ON voice_sessions (start_ts)` in `_SCHEMA` (lazy, so existing DBs get it on first connect).
+- Tests: `CountingStore` wrapper in tests/test_activity_reporter.py (24 posted months = 2 calls; posted months skipped in memory), store tests for `posted_months` and the index on a fresh and an old-schema DB.
+- Docs: none (README Data and storage lists no indexes).
 ---
 
 ## 2026-10-11 - US-008
-- Added tests/test_help_drift.py: a fixture loads every extension from `bot.EXTENSIONS` onto a real `NinjaBot` (test `Config`, no `CS2_CHANNEL_ID`, `DATA_DIR` under tmp_path; no login/network needed, unloaded in teardown) and yields the top-level `app_commands.Command`s.
-- Tests: registered <-> `COMMANDS` both ways, `parameter_notes` keys are real params, Discord command/param descriptions non-empty, README "Commands at a glance" rows (regex on first column `` `/name` ``, section ends at next `## `) match exactly (no missing/extra/duplicate), overview + every detail embed within Discord limits. Failure messages name the commands.
-- Verified the README test fails when a row is removed.
-- No docs change (tests only); full /help docs are US-009.
-- Learnings: `NinjaBot(config)` + `await bot.load_extension(ext)` works offline in tests (setup_hook/sync are never called); unload the extensions afterwards so Cs2.cog_unload closes its clients.
+- New `src/ninja_bot/posting.py`: `send_safely(send, what="message")` and `PostChannelResolver` (warning template with one `%s`). `CHANNEL_UNAVAILABLE = "unavailable (Discord error)"` in cs2/channels.py for other `HTTPException`s from `fetch_channel` (warned once, cycle skipped, activity month stays unposted).
+- cogs/cs2.py and cogs/activity.py: `POST_WARNING` constants (texts unchanged), `self._post_channel` resolver, `_send_safely` wrappers keep "Could not send CS2/activity response".
+- Tests: tests/test_posting.py (each cause, once-per-cause, clear on success, send_safely), HTTP error cases in tests/test_{cs2,activity}_autopost.py; existing tests untouched.
+- Docs: CLAUDE.md Architecture, README layout + both cause lists, docs/deployment.md permissions paragraph.
 ---
 
 ## 2026-10-11 - US-009
-- README: intro mentions /help and /ping, contents entry, new `## /help` section (overview/detail views, autocomplete, unknown names + suggestions, `public` with the 15 s cooldown, text lives in `help/content.py`), new Development `### Adding a command` (CommandHelp entry + README row, enforced by tests/test_help_drift.py). Commands table row, layout block and the removed "No help command" limitation were already done in US-006/US-007.
-- docs/manual-checks.md: `/help` section (from the PRD; the "nonsense" item corrected: no prefix/substring match gives the pointer to /help, not suggestions, so `down` is used for the suggestion check).
-- CLAUDE.md: Documentation table row "A new/changed/removed slash command -> also help/content.py"; convention "All /help text lives in help/content.py". Architecture line already existed.
-- Checked relative links/anchors in README, CLAUDE.md and docs/ with a small script (the only hit, `[x](y)` in manual-checks.md, is example text).
-- Needs manual check: the /help list in docs/manual-checks.md.
+- Added `split_local` to activity/periods.py (hour/day boundaries, DST guard); `stats._seconds_per_day` and `awards._hour_pieces` use it; removed `_next_midnight`. `awards._clipped` already used `stats.clip`.
+- Tests: tests/test_activity_periods.py (one hour, midnight, several days, Amsterdam spring-forward/fall-back, zero length). Existing stats/awards tests unchanged.
+- Learning: fall-back hour split merges the repeated 02:00 hour into one 7200 s piece (kept as-is: no behaviour change).
+
+## 2026-10-11 - US-010
+- Removed the ignored `tz` parameter from `Month.days()` (periods.py); updated callers in activity/report.py, activity/stats.py and tests/test_activity_periods.py. No behaviour change, no docs (internal).
+---
+
+## 2026-10-11 - US-011
+- New pure `to_event(result, message_id, user_id, ts) -> PokemonEvent` in activity/pokemon.py (imports `PokemonEvent` from store.py; no cycle); `PokemonTracker.record_reply` now only extracts ids + `message.created_at`, calls `parse_reply`/`to_event` and stores.
+- Tests: tests/test_activity_pokemon.py `test_to_event` (catch, shiny, cooldown with/without wait) and a fake-message test that the creation time (not `edited_at`) is stored.
+- Docs: CLAUDE.md Architecture (pokemon.py lists `to_event`); no user-visible change.
 ---

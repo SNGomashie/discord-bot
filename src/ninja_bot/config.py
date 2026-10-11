@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import zoneinfo
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -19,6 +20,9 @@ class Config:
     cs2_channel_id: int | None = None
     cs2_poll_seconds: int = 300
     data_dir: str = "data"
+    activity_channel_id: int | None = None
+    activity_timezone: str = "UTC"
+    toasty_bot_id: int | None = None
 
     @property
     def is_dev(self) -> bool:
@@ -42,6 +46,11 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     cs2_channel_id = _parse_optional_positive_int(source, "CS2_CHANNEL_ID")
     cs2_poll_seconds = _parse_positive_int(source, "CS2_POLL_SECONDS", 300)
     data_dir = source.get("DATA_DIR", "").strip() or "data"
+    # Monthly activity report channel; unset = no auto-post.
+    activity_channel_id = _parse_optional_positive_int(source, "ACTIVITY_CHANNEL_ID")
+    activity_timezone = _parse_timezone(source, "ACTIVITY_TIMEZONE", "UTC")
+    # Toasty ;pokemon tracking; set = Message Content intent requested.
+    toasty_bot_id = _parse_optional_positive_int(source, "TOASTY_BOT_ID")
     return Config(
         environment=environment,
         token=token,
@@ -51,6 +60,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         cs2_channel_id=cs2_channel_id,
         cs2_poll_seconds=cs2_poll_seconds,
         data_dir=data_dir,
+        activity_channel_id=activity_channel_id,
+        activity_timezone=activity_timezone,
+        toasty_bot_id=toasty_bot_id,
     )
 
 
@@ -70,3 +82,14 @@ def _parse_optional_positive_int(source: Mapping[str, str], key: str) -> int | N
     if value <= 0:
         raise ConfigError(f"{key} must be positive, got {value}")
     return value
+
+
+def _parse_timezone(source: Mapping[str, str], key: str, default: str) -> str:
+    raw = source.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        zoneinfo.ZoneInfo(raw)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        raise ConfigError(f"{key} must be an IANA time zone name, got {raw!r}") from None
+    return raw
