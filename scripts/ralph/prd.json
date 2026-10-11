@@ -1,20 +1,21 @@
 {
   "project": "ninja-discord-bot",
-  "branchName": "ralph/cs2-squad-hardening",
-  "description": "CS2 squad hardening: fix code-review findings in the poller, Steam resolver, member lookups, announcement embed and cog structure",
+  "branchName": "ralph/help-command",
+  "description": "/help command: overview and per-command help (private by default, optional public), all text in one swappable content module, with tests that fail when help or the README drift from the registered commands",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Never announce from an incomplete match",
-      "description": "As a friend in the server, I want the auto-posted scoreboard to contain all players, or to wait until it can.",
+      "title": "Help content model and text module",
+      "description": "As the owner, I want all help text in one module with a small typed structure so that I can restyle or reword it without touching logic.",
       "acceptanceCriteria": [
-        "`full_match(provider, match, *, strict=False)` in `cs2/client.py` gains a keyword-only `strict` flag. With `strict=False` it behaves exactly as today (used by `/scoreboard`: a CS2 error falls back to the history entry)",
-        "With `strict=True`, a `Cs2Error` from `provider.get_match` is **re-raised** (including `RateLimitedError`, `ApiError` and `MatchNotFoundError`) instead of returning the history entry; the early return for an entry that already has two non-empty teams, and the \"fetched result has fewer players, keep the original\" rule, are unchanged",
-        "The docstring explains the two modes and says anything that announces a match must use `strict=True`",
-        "`MatchPoller.poll()` (`cs2/poller.py`) calls `full_match(..., strict=True)`. If it raises a `RateLimitedError`, the poller stops completing matches for this cycle (handled in US-002). If it raises any other `Cs2Error`, that match is **skipped for this cycle**: it is not returned and **not marked posted**, a line is logged at INFO (match id and error type only), and the other selected matches continue",
-        "A match skipped this way is retried in the next cycle; it stops being retried once it is older than the existing age limit (`_drop_stale` already marks it posted then)",
-        "The per-cycle cap (`max_per_cycle`) counts only matches that were completed successfully, so a failing match does not use up a slot",
-        "Unit tests with a fake provider: complete history entry makes no `get_match` call in either mode; incomplete entry with `strict=False` and an `ApiError` returns the original; the same with `strict=True` raises; `get_match` returning fewer players keeps the original in both modes; the poller skips a match whose lookup fails and returns the others; the failed match is not marked posted and is returned in a later cycle when the lookup works; a permanently failing match is dropped by the age limit; the cap counts only completed matches",
+        "New package `src/ninja_bot/help/` (with `__init__.py`) containing `content.py`; it imports nothing from `discord` and nothing from other `ninja_bot` modules",
+        "`content.py` defines frozen dataclasses: `CommandHelp(name: str, group: str, summary: str, details: str, examples: tuple[str, ...], notes: tuple[str, ...], parameter_notes: Mapping[str, str])` (`name` has no leading slash; `parameter_notes` maps a parameter name to extra help such as accepted formats) and `HelpGroup(key: str, title: str)`",
+        "`GROUPS` lists three groups in display order: media, CS2 stats, utility. `COMMANDS` is a tuple of `CommandHelp` with one entry for each of `ping`, `download`, `link`, `unlink`, `scoreboard`, `profile`, `leaderboard` and `help` itself",
+        "Every entry's content is accurate to the code (read the constants, do not copy from the README or this PRD): for example `download` documents `format`, the clip syntax for `start`/`end` (`90`, `1:30`, `1h2m3s`), and that `end` needs `start`; `link` documents SteamID64, `/profiles/` link, `/id/` link and bare custom URL name; `leaderboard` lists the seven metrics; `scoreboard` documents `player` and `match`",
+        "`content.py` also holds every other user-facing string used by the help feature, as named module constants: overview title and intro, the getting-started text (see US-003), field names (`Usage`, `Parameters`, `Examples`, `Notes`), the footer, the unknown-command reply (with a `{suggestions}` placeholder), the public-cooldown reply, and the generic error reply",
+        "The wording is plain and neutral: short sentences, no persona, no emojis other than those the bot already uses in other embeds (none needed)",
+        "Each summary is at most 100 characters; each `details` is at most 600 characters; each example is at most 150 characters (the tests in US-004/US-005 rely on this to stay within Discord's limits)",
+        "Unit tests (`tests/test_help_content.py`) check structure only, never exact prose: names are unique, lower-case, without `/`; every `group` exists in `GROUPS`; the length limits above hold; every example starts with `/<name>` of its own command; `parameter_notes` keys are non-empty",
         "Typecheck passes",
         "`./scripts/check.sh` passes (ruff, ruff format, mypy strict, pytest)"
       ],
@@ -24,17 +25,16 @@
     },
     {
       "id": "US-002",
-      "title": "Real rate-limit backoff and fair polling",
-      "description": "As the owner, I want a Leetify rate limit to make the bot back off, and every linked player to get their turn.",
+      "title": "Command metadata and usage line",
+      "description": "As a user, I want help to show each command's real parameters so that what I read matches what Discord shows when I type the command.",
       "acceptanceCriteria": [
-        "`MatchPoller.poll()` returns a frozen `PollResult(matches: list[NewMatch], rate_limited: bool)` instead of a bare list; `rate_limited` is `True` when a `RateLimitedError` stopped history fetching or full-match completion during the cycle",
-        "On a rate limit the poller stops fetching further players, still returns the matches already completed (they are safe to announce), and does not mark any unfetched match or player as posted or seeded",
-        "The poller remembers where a rate-limited cycle stopped (the Steam ID of the player whose request was refused) and starts the **next** cycle from that player, wrapping around the sorted list, so players later in the list are not starved; after a cycle that completes the whole list the starting point resets to the beginning",
-        "`Cs2.run_poll_cycle` (`cogs/cs2.py`) reads `PollResult`: it announces `matches`, then sets `_skip_next_poll = True` when `rate_limited` is set (one skipped cycle of backoff); the dead `except RateLimitedError` branch is removed",
-        "The existing behaviour is otherwise unchanged: seeding stays silent, the age limit and `max_per_cycle` still apply, errors for one player skip only that player, unexpected exceptions still propagate from `poll()` and are caught and logged by `run_poll_cycle`",
-        "Unit tests: a rate limit on the third player of five returns the first two players' completed matches with `rate_limited=True`; the next `poll()` starts at the third player (assert the request order); after a full pass the order resets; a rate limit during full-match completion keeps matches completed before it; no marking happens for unfetched players; the cog skips exactly the next cycle after `rate_limited=True`, announces the partial matches first, and polls again the cycle after that; no backoff when `rate_limited` is `False`",
+        "New module `help/commands.py` (no `discord` import) defines frozen dataclasses `ParamInfo(name: str, description: str, required: bool, choices: tuple[str, ...])` and `CommandInfo(name: str, description: str, params: tuple[ParamInfo, ...])`",
+        "`usage_line(info) -> str` returns `/name` followed by the parameters in order: required ones as `name:<name>`, optional ones as `[name:<name>]`; a parameter with choices uses the choice values joined by `|` instead (`[format:mp3|mp4]`); a command with no parameters is just `/name`",
+        "`parameter_lines(info, notes) -> list[str]` returns one line per parameter: `name (required|optional): description`, then ` Choices: a, b, c` when it has choices, then the matching entry of `notes` (a `Mapping[str, str]`, normally `CommandHelp.parameter_notes`) when present. Every line is at most 300 characters (long notes are cut with `…`)",
+        "Both functions are pure and deterministic",
+        "Unit tests: no parameters, one required, mixed required and optional, a choice parameter, a note present and absent, a long note being cut, parameter order preserved",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 2,
       "passes": true,
@@ -42,16 +42,20 @@
     },
     {
       "id": "US-003",
-      "title": "Read the whole Steam profile response",
-      "description": "As a user, I want my valid custom URL to resolve however the network chunks the response.",
+      "title": "Overview embed",
+      "description": "As a user, I want one screen that tells me what the bot can do and where to start.",
       "acceptanceCriteria": [
-        "In `cs2/resolver.py`, a new pure-async helper `read_capped(chunks: AsyncIterable[bytes], cap: int) -> tuple[bytes, bool]` collects chunks until the stream ends or the total reaches `cap`, returns at most `cap` bytes, and the bool is `True` only when the stream ended before the cap (the body is complete)",
-        "`SteamCommunityResolver._aiohttp_fetch` uses it over `response.content.iter_chunked(...)` instead of a single `response.content.read(MAX_BODY_BYTES)`; the cap stays 64 KiB, redirects stay refused, and the timeout is unchanged",
-        "A complete body must decode fully as UTF-8 (a decode error is still `SteamLookupError`); a body cut at the cap is decoded tolerantly, so a cut in the middle of a multi-byte character does not raise, and an ID found before the cut is still returned while an ID after the cut is not found",
-        "The `<steamID64>` regex lookup is unchanged and still takes the first match",
-        "Unit tests for `read_capped` with fake chunk iterators: a body in one chunk, in many small chunks, split exactly inside a multi-byte character (for example a Cyrillic or CJK nickname), exactly `cap` bytes, `cap + 1` bytes, an empty stream; and resolver tests through a stub that returns such bodies: an ID after a nickname that spans a chunk boundary is found, an oversized body reports the ID only if it is within the cap",
+        "New module `help/embed.py` defines `build_overview_embed(commands: Sequence[CommandInfo]) -> discord.Embed` using the content constants from US-001 for all text",
+        "The embed has the overview title and intro, a **Getting started** field (text from `content.py`, for example: link your Steam account with `/link`, then use `/scoreboard`, `/profile` and `/leaderboard`; use `/download` for videos), and one field per group in `GROUPS` order",
+        "Each group field lists its commands, in `COMMANDS` order, as one line each: `` `usage_line` `` followed by the command's `summary`, joined with newlines; a group with no registered command is omitted",
+        "A command that is registered but has no `CommandHelp` entry still appears (under a trailing \"Other\" group, using its Discord description) rather than being hidden",
+        "A `CommandHelp` whose command is not in the given `commands` is skipped (no stale entries)",
+        "The footer is the content constant (a hint that `/help command:<name>` shows details)",
+        "The embed respects Discord limits: every field value at most 1024 characters (excess lines are dropped and a `+N more` line is appended), total at most 6000 characters, at most 25 fields",
+        "Mentions and markdown in command text can't cause trouble: no user data is included",
+        "Unit tests with hand-built `CommandInfo` lists: all groups present and ordered, empty group omitted, unregistered command skipped, registered-but-undocumented command shown under \"Other\", the 1024 truncation path, total size under 6000 for the full real content with all eight commands",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 3,
       "passes": true,
@@ -59,17 +63,16 @@
     },
     {
       "id": "US-004",
-      "title": "Cache Discord member lookups",
-      "description": "As the owner, I want `/scoreboard` and auto-posts to make few Discord REST calls, and never lose a friend's name because of a rate limit.",
+      "title": "Command detail embed",
+      "description": "As a user, I want the full explanation of one command, including accepted formats and examples.",
       "acceptanceCriteria": [
-        "`member_lookup` in `cogs/cs2.py` takes the cog's caches and keeps the signature the identities code expects (`Callable[[int], Awaitable[str | None]]`); the order is: cache, `guild.get_member`, `guild.fetch_member`",
-        "Two `TtlCache` instances from `cs2/cache.py` live on the cog (not module globals): found names for 300 seconds and confirmed \"not a member\" results for 60 seconds, both keyed by `(guild_id, user_id)` and bounded in size",
-        "Only definitive results are cached: a display name (from the member cache or REST) and `discord.NotFound`. A `discord.HTTPException`/`Forbidden`/rate limit is **not** cached, is logged without a traceback, and returns `None` as today, so the next scoreboard tries again",
-        "A friend whose lookup hit a transient error is not cached as a stranger",
-        "The cache holds only display names the bot already shows; nothing is persisted",
-        "Unit tests with a `MagicMock` guild and a fake clock: second lookup of the same member makes no `get_member`/`fetch_member` call, a member-cache hit is cached, `NotFound` is cached for 60 s and retried afterwards, an `HTTPException` is not cached and the next call retries, entries expire at their TTLs, two guilds do not collide, and ten concurrent lookups for five distinct users make five REST calls at most",
+        "`help/embed.py` defines `build_command_embed(info: CommandInfo, help_entry: CommandHelp | None) -> discord.Embed`",
+        "Title is `/<name>`. The description is the entry's `summary` and `details` (or just the Discord description when `help_entry` is `None`)",
+        "Fields, in order and each omitted when empty: **Usage** (the `usage_line` in a code block), **Parameters** (the `parameter_lines`, one per line), **Examples** (each example in its own line, in a code block), **Notes** (one bullet per note). Field names come from `content.py`",
+        "Limits: every field value at most 1024 characters (parameters and notes are trimmed from the end with `+N more`), title at most 256, total at most 6000",
+        "Unit tests: a command with parameters, choices and notes; a command with no parameters (no Parameters field); `help_entry=None`; oversized notes being trimmed; the largest real command (`download`) staying under all limits",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 4,
       "passes": true,
@@ -77,17 +80,16 @@
     },
     {
       "id": "US-005",
-      "title": "Announcement Squad field only mentions current members",
-      "description": "As a friend, I don't want to see a dead `<@123>` mention for someone who left the server.",
+      "title": "Name lookup and autocomplete matching",
+      "description": "As a user, I want `/help command:` to forgive small typing differences and suggest what I meant.",
       "acceptanceCriteria": [
-        "In `build_announcement_embed` (`cs2/embed.py`), when `identities` is not `None` it is treated as authoritative: a squad member **with** an identity gets the current line (`<@id> as SteamName` plus stats); a squad member **without** one gets a line with no mention (`SteamName` plus the same stats), so their stats still show but nothing dead renders",
-        "When `identities` is `None` (identity resolution failed or was not attempted), all squad members keep mention lines as today",
-        "Highlighting in the tables (`▸`) is unchanged and still applies to every linked player in the match",
-        "`Cs2._match_identities_or_empty` is replaced by a method that returns `None` when resolution **failed** (exception) and a possibly empty dict when it succeeded, so \"nobody is a member\" and \"lookup broke\" are different; the scoreboard path (`build_match_embed`) is updated to match without changing its output",
-        "Limits still hold: every field `<= 1024`, total `<= 6000`, `<= 25` fields, asserted for a squad of 10 with 32-character names",
-        "Unit tests: all members resolved, one member missing (no mention, stats present), none resolved with `identities={}`, `identities=None`, the mixed case, the limits, and the cog passing `None` on a lookup exception and a dict otherwise",
+        "New module `help/lookup.py` (no `discord` import) with `normalize_name(text: str) -> str` (strip whitespace, strip one leading `/`, lower-case)",
+        "`find_command(text, names: Sequence[str]) -> str | None` returns the matching name from `names` after normalising both sides, else `None`",
+        "`suggest(text, names, limit=3) -> list[str]` returns up to `limit` names that start with or contain the normalised text, prefix matches first, then alphabetical; an empty text returns the first `limit` names alphabetically",
+        "`autocomplete_names(current, names, limit=25) -> list[str]` returns names that contain the normalised `current` (prefix matches first, then alphabetical), at most `limit` (Discord's maximum is 25); empty `current` returns all names alphabetically up to the limit",
+        "Unit tests (parametrized): `/Download`, ` download `, `DOWNLOAD`, unknown names, empty and whitespace-only input, a lone `/`, prefix before substring ordering, the limit being respected, no duplicates",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 5,
       "passes": true,
@@ -95,15 +97,19 @@
     },
     {
       "id": "US-006",
-      "title": "Same URL tail rules for `/profiles/` and `/id/`",
-      "description": "As a user, I want a Steam profile link with tracking parameters to work for both URL forms.",
+      "title": "The `/help` cog (overview and detail replies)",
+      "description": "As a user, I want to type `/help` or `/help command:<name>` and get my answer privately.",
       "acceptanceCriteria": [
-        "In `cs2/steam.py`, one shared constant for the optional trailing part (`/`, then an optional `?...` or `#...` tail) is used by both `_PROFILE_URL_RE` and `_VANITY_URL_RE`",
-        "`https://steamcommunity.com/profiles/76561198000000000?utm_source=x`, `.../profiles/76561198000000000/#top` and the same forms for `/id/<name>` are accepted and return the same result as without the tail",
-        "A tail never changes which ID or name is extracted, and other hosts, look-alike hosts (`steamcommunity.com.evil.example`), and the 200-character input cap behave as before",
-        "Unit tests, parametrized over both URL kinds: `?` tail, `#` tail, `/?` and `/#` tails, an empty `?`, a tail with unicode, and the rejection cases above",
+        "New cog `src/ninja_bot/cogs/help.py` with `async def setup(bot)`, registered in `EXTENSIONS` in `bot.py`; the cog is a thin wrapper that only extracts command metadata from the live tree and calls the pure functions from US-002 to US-005",
+        "`/help` has description \"Show what the bot can do\" and one optional string parameter `command` (\"A command to explain, e.g. download\"); the `public` flag and autocomplete come in US-007",
+        "The cog builds `CommandInfo` objects from `bot.tree.get_commands()` (top-level `app_commands.Command` objects only; their `name`, `description` and `parameters` with name, description, `required`, choice values)",
+        "`/help` with no `command` replies with the overview embed. With a `command` it replies with the detail embed, matching through `find_command`. An unknown name gets the unknown-command text (with up to 3 `suggest` names)",
+        "Every reply is ephemeral and uses `allowed_mentions=discord.AllowedMentions.none()`",
+        "No network, database or file access happens in the command; it works in DMs and in guilds",
+        "`cog_app_command_error` replies privately with the generic error constant and logs the exception, like the other cogs",
+        "Unit tests (call `Help.help.callback(cog, interaction)` with `AsyncMock`/`MagicMock`, as in `tests/test_cs2_cog.py`): overview reply is ephemeral; detail reply for a known command; `/Download` style input matches; unknown command gives the suggestion reply; the embed passed has no mentions allowed; the error handler replies privately and logs",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 6,
       "passes": true,
@@ -111,15 +117,15 @@
     },
     {
       "id": "US-007",
-      "title": "Move the leaderboard fetch policy out of the cog",
-      "description": "As a developer, I want the leaderboard fetch and skip policy in `cs2/squad.py` so it is tested without a cog.",
+      "title": "Autocomplete and the public flag",
+      "description": "As a user, I want `command` to suggest names as I type, and I want to post the help for everyone when I choose.",
       "acceptanceCriteria": [
-        "`SquadFetch`, `leaderboard_notes`, `MAX_LEADERBOARD_LINKS` and the fetch loop (currently `Cs2._fetch_squad`) move to `cs2/squad.py` as `async fetch_squad(provider: StatsProvider, links: Mapping[int, str], limit: int = MAX_LEADERBOARD_LINKS) -> SquadFetch` and `leaderboard_notes(fetch, total_links)`; `cogs/cs2.py` imports and calls them and keeps no policy of its own",
-        "Behaviour is unchanged: links sorted by Discord ID and capped at `limit`, a `Cs2Error` skips the player and is counted, a `RateLimitedError` stops fetching and records how many were not loaded, unexpected exceptions propagate, entries keep their order",
-        "`cs2/squad.py` stays free of any `discord` import",
-        "The existing tests for these behaviours move to `tests/test_cs2_squad.py` against `fetch_squad`/`leaderboard_notes` with a fake provider; the cog tests keep only the wiring (the cooldown, defer, empty and all-failed replies, and the embed being posted)",
+        "The `command` parameter gets an autocomplete callback returning `app_commands.Choice` objects built from `autocomplete_names` over the registered command names (at most 25; no `defer` needed)",
+        "`/help` gains an optional bool `public` (\"Post the help in the channel for everyone (default: only you see it)\", default `False`); the reply is ephemeral unless `public` is true",
+        "A cooldown applies **only** to `public:true` requests: reuse `UserCooldown` from `media/cooldown.py` with a module constant `PUBLIC_COOLDOWN_SECONDS = 15.0`; it is taken after the command is resolved (an unknown name never uses it), and refunded if the send fails. When throttled the reply is private and uses the content constant (with the seconds left, rounded up like the other cogs)",
+        "Unit tests: autocomplete returns choices for a partial string and for empty input; `public:true` is not ephemeral; the public cooldown throttles a second public call but not a private one; an unknown name with `public:true` does not take the cooldown; a failing send refunds the cooldown",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 7,
       "passes": true,
@@ -127,15 +133,18 @@
     },
     {
       "id": "US-008",
-      "title": "Move the auto-post channel checks out of the cog",
-      "description": "As a developer, I want the \"can the bot post here?\" decision in a small testable module.",
+      "title": "Drift tests",
+      "description": "As the owner, I want the build to fail when help or the README no longer matches the real commands.",
       "acceptanceCriteria": [
-        "New module `cs2/channels.py` has `channel_problem(channel, me) -> str | None`, returning the existing cause strings (`CHANNEL_NOT_TEXT`, `CHANNEL_NO_PERMISSIONS`) or `None` when the bot can post; `None` for a missing channel stays a separate cause handled where the channel is fetched. The module takes the `discord` types it needs (channel types and `Permissions`) and contains no network code",
-        "The permission rule is unchanged: View Channel, Embed Links and Send Messages (Send Messages in Threads for a `Thread`)",
-        "`Cs2._post_channel` calls it and keeps only fetching the channel and the log-once bookkeeping; the cause constants move to `cs2/channels.py` and are re-exported or imported by the cog",
-        "Unit tests in `tests/test_cs2_channels.py` with `MagicMock` channels and real `discord.Permissions` objects: text channel with every permission, each missing permission in turn, a thread with and without Send Messages in Threads, a voice channel, an unsupported type (a `CategoryChannel`), and `me` being a different object than the channel's guild member",
+        "`tests/test_help_drift.py` builds the real command tree by loading the real extensions from `bot.EXTENSIONS` onto a `NinjaBot` with a test `Config` (no `CS2_CHANNEL_ID`, `DATA_DIR` under `tmp_path`, no network); if loading all of them in a test is impractical, instantiate the cogs directly instead, but the set of commands must come from the real cog classes, never from a hand-written list",
+        "Test: every registered top-level slash command has a `CommandHelp` entry in `COMMANDS`, and every `CommandHelp` names a registered command (failure messages name the offending command)",
+        "Test: every key of each entry's `parameter_notes` is the name of a real parameter of that command",
+        "Test: every registered command's Discord `description` and every one of its parameters' descriptions is non-empty, so nothing is undocumented in Discord's own UI either",
+        "Test: `README.md` has a row in its \"Commands at a glance\" table (first column `` `/name` ``) for every registered command, and no row for a command that doesn't exist (parse the table rows with a regex; the test reads the file from the repo root)",
+        "Test: both embeds built from the real commands and content are within Discord's limits (fields at most 1024 characters, total at most 6000, at most 25 fields)",
+        "Tests assert structure, not prose, so rewording `content.py` never breaks them",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 8,
       "passes": true,
@@ -143,31 +152,19 @@
     },
     {
       "id": "US-009",
-      "title": "Remove stale comments",
-      "description": "As a developer, I don't want comments that describe features as upcoming when they exist.",
+      "title": "Documentation",
+      "description": "As a user and as a contributor, I want the README, manual checks and architecture notes to describe `/help`.",
       "acceptanceCriteria": [
-        "The comment \"Used by the upcoming leaderboard and match poller\" is removed from `LinkStore.all_links` and `SqliteLinkStore.all_links` in `cs2/store.py`; if a comment is still useful, one line saying that `/leaderboard` and the match poller use it goes on the protocol only",
-        "Other comments, docstrings and README text that call the leaderboard, poller or auto-posting \"upcoming\", \"reserved\" or \"not used yet\" are found with a search (`grep -rniE \"upcoming|reserved|not used yet|not implemented\" src README.md docs CLAUDE.md .env.example`) and corrected where they are now wrong; comments that are still true stay",
-        "No behaviour change",
+        "`README.md`: `/help` added to the \"Commands at a glance\" table (parameters `command`, `public`; reply private by default; cooldown only for public replies, 15 s); a short `/help` section (what the overview and detail views show, autocomplete, the `public` flag, that help text lives in `src/ninja_bot/help/content.py`); the contents list and the repo layout block updated; the \"No help command\" bullet under Known limitations removed",
+        "`README.md` development section: a note that adding a command requires a `CommandHelp` entry in `help/content.py` and a README table row, and that `tests/test_help_drift.py` enforces both",
+        "`docs/manual-checks.md`: a new `/help` section (see Manual Checks below)",
+        "`CLAUDE.md`: `help/` (content, commands, embed, lookup) and `cogs/help.py` added to the Architecture list; the Documentation table gets a row \"A new/changed/removed slash command -> also `help/content.py`\"; the line \"all `/help` text lives in `help/content.py`\" is recorded as a convention",
+        "No persona or voice rules are added to `CLAUDE.md`",
+        "Every relative link and anchor in the edited docs still resolves",
         "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
+        "`./scripts/check.sh` passes"
       ],
       "priority": 9,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-010",
-      "title": "Documentation",
-      "description": "As the owner, I want the docs to reflect the new behaviour.",
-      "acceptanceCriteria": [
-        "README auto-post section: an announcement waits (is retried next cycle) when the full match can't be fetched, instead of posting a partial scoreboard; after a Leetify rate limit the bot skips one cycle and resumes from the player where it stopped; a friend who left the server appears in the Squad field without a mention; and the manual checklist gains: rate limit simulated or noted as unverifiable, a friend removed from the server, a custom URL with a Cyrillic or CJK Steam nickname, and a profile link with `?utm_source=x`",
-        "`docs/deployment.md` troubleshooting: a row for \"match not posted for a while\" (the full match lookup failing or rate limiting; it is retried until the 3-hour age limit)",
-        "`CLAUDE.md` architecture list gains `cs2/channels.py`, mentions `fetch_squad` in `squad.py`, `read_capped` in `resolver.py` and the `strict` flag of `full_match`",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 10,
       "passes": true,
       "notes": ""
     }

@@ -4,6 +4,14 @@ What shipped in each merged pull request of [SNGomashie/discord-bot](https://git
 
 ## 2026-10-11
 
+### `/help` command (`2026.41.9`)
+- New `/help`: with no argument it shows an overview (a "Getting started" block and every command grouped by Media, CS2 stats and Utility, with usage and a one-line summary). `/help command:<name>` shows one command's usage, parameters (required or optional, choices, accepted formats), examples and notes.
+- The `command` option autocompletes from the commands the bot has registered. Names match case-insensitively and with an optional leading `/`; an unknown name gets a private reply with suggestions.
+- Replies are private by default. `public:true` posts the help in the channel, with a 15-second per-user cooldown that applies only to public replies.
+- Parameters, required flags and choices are read from the live command tree. All explanations and every other help string live in `src/ninja_bot/help/content.py`, so the wording can be changed in that one file.
+- Drift tests fail `./scripts/check.sh` when a registered command or parameter has no help entry, when a help entry names something that doesn't exist, or when the README "Commands at a glance" table is out of step with the registered commands. 173 new tests (1382 in total).
+- README, `docs/manual-checks.md` and CLAUDE.md updated; the "No help command" known limitation is gone.
+
 ### #9 Harden CS2 polling, Steam lookups and member names
 Fixes from a code review of #6, #7 and #8. No new commands or options.
 - A rate limit or API error during a full-match lookup could post an incomplete scoreboard and mark it done. Full-match lookups are now strict: a failed match is skipped for the cycle and retried later.

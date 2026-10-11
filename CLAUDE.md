@@ -13,6 +13,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/config.py`: env-based config (`load_config` takes an optional dict for tests).
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
 - `src/ninja_bot/cogs/core.py`: `/ping`.
+- `src/ninja_bot/cogs/help.py`: `/help` cog (thin wrapper: `command_infos` turns `bot.tree.get_commands()` into `CommandInfo`, `help_reply` picks overview/detail/unknown text); logic in `src/ninja_bot/help/` (`content.py` all help text, `commands.py`, `embed.py`, `lookup.py`).
 - `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + `UserCooldown` from `media/cooldown.py`).
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
 - `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile`, `/leaderboard` cog (thin wrapper; shared `UserCooldown`, `CachedStatsProvider(LeetifyClient)` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`) plus the auto-post `tasks.loop` (only with `CS2_CHANNEL_ID`; logic in `run_poll_cycle`, driven by `AutoPost(bot, MatchPoller, channel_id, poll_seconds)`).
@@ -38,6 +39,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - Use slash commands (`app_commands`), not prefix commands.
 - Type-annotate everything (mypy strict). Persistent data goes under `data/` (gitignored), not in the repo.
 - Request only the Discord intents a feature needs.
+- All `/help` text lives in `help/content.py` (`src/ninja_bot/help/content.py`); other help modules and the cog hold no user-facing help strings.
 
 ## Safety
 - Never read, print, or commit `.env` or tokens. Dev and prod use different bot tokens; agents only ever have the dev one (`ENVIRONMENT=dev`).
@@ -69,6 +71,7 @@ Docs are part of the change, not a follow-up. **A change is not done until the d
 | A new or removed known gap / workaround | `README.md` Known limitations |
 | Module layout (new file, moved responsibility) | this file's Architecture list and the layout block in `README.md` |
 | A new script or workflow step | `README.md` Development |
+| A new/changed/removed slash command | also `help/content.py` (its `CommandHelp` entry; `tests/test_help_drift.py` checks it and the README table) |
 | Something only checkable in Discord | `docs/manual-checks.md` (not the README, not only `progress.txt`) |
 | Ops / deployment / troubleshooting only | `docs/deployment.md`; link to the README rather than repeating behaviour |
 
