@@ -8,7 +8,7 @@ It does five things:
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 - **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
-- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons.
+- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons. `/sessions` lists open polls and upcoming sessions, `/session_cancel` cancels one.
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -45,6 +45,8 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336) | public poll (errors are private); Join/Leave/Vote and refused Close round/Confirm replies are private; round results and confirmed sessions are posted publicly | 30 s; refunded unless the poll was posted |
+| `/sessions` | none | public list (errors are private) | 10 s; refunded unless the list was posted |
+| `/session_cancel` | `item` (pick an open poll or upcoming session from the autocomplete) | public confirmation; refusals are private | none |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -399,6 +401,25 @@ A GM (whoever runs the command) starts a poll to find a date for a game session.
 - **Errors** are private replies: a blank or too long name, days not in the accepted forms ("Use weekdays like `fri,sat` or `friday, saturday` (or `weekend` / `weekdays`)."), bad times ("Use 24-hour times like `19:00,14:30`."), a bad or past start date, an out-of-range number, no slots in the window ("There are no slots in that window; pick a later start date or more weeks."), more than 25 slots ("That gives N slots (max 25); use fewer weeks, days or times."), too many open polls, and "Something went wrong with the session poll. Please try again later." for anything unexpected (logged). If the poll message can't be sent, the poll is cancelled so it doesn't count towards the limit.
 - Polls, players and votes are stored in `sessions.sqlite3`; see [Data and storage](#data-and-storage).
 
+### /sessions
+
+`/sessions` (no parameters, server only) posts this server's open polls and upcoming sessions publicly:
+
+- **Open polls** (voting or waiting for Confirm, oldest first): the name linked to the current poll message (bold without a link when the message id is unknown), `Round N of 6`, and either `waiting for <players>`, `everyone voted` or `waiting for the GM to confirm`.
+- **Upcoming sessions** (confirmed, not cancelled, not started yet, soonest first): name, start time (absolute and relative, in everyone's own time zone) and GM; at most 10, then `+N more`.
+- With neither: "No open polls or upcoming sessions. Start one with `/session_poll`."
+- Mentions in the list never ping. Cooldown: 10 s per user, refunded unless the list was posted. Anything unexpected gives "Something went wrong with the session poll. Please try again later." privately (logged).
+
+### /session_cancel
+
+`/session_cancel item` cancels an open poll or an upcoming session of this server. Only the GM or someone with **Manage Events** can cancel; anyone else gets "Only the GM or someone with **Manage Events** can do that." privately.
+
+- **`item`** autocompletes this server's open polls (`Poll: <name> (from Tue 3 Nov)`, the first day of the current round's window) and upcoming sessions (`Session: <name> (Fri 6 Nov 19:00)`), with dates in `SESSIONS_TIMEZONE`. Typing filters the list (case-insensitive, anywhere in the label); at most 25 suggestions. Pick a suggestion: text typed by hand that isn't one gets "Pick an open poll or upcoming session from the list; it may be finished or cancelled." privately.
+- **A poll:** the poll stops (no more votes, deadline closes or nudges; it no longer counts towards the 5 open polls). Its current poll message gets "🚫 **Cancelled.** This poll no longer takes votes." and loses its buttons. A result message that was still waiting for Confirm keeps its Confirm buttons, but they refuse privately.
+- **A session:** it disappears from `/sessions` and gets no more reminders; the poll message it came from gets "🚫 **Cancelled.** This session won't take place.". Sessions that already started can't be cancelled.
+- The bot then replies publicly, for example "🚫 The session poll **<name>** was cancelled by <you>." (mentions don't ping). If the poll message can't be edited (deleted, missing permissions) the error is logged and the cancel still counts.
+- An item that is finished, already cancelled or from another server gets "There's no open poll with that id; it may be finished or cancelled." or "There's no upcoming session with that id; it may have started or been cancelled." privately.
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
@@ -490,13 +511,13 @@ src/ninja_bot/
   posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
                   help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener),
-                  sessions.py (/session_poll, poll buttons)
+                  sessions.py (/session_poll, /sessions, /session_cancel, poll buttons)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
-  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
+  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md

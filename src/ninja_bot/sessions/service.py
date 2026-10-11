@@ -100,6 +100,15 @@ class SessionRefused(Exception):
 
 
 @dataclass(frozen=True)
+class Overview:
+    """What `/sessions` shows; `pending` is keyed by poll id (voting polls only)."""
+
+    polls: list[Poll]
+    sessions: list[Session]
+    pending: dict[int, tuple[int, ...]]
+
+
+@dataclass(frozen=True)
 class RoundFits:
     """Slots fit; the poll is `awaiting_confirm`. `slots` matches `top` (best first)."""
 
@@ -375,6 +384,20 @@ class SessionService:
             await self.store.set_status(poll.id, STATUS_FAILED)
             return RoundFailed(await self._reload(poll), FailReason.LAST_ROUND, pending)
 
+    async def overview(self, guild_id: int) -> Overview:
+        """`/sessions`: the guild's open polls, upcoming sessions and who each voting poll
+        still waits for."""
+        polls = await self.store.open_polls(guild_id)
+        pending: dict[int, tuple[int, ...]] = {}
+        for poll in polls:
+            if poll.status == STATUS_VOTING:
+                players, slots, votes = await self.round_state(poll)
+                pending[poll.id] = tuple(
+                    pending_players(players, [slot.id for slot in slots], votes)
+                )
+        sessions = await self.store.upcoming_sessions(guild_id, self.clock())
+        return Overview(polls, sessions, pending)
+
     async def _reload(self, poll: Poll) -> Poll:
         reloaded = await self.store.get_poll(poll.id)
         assert reloaded is not None
@@ -427,21 +450,36 @@ class SessionService:
             ]
             return await self.store.confirm(poll.id, slot_id, roster)
 
-    async def cancel_poll(self, poll_id: int, by_user_id: int, is_manager: bool) -> Poll:
-        """Cancel an open poll (GM or manager); raises `SessionRefused`."""
+    async def cancel_poll(
+        self, poll_id: int, by_user_id: int, is_manager: bool, guild_id: int | None = None
+    ) -> Poll:
+        """Cancel an open poll (GM or manager; in `guild_id` when given); raises
+        `SessionRefused`."""
         async with self._lock:
             poll = await self.store.get_poll(poll_id)
-            if poll is None or poll.status not in OPEN_STATUSES:
+            if (
+                poll is None
+                or poll.status not in OPEN_STATUSES
+                or (guild_id is not None and poll.guild_id != guild_id)
+            ):
                 raise SessionRefused(content.UNKNOWN_POLL_MESSAGE)
             if not _may_manage(poll.gm_id, by_user_id, is_manager):
                 raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
             await self.store.cancel_poll(poll.id)
             return await self._reload(poll)
 
-    async def cancel_session(self, session_id: int, by_user_id: int, is_manager: bool) -> Session:
-        """Cancel a session that hasn't started (GM or manager); raises `SessionRefused`."""
+    async def cancel_session(
+        self, session_id: int, by_user_id: int, is_manager: bool, guild_id: int | None = None
+    ) -> Session:
+        """Cancel a session that hasn't started (GM or manager; in `guild_id` when given);
+        raises `SessionRefused`."""
         session = await self.store.get_session(session_id)
-        if session is None or session.cancelled or session.start <= self.clock():
+        if (
+            session is None
+            or session.cancelled
+            or session.start <= self.clock()
+            or (guild_id is not None and session.guild_id != guild_id)
+        ):
             raise SessionRefused(content.UNKNOWN_SESSION_MESSAGE)
         if not _may_manage(session.gm_id, by_user_id, is_manager):
             raise SessionRefused(content.NOT_ALLOWED_MESSAGE)

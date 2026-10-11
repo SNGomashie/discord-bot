@@ -23,6 +23,8 @@ EXPECTED_NAMES = {
     "activity",
     "myactivity",
     "session_poll",
+    "sessions",
+    "session_cancel",
     "help",
 }
 

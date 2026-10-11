@@ -26,6 +26,11 @@ MAX_WEEKS = 8
 DEFAULT_WEEKS = 2
 DEFAULT_DURATION_HOURS = 4
 
+_SHORT_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_SHORT_MONTHS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+)  # fmt: skip
+
 _DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 _DAYS: dict[str, tuple[int, ...]] = {
     **{name: (number,) for number, name in enumerate(_DAY_NAMES)},
@@ -153,3 +158,14 @@ def generate_slots(
     if len(starts) > MAX_SLOTS:
         raise InvalidSessionInput(TOO_MANY_SLOTS_MESSAGE.format(count=len(starts), max=MAX_SLOTS))
     return [Slot(start, start + duration) for start in sorted(starts)]
+
+
+def format_local_date(day: date) -> str:
+    """`Fri 6 Nov`, with English names regardless of the locale."""
+    return f"{_SHORT_WEEKDAYS[day.weekday()]} {day.day} {_SHORT_MONTHS[day.month - 1]}"
+
+
+def format_local_time(unix: float, tz: ZoneInfo) -> str:
+    """`Fri 6 Nov 19:00` in `tz`, with English names regardless of the locale."""
+    local = datetime.fromtimestamp(unix, tz)
+    return f"{format_local_date(local.date())} {local:%H:%M}"

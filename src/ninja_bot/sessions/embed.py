@@ -8,7 +8,6 @@ viewer sees their own time zone.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import discord
@@ -18,6 +17,7 @@ from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.sessions import content
 from ninja_bot.sessions.scoring import MAX_ROUNDS, SlotScore, Vote, Votes
 from ninja_bot.sessions.service import MAX_NAME_LENGTH, FailReason
+from ninja_bot.sessions.slots import format_local_time
 from ninja_bot.sessions.store import STATUS_AWAITING_CONFIRM, Poll, PollSlot, Session
 
 DESCRIPTION_LIMIT = 4096
@@ -36,8 +36,6 @@ def timestamp(unix: float, style: str) -> str:
 
 # Discord's limit for a select option label.
 SELECT_LABEL_LIMIT = 100
-_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def format_slot_label(slot: PollSlot, tz: ZoneInfo) -> str:
@@ -45,9 +43,7 @@ def format_slot_label(slot: PollSlot, tz: ZoneInfo) -> str:
 
     English names regardless of the locale; cut to `SELECT_LABEL_LIMIT`.
     """
-    local = datetime.fromtimestamp(slot.start, tz)
-    label = f"{_WEEKDAYS[local.weekday()]} {local.day} {_MONTHS[local.month - 1]} {local:%H:%M}"
-    return label[:SELECT_LABEL_LIMIT]
+    return format_local_time(slot.start, tz)[:SELECT_LABEL_LIMIT]
 
 
 def mention(user_id: int) -> str:

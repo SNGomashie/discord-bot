@@ -141,6 +141,12 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
   (SQLite evaluates every `SET` against the old row, so set `"end"` explicitly, not as `start + ...`.) Start the bot: within a minute or two the 24 h reminder pings the roster (once, also after another restart). Then use `+ 3480` / `+ 17880` and check the 1 h reminder. Setting the start to 30 minutes ahead before any reminder was sent posts only one reminder.
 - [ ] Nudges: with a voting poll and a player who hasn't voted, backdate the round (`sqlite3 data/sessions.sqlite3 "UPDATE polls SET round_started_at = round_started_at - 86400 WHERE id = <id>;"`, bot stopped): after a restart the bot replies to the poll message pinging only that player; no second nudge within 24 h
 - [ ] Delete the channel of a poll with a due reminder: the bot logs one warning and keeps running
+- [ ] `/sessions` posts the list publicly: open polls link to their current poll message and show who is pending, upcoming sessions show the start in your own time zone; nobody is pinged; a second call within 10 s is refused privately
+- [ ] `/sessions` in a server without polls or sessions shows the empty-state text
+- [ ] `/session_cancel item:` suggests open polls and upcoming sessions with dates, and narrows as you type
+- [ ] `/session_cancel` by a player (no Manage Events) is refused privately; by the GM it posts the public confirmation (no ping), the poll message says "Cancelled" without buttons, and the item is gone from `/sessions` and the suggestions
+- [ ] Cancel a confirmed session: no reminder follows, and it is gone from `/sessions`
+- [ ] Typing a random `item` (not a suggestion) gives a private "Pick an open poll or upcoming session from the list" reply
 
 ## /help
 

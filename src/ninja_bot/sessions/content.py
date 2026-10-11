@@ -86,6 +86,21 @@ LIST_POLL_ALL_VOTED = "everyone voted"
 LIST_POLL_AWAITING_CONFIRM = "waiting for the GM to confirm"
 LIST_SESSION_LINE = "**{name}** · {start} ({relative}) · GM {gm}"
 
+# /session_cancel. Choice labels: `{date}` is the poll's first day, `{start}` the session's
+# start, both in SESSIONS_TIMEZONE. `{name}` in the confirmations is already escaped.
+CANCEL_POLL_CHOICE = "Poll: {name} (from {date})"
+CANCEL_SESSION_CHOICE = "Session: {name} ({start})"
+UNKNOWN_CANCEL_ITEM_MESSAGE = (
+    "Pick an open poll or upcoming session from the list; it may be finished or cancelled."
+)
+POLL_CANCELLED_MESSAGE = "🚫 The session poll **{name}** was cancelled by {user}."
+SESSION_CANCELLED_MESSAGE = "🚫 The session **{name}** on {start} was cancelled by {user}."
+CANCELLED_POLL_EDIT = "🚫 **Cancelled.** This poll no longer takes votes."
+CANCELLED_SESSION_EDIT = "🚫 **Cancelled.** This session won't take place."
+
+# /sessions. `{seconds}` / `{unit}` as in POLL_COOLDOWN_MESSAGE.
+LIST_COOLDOWN_MESSAGE = "Slow down! You can list sessions again in {seconds} {unit}."
+
 # Poll buttons.
 JOIN_BUTTON = "Join"
 LEAVE_BUTTON = "Leave"

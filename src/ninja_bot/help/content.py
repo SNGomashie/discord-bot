@@ -246,6 +246,41 @@ COMMANDS: tuple[CommandHelp, ...] = (
         },
     ),
     CommandHelp(
+        name="sessions",
+        group=SESSIONS,
+        summary="List the open session polls and upcoming sessions.",
+        details=(
+            "Posts this server's open session polls in the channel: each links to its poll "
+            "message and shows the round and who still has to vote (or that the GM still has "
+            "to confirm). Below them come the upcoming sessions with their start time and GM, "
+            "at most 10."
+        ),
+        examples=("/sessions",),
+        notes=(
+            "Mentions in the list never ping anyone.",
+            "Cooldown: 10 seconds, not used up when the list couldn't be posted.",
+        ),
+    ),
+    CommandHelp(
+        name="session_cancel",
+        group=SESSIONS,
+        summary="Cancel a session poll or an upcoming session.",
+        details=(
+            "Pick an open poll or an upcoming session from the list that appears while you "
+            "type. The poll message is marked as cancelled and loses its buttons, and the "
+            "cancellation is announced in the channel. A cancelled poll gets no more nudges "
+            "and a cancelled session no reminders."
+        ),
+        examples=("/session_cancel item:Poll: Curse of Strahd (from Fri 6 Nov)",),
+        notes=(
+            "Only the GM or someone with Manage Events can cancel.",
+            "Sessions that already started can't be cancelled.",
+        ),
+        parameter_notes={
+            "item": "Choose from the suggestions; typed text only filters them.",
+        },
+    ),
+    CommandHelp(
         name="ping",
         group=UTILITY,
         summary="Check that the bot is online and see its latency.",
@@ -279,7 +314,7 @@ GETTING_STARTED_TITLE = "Getting started"
 GETTING_STARTED = (
     "Link your Steam account with /link, then use /scoreboard, /profile and /leaderboard "
     "for CS2 stats. Use /activity and /myactivity to see who spends the most time in voice. "
-    "Use /session_poll to find a date for a game session. "
+    "Use /session_poll to find a date for a game session and /sessions to see what is planned. "
     "Use /download to get a video or its audio as a file."
 )
 

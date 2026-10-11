@@ -17,7 +17,9 @@ from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import PostChannelResolver, send_safely
 from ninja_bot.sessions import content
+from ninja_bot.sessions.cancel import cancel_choices, parse_cancel_item
 from ninja_bot.sessions.embed import (
+    build_list_embed,
     build_next_round_embed,
     build_no_fit_embed,
     build_poll_embed,
@@ -66,6 +68,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 POLL_COOLDOWN_SECONDS = 30.0
+LIST_COOLDOWN_SECONDS = 10.0
 # Longer than any `YYYY-MM-DD` (with spaces); longer input is rejected by Discord.
 MAX_START_LENGTH = 20
 # How often the background loop closes due rounds and sends reminders and nudges.
@@ -74,11 +77,11 @@ NOTIFY_CHECK_SECONDS = 60
 POST_WARNING = "Can't post session poll messages in channel {channel_id}: %s"
 
 
-def cooldown_message(retry_after: float) -> str:
-    """User-facing reply for the /session_poll cooldown, rounded up to whole seconds."""
+def cooldown_message(retry_after: float, template: str = content.POLL_COOLDOWN_MESSAGE) -> str:
+    """User-facing cooldown reply (/session_poll by default), rounded up to whole seconds."""
     seconds = max(1, math.ceil(retry_after))
     unit = "second" if seconds == 1 else "seconds"
-    return content.POLL_COOLDOWN_MESSAGE.format(seconds=seconds, unit=unit)
+    return template.format(seconds=seconds, unit=unit)
 
 
 def _send_safely(send: Awaitable[object]) -> Awaitable[bool]:
@@ -108,11 +111,16 @@ class Sessions(commands.Cog):
         service: SessionService,
         cooldown: UserCooldown | None = None,
         notifier: SessionNotifier | None = None,
+        list_cooldown: UserCooldown | None = None,
     ) -> None:
         self.bot = bot
         self.service = service
         # /session_poll; refunded unless a poll message was posted.
         self.cooldown = cooldown if cooldown is not None else UserCooldown(POLL_COOLDOWN_SECONDS)
+        # /sessions; refunded unless the list was posted.
+        self.list_cooldown = (
+            list_cooldown if list_cooldown is not None else UserCooldown(LIST_COOLDOWN_SECONDS)
+        )
         self.notifier = (
             notifier if notifier is not None else SessionNotifier(service.store, service.clock)
         )
@@ -404,6 +412,128 @@ class Sessions(commands.Cog):
         )
         return embed, poll_view(poll.id)
 
+    @app_commands.command(
+        name="sessions", description="List open session polls and upcoming sessions"
+    )
+    @app_commands.guild_only()
+    async def sessions(self, interaction: discord.Interaction) -> None:
+        await self.handle_sessions(interaction)
+
+    async def handle_sessions(self, interaction: discord.Interaction) -> None:
+        """Post the open polls and upcoming sessions of this server publicly."""
+        guild = interaction.guild
+        if guild is None:
+            await _send_safely(
+                interaction.response.send_message(content.GUILD_ONLY_MESSAGE, ephemeral=True)
+            )
+            return
+        user_id = interaction.user.id
+        retry_after = self.list_cooldown.try_acquire(user_id)
+        if retry_after > 0:
+            await _send_safely(
+                interaction.response.send_message(
+                    cooldown_message(retry_after, content.LIST_COOLDOWN_MESSAGE), ephemeral=True
+                )
+            )
+            return
+        posted = False
+        try:
+            overview = await self.service.overview(guild.id)
+            embed = build_list_embed(overview.polls, overview.sessions, overview.pending)
+            posted = await _send_safely(
+                interaction.response.send_message(
+                    embed=embed, allowed_mentions=discord.AllowedMentions.none()
+                )
+            )
+        except Exception:
+            log.exception("Unexpected error listing session polls")
+            await self._reply_error(interaction)
+        finally:
+            if not posted:
+                self.list_cooldown.refund(user_id)
+
+    @app_commands.command(
+        name="session_cancel", description="Cancel a session poll or an upcoming session"
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(item="The open poll or upcoming session to cancel (pick from the list)")
+    async def session_cancel(self, interaction: discord.Interaction, item: str) -> None:
+        await self.handle_session_cancel(interaction, item)
+
+    @session_cancel.autocomplete("item")
+    async def _session_cancel_item(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return [
+            app_commands.Choice(name=label, value=value)
+            for label, value in await self.cancel_choices(interaction, current)
+        ]
+
+    async def cancel_choices(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[tuple[str, str]]:
+        """(label, value) for this server's open polls and upcoming sessions matching
+        `current`; errors give no choices."""
+        guild = interaction.guild
+        if guild is None:
+            return []
+        try:
+            polls = await self.service.store.open_polls(guild.id)
+            sessions = await self.service.store.upcoming_sessions(guild.id, self.service.clock())
+        except Exception:
+            log.exception("Could not list session poll items to cancel")
+            return []
+        return cancel_choices(polls, sessions, self.service.tz, current)
+
+    async def handle_session_cancel(self, interaction: discord.Interaction, item: str) -> None:
+        """Cancel a poll or session (GM or Manage Events), mark its message, confirm publicly."""
+        guild = interaction.guild
+        target = parse_cancel_item(item)
+        if guild is None or target is None:
+            message = (
+                content.GUILD_ONLY_MESSAGE if guild is None else content.UNKNOWN_CANCEL_ITEM_MESSAGE
+            )
+            await _send_safely(interaction.response.send_message(message, ephemeral=True))
+            return
+        user_id = interaction.user.id
+        try:
+            if target.kind == "poll":
+                poll = await self.service.cancel_poll(
+                    target.id, user_id, _is_manager(interaction), guild.id
+                )
+                name, channel_id, message_id = poll.name, poll.channel_id, poll.message_id
+                edit = content.CANCELLED_POLL_EDIT
+                reply = content.POLL_CANCELLED_MESSAGE.format(
+                    name=escape_name(poll.name, MAX_NAME_LENGTH), user=mention(user_id)
+                )
+            else:
+                session = await self.service.cancel_session(
+                    target.id, user_id, _is_manager(interaction), guild.id
+                )
+                name, channel_id, message_id = session.name, session.channel_id, session.message_id
+                edit = content.CANCELLED_SESSION_EDIT
+                reply = content.SESSION_CANCELLED_MESSAGE.format(
+                    name=escape_name(session.name, MAX_NAME_LENGTH),
+                    start=timestamp(session.start, "F"),
+                    user=mention(user_id),
+                )
+        except SessionRefused as exc:
+            await _send_safely(interaction.response.send_message(exc.message, ephemeral=True))
+            return
+        log.info("Session %s %d (%s) cancelled by %d", target.kind, target.id, name, user_id)
+        await _send_safely(
+            interaction.response.send_message(
+                reply, allowed_mentions=discord.AllowedMentions.none()
+            )
+        )
+        await self._edit_message(
+            channel_id,
+            message_id,
+            content=edit,
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def handle_poll_action(
         self, interaction: discord.Interaction, poll_id: int, action: str, arg: int | None
     ) -> None:
@@ -693,15 +823,17 @@ class Sessions(commands.Cog):
 
     async def _edit_poll_message(self, poll: Poll, **kwargs: Any) -> None:
         """Edit the poll's public message; failures are logged, never raised."""
-        if poll.message_id is None:
+        await self._edit_message(poll.channel_id, poll.message_id, **kwargs)
+
+    async def _edit_message(self, channel_id: int, message_id: int | None, **kwargs: Any) -> None:
+        """Edit a bot message (skipped without an id); failures are logged, never raised."""
+        if message_id is None:
             return
         try:
-            message = self.bot.get_partial_messageable(poll.channel_id).get_partial_message(
-                poll.message_id
-            )
+            message = self.bot.get_partial_messageable(channel_id).get_partial_message(message_id)
             await send_safely(message.edit(**kwargs), "session poll edit")
         except Exception:
-            log.exception("Could not edit the message of session poll %d", poll.id)
+            log.exception("Could not edit session poll message %d", message_id)
 
     async def _reply_error(self, interaction: discord.Interaction) -> None:
         if interaction.response.is_done():
