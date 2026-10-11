@@ -78,6 +78,7 @@
 - Activity auto-post (activity/reporter.py, cogs/activity.py): `MonthlyReporter(store, tz, clock)`; `due_month` walks months from `month_of(store.first_session_start())` up to (not incl.) the current local month, returning the first that is unposted and has positive clipped time (`clip`); empty months are skipped, never marked. `Activity(..., channel_id=)` starts `report_loop` (hourly, `REPORT_CHECK_SECONDS`) in `cog_load` only with a channel. `run_report_cycle`: due -> `_post_channel` (cs2 `channel_problem`; problems warn once and leave the month unposted) -> `_post_report` (build + send in try, `confirm` in finally). Tests: tests/test_activity_autopost.py (real SqliteActivityStore + FakeClock, `make_channel`/`make_bot`), tests/test_activity_reporter.py.
 - Pokémon stats (activity/pokemon_stats.py): `pokemon_stats` filters events to the local month itself; `impatient_awards` returns `Award`s with `AwardKey.IMPATIENT` (value = hits) that go into `MonthlyReport.awards`, but `build_monthly_embed` renders keys in `POKEMON_AWARDS` in the Pokémon field instead of Awards. `UserProfile.pokemon` is None when the month has no Pokémon data (zeros otherwise). The Pokémon field always ends with a `🎯 Server:` totals line so a cooldown-only month never yields an empty (skipped) field. Command `FakeStore` needs `pokemon_events_between`.
 - Toasty (activity/pokemon.py, cogs/activity.py): `PokemonTracker(store, toasty_bot_id, guild_id, pending)` is a separate cog added in `setup` only with `TOASTY_BOT_ID` (shares the Activity store). Commands are remembered in `PendingCommands` (not consumed on lookup, so duplicate deliveries and edits still pair); events use the reply's `created_at` and `message_id` (INSERT OR IGNORE = idempotent). Embeds go to the parser as `embed.to_dict()`. Fixtures in tests/fixtures/toasty/replies.json carry `from_toasty` (false = other bot, must record nothing). Cog tests: `make_message`/`make_tracker` (real SqliteActivityStore) in tests/test_activity_pokemon.py.
+- Session input (sessions/slots.py): `InvalidSessionInput(message)` is the one parse error (user-facing `.message`, ValueError). `parse_days`/`parse_times` check the raw text length (`MAX_DAYS_LENGTH`/`MAX_TIMES_LENGTH`, reuse as `app_commands.Range` max) before splitting; empty comma parts (`fri,,sat`, trailing comma) are rejected. Times regex is anchored (`fullmatch`) with re.ASCII.
 
 
 ## 2026-10-11 - US-001
@@ -86,4 +87,12 @@
 - Docs: README Configuration table, .env.example, docs/deployment.md (example env block + settings reference).
 - Files: src/ninja_bot/config.py, tests/test_config.py, README.md, .env.example, docs/deployment.md
 - **Learnings:** `_parse_timezone(source, key, default)` takes any default, so a zone that falls back to another zone just passes the already-parsed value.
+---
+
+## 2026-10-11 - US-002
+- New package src/ninja_bot/sessions/ with slots.py: `InvalidSessionInput`, `parse_days` (3-letter/full names, `weekend`, `weekdays`, case/space tolerant, sorted+deduped Mon=0), `parse_times` (24-hour H:MM/HH:MM, sorted+deduped naive times), both capped at 64 chars before splitting.
+- Tests: tests/test_session_slots.py (accepted forms, aliases, rejections incl. 24:00, 19:60, 7pm, empty parts, Arabic-Indic/fullwidth digits, length cap, no discord import).
+- Docs: CLAUDE.md Architecture + README layout block (no user-visible behaviour yet).
+- Files: src/ninja_bot/sessions/__init__.py, src/ninja_bot/sessions/slots.py, tests/test_session_slots.py, README.md, CLAUDE.md
+- **Learnings:** empty comma parts are rejected rather than skipped, so `fri,` is an error.
 ---
