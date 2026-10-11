@@ -1,4 +1,6 @@
+import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -10,9 +12,11 @@ from discord import app_commands
 from ninja_bot.bot import EXTENSIONS
 from ninja_bot.cogs import cs2 as cs2_cog
 from ninja_bot.cogs.cs2 import (
+    ALREADY_LINKED_MESSAGE,
     COOLDOWN_SECONDS,
     GENERIC_ERROR_MESSAGE,
     INVALID_MATCH_ID_MESSAGE,
+    LINK_COOLDOWN_SECONDS,
     MAX_MATCH_ID_LENGTH,
     NOTHING_TO_UNLINK_MESSAGE,
     UNLINKED_MESSAGE,
@@ -23,13 +27,15 @@ from ninja_bot.cogs.cs2 import (
     not_linked_message,
 )
 from ninja_bot.config import load_config
-from ninja_bot.cs2.client import LeetifyClient
-from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD
+from ninja_bot.cs2.awards import compute_awards
+from ninja_bot.cs2.client import FetchResponse, LeetifyClient
+from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD, build_match_embed
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
     InvalidSteamIdError,
     Match,
+    MatchNotFoundError,
     NoMatchesError,
     NotLinkedError,
     PlayerNotFoundError,
@@ -78,6 +84,7 @@ class FakeStats:
         self.profile_calls: list[str] = []
         self.recent_calls: list[str] = []
         self.match_calls: list[str] = []
+        self.close_calls = 0
 
     async def get_profile(self, steam64_id: str) -> Profile:
         self.profile_calls.append(steam64_id)
@@ -97,6 +104,9 @@ class FakeStats:
             raise self.match_error
         return next(m for m in self.matches if m.id == game_id)
 
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
 
 class MemoryLinkStore:
     def __init__(self, links: dict[int, str] | None = None) -> None:
@@ -115,6 +125,14 @@ class MemoryLinkStore:
         return dict(self.links)
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def make_interaction(user_id: int = USER_ID) -> MagicMock:
     interaction = MagicMock()
     interaction.user.id = user_id
@@ -128,6 +146,12 @@ def make_interaction(user_id: int = USER_ID) -> MagicMock:
 def reply(interaction: MagicMock) -> tuple[tuple[Any, ...], dict[str, Any]]:
     interaction.response.send_message.assert_awaited_once()
     args, kwargs = interaction.response.send_message.call_args
+    return args, kwargs
+
+
+def followup_reply(interaction: MagicMock) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    interaction.followup.send.assert_awaited_once()
+    args, kwargs = interaction.followup.send.call_args
     return args, kwargs
 
 
@@ -148,10 +172,39 @@ async def test_link_success_stores_and_replies_ephemeral() -> None:
     await Cs2.link.callback(cog, interaction, STEAM_ID)
     assert stats.profile_calls == [STEAM_ID]
     assert store.links == {USER_ID: STEAM_ID}
-    args, kwargs = reply(interaction)
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    interaction.response.send_message.assert_not_awaited()
+    args, kwargs = followup_reply(interaction)
     assert args == (linked_message("Ninja"),)
     assert kwargs == {"ephemeral": True}
     assert "Ninja" in args[0]
+
+
+async def test_link_defers_before_profile_lookup() -> None:
+    calls: list[str] = []
+    stats = FakeStats()
+    original = stats.get_profile
+
+    async def get_profile(steam64_id: str) -> Profile:
+        calls.append("get_profile")
+        return await original(steam64_id)
+
+    stats.get_profile = get_profile  # type: ignore[method-assign]
+    cog, _, _ = make_cog(stats)
+    interaction = make_interaction()
+    interaction.response.defer = AsyncMock(side_effect=lambda **_: calls.append("defer"))
+    await cog.handle_link(interaction, STEAM_ID)
+    assert calls == ["defer", "get_profile"]
+
+
+async def test_link_followup_failure_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
+    cog, _, store = make_cog()
+    interaction = make_interaction()
+    response = MagicMock(status=404, reason="Not Found")
+    interaction.followup.send = AsyncMock(side_effect=discord.NotFound(response, "expired"))
+    await cog.handle_link(interaction, STEAM_ID)
+    assert store.links == {USER_ID: STEAM_ID}
+    assert "Could not send CS2 response" in caplog.text
 
 
 async def test_link_accepts_profile_url() -> None:
@@ -170,12 +223,19 @@ async def test_link_without_name_falls_back_to_steam_id() -> None:
     cog, _, _ = make_cog(FakeStats(make_profile(name=None)))
     interaction = make_interaction()
     await cog.handle_link(interaction, STEAM_ID)
-    args, _ = reply(interaction)
+    args, _ = followup_reply(interaction)
     assert STEAM_ID in args[0]
 
 
 def test_linked_message_escapes_markdown() -> None:
     assert "\\*" in linked_message("a*b")
+    assert linked_message("[x](https://evil.example)") == (
+        "Linked to **\\[x\\]\\(https://evil.example\\)** on Leetify."
+    )
+
+
+def test_not_linked_message_escapes_links() -> None:
+    assert "\\[x\\]\\(" in not_linked_message("[x](https://evil.example)")
 
 
 @pytest.mark.parametrize(
@@ -192,17 +252,22 @@ async def test_link_invalid_id_is_ephemeral_and_skips_api(steam: str, message: s
     assert stats.profile_calls == []
     assert store.links == {}
     assert reply(interaction) == ((message,), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    interaction.followup.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
-    "error", [PlayerNotFoundError(), PrivateProfileError(), ApiError()], ids=type
+    "error",
+    [PlayerNotFoundError(), PrivateProfileError(), RateLimitedError(), ApiError()],
+    ids=type,
 )
 async def test_link_api_errors_are_ephemeral_and_not_stored(error: Cs2Error) -> None:
     cog, _, store = make_cog(FakeStats(error=error))
     interaction = make_interaction()
     await cog.handle_link(interaction, STEAM_ID)
     assert store.links == {}
-    assert reply(interaction) == ((error.message,), {"ephemeral": True})
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    assert followup_reply(interaction) == ((error.message,), {"ephemeral": True})
 
 
 async def test_link_unexpected_error_is_generic_and_logged(
@@ -212,8 +277,110 @@ async def test_link_unexpected_error_is_generic_and_logged(
     interaction = make_interaction()
     await cog.handle_link(interaction, STEAM_ID)
     assert store.links == {}
-    assert reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    assert followup_reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
     assert "Unexpected error linking" in caplog.text
+
+
+def link_cog(
+    links: dict[int, str] | None = None, **stats_kwargs: Any
+) -> tuple[Cs2, FakeStats, MemoryLinkStore, FakeClock]:
+    clock = FakeClock()
+    stats = FakeStats(**stats_kwargs)
+    store = MemoryLinkStore(links)
+    cog = Cs2(
+        stats,
+        store,
+        UserCooldown(COOLDOWN_SECONDS, clock),
+        UserCooldown(LINK_COOLDOWN_SECONDS, clock),
+    )
+    return cog, stats, store, clock
+
+
+async def test_link_invalid_input_does_not_take_cooldown() -> None:
+    cog, stats, store, _ = link_cog()
+    await cog.handle_link(make_interaction(), "not an id")
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+
+
+async def test_link_repeat_inside_window_is_throttled() -> None:
+    cog, stats, store, clock = link_cog()
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    await cog.links.remove(USER_ID)
+    clock.now += LINK_COOLDOWN_SECONDS - 5
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {}
+    assert reply(interaction) == ((cooldown_message(5),), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+
+
+async def test_link_after_window_works() -> None:
+    cog, stats, store, clock = link_cog()
+    other = "76561198000000999"
+    await cog.handle_link(make_interaction(), other)
+    clock.now += LINK_COOLDOWN_SECONDS
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [other, STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+    assert followup_reply(interaction) == ((linked_message("Ninja"),), {"ephemeral": True})
+
+
+async def test_link_already_linked_same_id_skips_api_and_cooldown() -> None:
+    cog, stats, store, _ = link_cog({USER_ID: STEAM_ID})
+    interaction = make_interaction()
+    await cog.handle_link(interaction, f"https://steamcommunity.com/profiles/{STEAM_ID}")
+    assert stats.profile_calls == []
+    assert reply(interaction) == ((ALREADY_LINKED_MESSAGE,), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    # No cooldown was taken, so relinking another id right away works.
+    other = "76561198000000999"
+    await cog.handle_link(make_interaction(), other)
+    assert stats.profile_calls == [other]
+    assert store.links == {USER_ID: other}
+
+
+async def test_link_relinks_different_id() -> None:
+    cog, stats, store, _ = link_cog({USER_ID: "76561198000000999"})
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+    assert followup_reply(interaction) == ((linked_message("Ninja"),), {"ephemeral": True})
+
+
+async def test_link_failed_lookup_holds_cooldown() -> None:
+    cog, stats, store, _ = link_cog(error=PlayerNotFoundError())
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {}
+    assert reply(interaction) == (
+        (cooldown_message(LINK_COOLDOWN_SECONDS),),
+        {"ephemeral": True},
+    )
+
+
+async def test_link_cooldown_is_separate_from_stats_cooldown() -> None:
+    cog, _, _, _ = link_cog()
+    await cog.handle_link(make_interaction(), STEAM_ID)
+    assert cog.cooldown.try_acquire(USER_ID) == 0.0
+    assert cog.link_cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_link_store_lookup_error_is_generic(caplog: pytest.LogCaptureFixture) -> None:
+    cog, stats, store, _ = link_cog()
+    store.get = AsyncMock(side_effect=RuntimeError("disk"))  # type: ignore[method-assign]
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert stats.profile_calls == []
+    assert reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    # The cooldown was not taken.
+    assert cog.link_cooldown.try_acquire(USER_ID) == 0.0
 
 
 async def test_unlink_removes_existing_link() -> None:
@@ -265,6 +432,35 @@ async def test_cog_app_command_error_is_generic(
     assert "App command error in Cs2 cog" in caplog.text
 
 
+async def test_cog_app_command_error_uses_followup_after_link_defer() -> None:
+    cog, _, _ = make_cog()
+    interaction = make_interaction()
+    interaction.response.is_done = MagicMock(return_value=False)
+
+    async def defer(**_: Any) -> None:
+        interaction.response.is_done.return_value = True
+
+    interaction.response.defer = AsyncMock(side_effect=defer)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await cog.cog_app_command_error(interaction, app_commands.AppCommandError("x"))
+    interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE, ephemeral=True)
+    interaction.response.send_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("done", [False, True])
+async def test_cog_app_command_error_send_failure_is_swallowed(
+    done: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, _, _ = make_cog()
+    interaction = make_interaction()
+    interaction.response.is_done = MagicMock(return_value=done)
+    error = discord.HTTPException(MagicMock(status=500, reason="boom"), "boom")
+    interaction.followup.send = AsyncMock(side_effect=error)
+    interaction.response.send_message = AsyncMock(side_effect=error)
+    await cog.cog_app_command_error(interaction, app_commands.AppCommandError("x"))
+    assert "Could not send CS2 response" in caplog.text
+
+
 def test_extension_registered() -> None:
     assert "ninja_bot.cogs.cs2" in EXTENSIONS
 
@@ -283,6 +479,8 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     assert isinstance(cog.links, SqliteLinkStore)
     assert cog.links._path == tmp_path / "cs2.sqlite3"
     assert cog.cooldown.per_seconds == COOLDOWN_SECONDS == 10.0
+    assert cog.link_cooldown.per_seconds == LINK_COOLDOWN_SECONDS == 15
+    assert cog.link_cooldown is not cog.cooldown
 
 
 async def test_cog_unload_closes_client() -> None:
@@ -293,23 +491,17 @@ async def test_cog_unload_closes_client() -> None:
     client.aclose.assert_awaited_once()
 
 
-async def test_cog_unload_with_fake_provider_is_noop() -> None:
-    cog, _, _ = make_cog()
+async def test_cog_unload_closes_any_provider_once() -> None:
+    stats = FakeStats()
+    cog = Cs2(stats, MemoryLinkStore())
     await cog.cog_unload()
+    assert stats.close_calls == 1
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
 # The fixture profile/match player "alpha"; STEAM_ID ("bravo") is also in the match.
 FIXTURE_STEAM_ID = "76561198000000000"
 OTHER_USER_ID = 7
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 @pytest.fixture
@@ -490,6 +682,21 @@ async def test_scoreboard_rate_limited(match: Match, fixture_profile: Profile) -
     assert cooldown.try_acquire(USER_ID) == 0
 
 
+async def test_scoreboard_unknown_match_id() -> None:
+    fetch_urls: list[str] = []
+
+    async def fetch(url: str, headers: Mapping[str, str]) -> FetchResponse:
+        fetch_urls.append(url)
+        return FetchResponse(404, "")
+
+    store = MemoryLinkStore({USER_ID: FIXTURE_STEAM_ID})
+    cog = Cs2(LeetifyClient(fetch=fetch), store, UserCooldown(COOLDOWN_SECONDS, FakeClock()))
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction, None, "nonsense")
+    interaction.followup.send.assert_awaited_once_with(MatchNotFoundError.default_message)
+    assert any("/v2/matches/nonsense" in url for url in fetch_urls)
+
+
 async def test_scoreboard_unexpected_error_is_generic(
     match: Match, fixture_profile: Profile, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -508,6 +715,130 @@ async def test_scoreboard_unexpected_profile_error_is_generic(
     interaction = make_interaction()
     await cog.handle_scoreboard(interaction)
     interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE)
+
+
+class GatedStats(FakeStats):
+    """FakeStats whose match and profile calls block until their gate is opened."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.match_started = asyncio.Event()
+        self.profile_started = asyncio.Event()
+        self.match_gate = asyncio.Event()
+        self.profile_gate = asyncio.Event()
+        self.profile_cancelled = False
+
+    async def get_recent_matches(self, steam64_id: str) -> list[Match]:
+        self.match_started.set()
+        await self.match_gate.wait()
+        return await super().get_recent_matches(steam64_id)
+
+    async def get_match(self, game_id: str) -> Match:
+        self.match_started.set()
+        await self.match_gate.wait()
+        return await super().get_match(game_id)
+
+    async def get_profile(self, steam64_id: str) -> Profile:
+        self.profile_started.set()
+        try:
+            await self.profile_gate.wait()
+        except asyncio.CancelledError:
+            self.profile_cancelled = True
+            raise
+        return await super().get_profile(steam64_id)
+
+
+def gated_cog(match: Match, profile: Profile, **stats_kwargs: Any) -> tuple[Cs2, GatedStats]:
+    stats = GatedStats(profile, matches=[match], **stats_kwargs)
+    store = MemoryLinkStore({USER_ID: FIXTURE_STEAM_ID})
+    cog, _, _ = make_cog(stats, store, UserCooldown(COOLDOWN_SECONDS, FakeClock()))
+    return cog, stats
+
+
+async def wait_started(stats: GatedStats) -> None:
+    async with asyncio.timeout(1):
+        await stats.match_started.wait()
+        await stats.profile_started.wait()
+
+
+@pytest.mark.parametrize("match_id", [None, "explicit"])
+async def test_scoreboard_fetches_match_and_profile_concurrently(
+    match: Match, fixture_profile: Profile, match_id: str | None
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile)
+    interaction = make_interaction()
+    game_id = match.id if match_id else None
+    task = asyncio.create_task(cog.handle_scoreboard(interaction, None, game_id))
+    # Both requests are in flight before either is allowed to finish.
+    await wait_started(stats)
+    interaction.followup.send.assert_not_awaited()
+    stats.profile_gate.set()
+    stats.match_gate.set()
+    await task
+
+    # Same embed as the sequential version.
+    expected = build_match_embed(match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile)
+    assert posted_embed(interaction).to_dict() == expected.to_dict()
+
+
+async def test_scoreboard_match_error_cancels_slow_profile(
+    match: Match, fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile, match_error=RateLimitedError())
+    interaction = make_interaction()
+    task = asyncio.create_task(cog.handle_scoreboard(interaction))
+    await wait_started(stats)
+    stats.match_gate.set()  # the profile gate never opens
+    async with asyncio.timeout(1):
+        await task
+    interaction.followup.send.assert_awaited_once_with(RateLimitedError.default_message)
+    assert stats.profile_cancelled
+    assert stats.profile_calls == []
+    assert caplog.text == ""
+
+
+async def test_scoreboard_profile_cs2_error_with_concurrent_match_posts(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile, error=PrivateProfileError())
+    interaction = make_interaction()
+    task = asyncio.create_task(cog.handle_scoreboard(interaction))
+    await wait_started(stats)
+    stats.profile_gate.set()  # profile fails first, match is still in flight
+    await asyncio.sleep(0)
+    stats.match_gate.set()
+    await task
+    embed = posted_embed(interaction)
+    assert BREAKDOWN_FIELD not in field_names(embed)
+    assert "alpha" in field_names(embed)
+
+
+async def test_scoreboard_unexpected_profile_error_with_concurrent_match(
+    match: Match, fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    cog, stats = gated_cog(match, fixture_profile, error=RuntimeError("boom"))
+    interaction = make_interaction()
+    task = asyncio.create_task(cog.handle_scoreboard(interaction))
+    await wait_started(stats)
+    stats.profile_gate.set()
+    await asyncio.sleep(0)
+    stats.match_gate.set()
+    await task
+    interaction.followup.send.assert_awaited_once_with(GENERIC_ERROR_MESSAGE)
+    assert "Unexpected error building a CS2 scoreboard" in caplog.text
+
+
+async def test_scoreboard_match_and_profile_both_fail_leaves_no_tasks(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, _, _ = scoreboard_cog(
+        match, fixture_profile, error=RuntimeError("profile"), match_error=ApiError()
+    )
+    interaction = make_interaction()
+    before = asyncio.all_tasks()
+    await cog.handle_scoreboard(interaction)
+    interaction.followup.send.assert_awaited_once_with(ApiError.default_message)
+    assert asyncio.all_tasks() == before
 
 
 async def test_scoreboard_cooldown_blocks_second_use(

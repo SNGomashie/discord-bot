@@ -1,13 +1,18 @@
 import pytest
 
+from ninja_bot.cs2 import formatting
+from ninja_bot.cs2.embed import FIELD_VALUE_LIMIT
 from ninja_bot.cs2.formatting import (
     BAR_EMPTY,
     BAR_FILLED,
     BAR_WIDTH,
+    ESCAPED_NAME_LENGTH,
     NO_PLAYERS,
     NO_RECENT_MATCHES,
     STAR,
     clean_name,
+    display_width,
+    escape_name,
     form_strip,
     format_rating,
     format_team_table,
@@ -150,6 +155,7 @@ def test_empty_team() -> None:
         ("short", "short"),
         ("exactly12chr", "exactly12chr"),
         ("a much longer player name", "a much long…"),
+        ("twentycharacterslong", "twentychara…"),
         ("```evil```", "evil"),
         ("line\nbreak\r\n", "linebreak"),
         ("tab\there", "tabhere"),
@@ -161,6 +167,120 @@ def test_empty_team() -> None:
 )
 def test_clean_name(name: str | None, expected: str) -> None:
     assert clean_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Ninja", "Ninja"),
+        ("[free nitro](https://evil.example)", r"\[free nitro\]\(https://evil.examp…"),
+        ("[x](https://a.b)", r"\[x\]\(https://a.b\)"),
+        ("**bold**", r"\*\*bold\*\*"),
+        ("_under_", r"\_under\_"),
+        ("~~strike~~", r"\~\~strike\~\~"),
+        ("||spoiler||", r"\|\|spoiler\|\|"),
+        ("`code`", r"\`code\`"),
+        # A leading backslash must not cancel the escape of the link bracket.
+        (r"\[x](https://a.b)", r"\\\[x\]\(https://a.b\)"),
+        ("line\nbreak\r\n", "linebreak"),
+        ("bell\x07\x1bname\u200b", "bellname"),
+        ("  padded  ", "padded"),
+        ("", "?"),
+        ("\n\t", "?"),
+        (None, "?"),
+    ],
+)
+def test_escape_name(name: str | None, expected: str) -> None:
+    assert escape_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "width"),
+    [
+        ("abc", 3),
+        ("", 0),
+        ("日本語", 6),
+        ("ＡＢ", 4),
+        ("gg😀", 4),
+        ("e\u0301", 1),
+        ("a\u200bb", 2),
+    ],
+)
+def test_display_width(text: str, width: int) -> None:
+    assert display_width(text) == width
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("日本語の名前", "日本語の名前"),
+        ("日本語の名前です", "日本語の名…"),
+        ("ab😀😀😀😀😀", "ab😀😀😀😀😀"),
+        ("abc😀😀😀😀😀", "abc😀😀😀😀…"),
+        ("e\u0301" * 12, "e\u0301" * 12),
+        ("e\u0301" * 13, "e\u0301" * 11 + "…"),
+    ],
+)
+def test_clean_name_truncates_by_display_width(name: str, expected: str) -> None:
+    cleaned = clean_name(name)
+
+    assert cleaned == expected
+    assert display_width(cleaned) <= formatting.NAME_WIDTH
+
+
+def test_clean_name_wide_char_that_does_not_fit_is_dropped() -> None:
+    # 10 columns of ASCII, then a wide char that would end at column 12.
+    cleaned = clean_name("a" * 10 + "日本")
+
+    assert cleaned == "a" * 10 + "…"
+    assert display_width(cleaned) == 11
+
+
+_ODD_NAMES = [
+    "Ninja",
+    "a much longer player name",
+    "日本語の名前です",
+    "ab😀😀😀😀😀",
+    "😀 gg wp 😀",
+    "e\u0301" * 20,
+    "",
+]
+
+
+@pytest.mark.parametrize("name_width", [8, 12, 16])
+def test_table_rows_have_equal_display_width(
+    monkeypatch: pytest.MonkeyPatch, name_width: int
+) -> None:
+    monkeypatch.setattr(formatting, "NAME_WIDTH", name_width)
+    players = [_player(i, name=name) for i, name in enumerate(_ODD_NAMES)]
+    rows = _rows(format_team_table(players))
+
+    assert len(rows) == 1 + len(players)
+    assert {display_width(row) for row in rows} == {display_width(rows[0])}
+    # Name column ends at the same column in every row (after the star column).
+    assert all(display_width(clean_name(name)) <= name_width for name in _ODD_NAMES)
+    assert rows[0][1 : 1 + name_width] == "Player".ljust(name_width)
+
+
+def test_widest_names_fit_the_field_limit() -> None:
+    players = [_player(i, name="日" * 12) for i in range(10)]
+    table = format_team_table(players, max_chars=FIELD_VALUE_LIMIT)
+    rows = _rows(table)
+
+    assert len(table) <= FIELD_VALUE_LIMIT
+    assert len(rows) == 11
+    assert not rows[-1].startswith("+")
+
+
+def test_escape_name_truncates_long_names() -> None:
+    escaped = escape_name("x" * 100)
+    assert escaped == "x" * (ESCAPED_NAME_LENGTH - 1) + "…"
+    assert len(escaped) == ESCAPED_NAME_LENGTH
+
+
+def test_escape_name_truncates_before_escaping() -> None:
+    escaped = escape_name("*" * 100)
+    assert escaped == "\\*" * (ESCAPED_NAME_LENGTH - 1) + "…"
 
 
 def test_odd_names_cannot_break_the_code_block() -> None:

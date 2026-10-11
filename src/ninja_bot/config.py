@@ -38,6 +38,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         raise ConfigError("GUILD_ID is required when ENVIRONMENT=dev")
     max_duration_seconds = _parse_positive_int(source, "MAX_DURATION_SECONDS", 3600)
     leetify_api_key = source.get("LEETIFY_API_KEY", "").strip() or None
+    # Reserved for automatic CS2 match posts (not built yet); validated now so a
+    # malformed value fails fast instead of when the poller ships.
     cs2_channel_id = _parse_optional_positive_int(source, "CS2_CHANNEL_ID")
     cs2_poll_seconds = _parse_positive_int(source, "CS2_POLL_SECONDS", 300)
     data_dir = source.get("DATA_DIR", "").strip() or "data"

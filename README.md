@@ -40,7 +40,7 @@ CS2 stats from the [Leetify](https://leetify.com) public API:
 - `/scoreboard [player] [match]` posts the full scoreboard of your (or `player`'s) latest match, or of a specific Leetify match id: both team tables, fun awards, the focus player's stats, Leetify breakdown and recent form.
 - `/profile [player]` posts ranks, winrate, Leetify rating bars and recent form.
 
-`/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. Players need a public Leetify profile.
+`/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. `/link` has its own 15-second cooldown that only applies after a valid request (an invalid Steam ID doesn't count) and is not refunded; linking the account you're already linked to just says so, without a Leetify lookup or cooldown. A wrong `match:` id gets a "match not found" reply instead of the "player not found" one. Player names from Leetify are escaped, so markdown in a name is shown as plain text. Players need a public Leetify profile.
 
 **Settings** (see [`.env.example`](.env.example) and the [settings reference](docs/deployment.md#5-settings-reference)):
 - `LEETIFY_API_KEY`: get one at [leetify.com/app/developer](https://leetify.com/app/developer). Optional in config (without it requests are sent unauthenticated), but recommended.
@@ -58,6 +58,10 @@ CS2 stats from the [Leetify](https://leetify.com) public API:
 - [ ] Unlinked user (`/scoreboard player:@someone-unlinked`) → "not linked" reply
 - [ ] Mobile layout: team tables and rating bars stay readable on the Discord phone app
 - [ ] `/unlink` twice → removed, then "You don't have a linked Steam account."
+- [ ] `/link` twice quickly with different accounts → the second is throttled by the cooldown
+- [ ] `/link` with the account you're already linked to → "already linked" reply
+- [ ] `/scoreboard match:nonsense` → "match not found" reply
+- [ ] Player name with markdown (e.g. `*bold*` or `[x](y)`) in a test match → rendered as plain text
 
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).

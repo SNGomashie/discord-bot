@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -13,11 +12,14 @@ import aiohttp
 
 from ninja_bot.cs2.models import (
     ApiError,
+    Cs2Error,
     Match,
+    MatchNotFoundError,
     PlayerNotFoundError,
     PrivateProfileError,
     Profile,
     RateLimitedError,
+    newest_first,
     parse_match,
     parse_profile,
 )
@@ -27,8 +29,6 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api-public.cs-prod.leetify.com"
 REQUEST_TIMEOUT_SECONDS = 10.0
 
-_EPOCH = datetime.datetime.fromtimestamp(0, datetime.UTC)
-
 
 @dataclass(frozen=True)
 class FetchResponse:
@@ -37,6 +37,8 @@ class FetchResponse:
 
 
 # One HTTP GET (url, headers) -> response; injectable so tests never touch the network.
+# It may raise aiohttp.ClientError, OSError, UnicodeDecodeError (undecodable body) or
+# TimeoutError; `LeetifyClient` turns all of them into ApiError.
 FetchFn = Callable[[str, Mapping[str, str]], Awaitable[FetchResponse]]
 
 
@@ -46,6 +48,10 @@ class StatsProvider(Protocol):
     async def get_recent_matches(self, steam64_id: str) -> list[Match]: ...
 
     async def get_match(self, game_id: str) -> Match: ...
+
+    # Wrappers (such as a cache around another provider) must delegate this to the
+    # provider they wrap, so unloading the cog still releases its resources.
+    async def aclose(self) -> None: ...
 
 
 class LeetifyClient:
@@ -80,10 +86,11 @@ class LeetifyClient:
                 matches.append(parse_match(entry))
             except ApiError:
                 continue
-        return _newest_first(matches)
+        return newest_first(matches)
 
     async def get_match(self, game_id: str) -> Match:
-        return parse_match(await self._get_object(f"/v2/matches/{quote(game_id, safe='')}"))
+        path = f"/v2/matches/{quote(game_id, safe='')}"
+        return parse_match(await self._get_object(path, not_found=MatchNotFoundError))
 
     async def aclose(self) -> None:
         """Close the lazily created aiohttp session (no-op with an injected fetch)."""
@@ -92,14 +99,22 @@ class LeetifyClient:
             self._session = None
 
     async def _get_object(
-        self, path: str, params: Mapping[str, str] | None = None
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        not_found: type[Cs2Error] = PlayerNotFoundError,
     ) -> dict[str, Any]:
-        body = await self._get(path, params)
+        body = await self._get(path, params, not_found)
         if not isinstance(body, dict):
             raise ApiError()
         return body
 
-    async def _get(self, path: str, params: Mapping[str, str] | None = None) -> Any:
+    async def _get(
+        self,
+        path: str,
+        params: Mapping[str, str] | None = None,
+        not_found: type[Cs2Error] = PlayerNotFoundError,
+    ) -> Any:
         url = self._base_url + path
         if params:
             url += "?" + urlencode(params)
@@ -112,10 +127,10 @@ class LeetifyClient:
         except TimeoutError:
             log.warning("Leetify request timed out: %s", path)
             raise ApiError() from None
-        except (aiohttp.ClientError, OSError) as exc:
+        except (aiohttp.ClientError, OSError, UnicodeDecodeError) as exc:
             log.warning("Leetify request failed: %s (%s)", path, type(exc).__name__)
             raise ApiError() from None
-        _raise_for_status(response.status, path)
+        _raise_for_status(response.status, path, not_found)
         try:
             return json.loads(response.body)
         except ValueError:
@@ -131,24 +146,16 @@ class LeetifyClient:
             return FetchResponse(response.status, await response.text())
 
 
-def _raise_for_status(status: int, path: str) -> None:
+def _raise_for_status(
+    status: int, path: str, not_found: type[Cs2Error] = PlayerNotFoundError
+) -> None:
     if 200 <= status < 300:
         return
     log.warning("Leetify returned HTTP %d: %s", status, path)
     if status == 404:
-        raise PlayerNotFoundError()
+        raise not_found()
     if status == 403:
         raise PrivateProfileError()
     if status == 429:
         raise RateLimitedError()
     raise ApiError()
-
-
-def _newest_first(matches: list[Match]) -> list[Match]:
-    # Stable: undated matches keep their order, after the dated ones.
-    dated = sorted(
-        (m for m in matches if m.finished_at is not None),
-        key=lambda m: m.finished_at or _EPOCH,
-        reverse=True,
-    )
-    return dated + [m for m in matches if m.finished_at is None]
