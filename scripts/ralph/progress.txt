@@ -122,3 +122,10 @@
 - .env.example: CS2_CHANNEL_ID / CS2_POLL_SECONDS now describe the real auto-post behaviour (matches README/deployment.md wording).
 - Search left one hit (steam.py "17-digit numbers are reserved for SteamID64s"), which is still true and stays.
 - No behaviour change. Files: src/ninja_bot/cs2/store.py, src/ninja_bot/config.py, .env.example
+
+## 2026-10-11 - US-010
+- README auto-post section: complete-scoreboard retry (until the 3-hour limit), rate limit = post what's there, skip one cycle, resume from the stopped player; friends who left the server listed without a mention; checklist gained rate limit (or unverifiable), removed friend, Cyrillic/CJK custom URL, `?utm_source=x` profile link.
+- docs/deployment.md troubleshooting: "a match is not posted for a while" row (log strings match poller.py).
+- CLAUDE.md: `strict` flag on `full_match`, `read_capped` in resolver.py (channels.py and `fetch_squad` were already listed by US-007/US-008).
+- Docs only. Needs manual check: the new README checklist items.
+---
