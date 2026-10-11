@@ -4,7 +4,7 @@ import asyncio
 import codecs
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import AsyncIterable, Mapping
 from typing import Protocol
 from urllib.parse import quote
 
@@ -27,6 +27,7 @@ VANITY_PATH_PREFIX = "/id/"
 REQUEST_TIMEOUT_SECONDS = 10.0
 # Profile XML is a few KiB; anything past this is ignored (and never searched).
 MAX_BODY_BYTES = 64 * 1024
+READ_CHUNK_BYTES = 8 * 1024
 
 # Regex only, never an XML parser: the endpoint is unofficial and the body untrusted.
 _STEAM_ID64_RE = re.compile(r"<steamID64>(7656119\d{10})</steamID64>", re.ASCII)
@@ -42,6 +43,23 @@ class SteamResolver(Protocol):
     async def resolve_vanity(self, name: str) -> str: ...
 
     async def aclose(self) -> None: ...
+
+
+async def read_capped(chunks: AsyncIterable[bytes], cap: int) -> tuple[bytes, bool]:
+    """Collect chunks until the stream ends or `cap` bytes arrived.
+
+    Returns at most `cap` bytes and whether the stream ended before the cap (the body
+    is complete). A single `content.read(n)` only returns the next chunk, so network
+    bodies must be read this way.
+    """
+    parts: list[bytes] = []
+    total = 0
+    async for chunk in chunks:
+        parts.append(chunk)
+        total += len(chunk)
+        if total >= cap:
+            return b"".join(parts)[:cap], False
+    return b"".join(parts), True
 
 
 def vanity_url(name: str) -> str:
@@ -90,10 +108,11 @@ class SteamCommunityResolver:
                 timeout=aiohttp.ClientTimeout(total=self._timeout_s)
             )
         async with self._session.get(url, headers=dict(headers), allow_redirects=False) as response:
-            data = await response.content.read(MAX_BODY_BYTES)
+            data, complete = await read_capped(
+                response.content.iter_chunked(READ_CHUNK_BYTES), MAX_BODY_BYTES
+            )
             # A capped read may end inside a multi-byte character; only a complete body
             # must decode completely. Invalid UTF-8 still raises UnicodeDecodeError.
-            complete = len(data) < MAX_BODY_BYTES
             body = codecs.getincrementaldecoder("utf-8")().decode(data, final=complete)
             return FetchResponse(response.status, body)
 
