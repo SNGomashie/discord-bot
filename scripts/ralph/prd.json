@@ -1,191 +1,82 @@
 {
   "project": "ninja-discord-bot",
-  "branchName": "ralph/cs2-hardening",
-  "description": "CS2 hardening: fix the ten /code-review findings on the scoreboard feature (/link defer and cooldown, match-not-found, name escaping, concurrency, cleanups)",
+  "branchName": "ralph/cs2-vanity-links",
+  "description": "Accept Steam vanity URLs and custom URL names in /link by resolving them through the public Steam profile page (no API key)",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Defer `/link` before calling Leetify",
-      "description": "As a user, I want `/link` to always answer, even when Leetify is slow, so I don't see \"The application did not respond\".",
+      "title": "Parse vanity names from `/link` input",
+      "description": "As a user, I want `/link` to understand my custom Steam URL or name so I don't have to look up a number.",
       "acceptanceCriteria": [
-        "In `handle_link` (`cogs/cs2.py`), the Steam input is parsed first; an `InvalidSteamIdError` is still answered with an ephemeral `send_message` and does **not** defer",
-        "After parsing, `handle_link` calls `interaction.response.defer(ephemeral=True, thinking=True)` before any request to the stats provider or store, and sends every later reply (success, `Cs2Error`, generic error) with `interaction.followup.send(..., ephemeral=True)`",
-        "All followup sends go through `_send_safely`, so an expired token or other `discord.HTTPException` is logged and swallowed instead of raised",
-        "The link is still saved only after the profile lookup succeeds",
-        "`cog_app_command_error` already uses the followup when `interaction.response.is_done()`; wrap both of its sends in `_send_safely` so a failing send cannot raise out of the error handler",
-        "Unit tests: defer is called before `get_profile` (assert call order), invalid input never defers, success and each `Cs2Error` type and a generic error use `followup.send` with `ephemeral=True`, an `HTTPException` on the followup is swallowed, and the error handler uses the followup after a defer",
+        "`cs2/steam.py` replaces `parse_steam_id` with `parse_steam_target(text) -> SteamId | VanityName`, where `SteamId` and `VanityName` are small frozen dataclasses with one `value: str` field (`parse_steam_id` may stay as a thin wrapper that raises for vanity input, only if other code still needs it; otherwise remove it and update its callers and tests)",
+        "A bare SteamID64 (`7656119` + 10 digits) and a `steamcommunity.com/profiles/<id>` URL still return `SteamId` exactly as before (same URL variants: optional scheme, `www.`, trailing slash, any case)",
+        "A `steamcommunity.com/id/<name>` URL (same URL variants, and a `?` query string or `#` fragment is ignored) returns `VanityName(name)`; the name is the path segment only",
+        "A bare string that is a valid vanity name returns `VanityName`; valid means 2 to 32 characters from `A-Z a-z 0-9 _ -`, ASCII only (`re.ASCII`). The name is kept as typed (Steam treats it case-insensitively)",
+        "Anything else raises `InvalidSteamIdError` with a message that lists the accepted forms: SteamID64, `/profiles/<id>` link, `/id/<name>` link, or the custom URL name",
+        "A 17-digit number that does not start with `7656119` is rejected as an invalid ID and is **not** treated as a vanity name; other all-digit strings of 2 to 32 characters are valid vanity names (Steam allows numeric custom URLs) except those that are 17 digits long",
+        "The existing 200-character input cap runs before any regex; the `VANITY_URL_MESSAGE` constant and the rejection of `/id/` URLs are removed",
+        "Unit tests, parametrized: each accepted SteamID64/profile URL variant, each vanity URL variant, bare names at the 2 and 32 character bounds and just outside them, names with spaces, `/`, `.`, `@`, unicode letters and digits, empty and whitespace-only input, a 17-digit non-Steam number, input over 200 characters, a URL on another host (`evil.example/id/gaben`), and `steamcommunity.com.evil.example/id/gaben`",
         "Typecheck passes",
         "`./scripts/check.sh` passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 1,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-002",
-      "title": "Rate-limit `/link` and skip redundant lookups",
-      "description": "As the owner, I want `/link` to be unable to drain the shared Leetify quota.",
+      "title": "Steam community resolver",
+      "description": "As the owner, I want a small, safe client that turns a vanity name into a SteamID64 without an API key.",
       "acceptanceCriteria": [
-        "The cog gets a separate `link_cooldown: UserCooldown` (module constant `LINK_COOLDOWN_SECONDS = 15`, injectable like the existing `cooldown`); it is **not** shared with `/scoreboard` and `/profile`",
-        "Order in `handle_link`: parse input, check the stored link, take the cooldown, defer, call Leetify. Invalid input never takes the cooldown",
-        "If the caller is already linked to the same SteamID64, `/link` replies ephemerally that they are already linked (naming nothing from Leetify) without calling the provider and without taking the cooldown",
-        "A user inside the cooldown gets the existing `cooldown_message(retry_after)` as an ephemeral reply and no API call is made",
-        "The cooldown is **not** refunded after an API call was made (success or failure), so repeated bad lookups are throttled; it is only never taken for invalid or already-linked input",
-        "A different SteamID64 than the stored one still replaces the link (relinking works)",
-        "Unit tests with a fake clock: invalid input does not take the cooldown, a repeat call inside the window is rejected with zero provider calls, a call after the window works, an already-linked same id makes zero provider calls, relinking a different id works, `/scoreboard` and `/profile` cooldowns are unaffected by `/link`, and a failed lookup still holds the cooldown",
+        "`cs2/models.py` adds `VanityNotFoundError(Cs2Error)` (\"No Steam profile uses that custom URL. Check the spelling, or use your 17-digit SteamID64.\") and `SteamLookupError(Cs2Error)` (\"Steam couldn't be reached to look up that name. Try again later, or use your 17-digit SteamID64 instead.\")",
+        "New module `cs2/resolver.py` defines a `SteamResolver` Protocol (`async resolve_vanity(name: str) -> str`, `async aclose() -> None`) and `SteamCommunityResolver`, the only module that talks to `steamcommunity.com`",
+        "`SteamCommunityResolver` requests exactly `https://steamcommunity.com/id/<quoted name>/?xml=1`, where the name is re-validated against the vanity regex from US-001 and URL-quoted (a name that fails validation raises `InvalidSteamIdError` without any request); the host, scheme and path prefix are constants",
+        "The HTTP call is injectable like `LeetifyClient` (`fetch(url, headers) -> FetchResponse`, reusing `FetchFn` / `FetchResponse` from `cs2/client.py`, or moving them to a shared module without changing `client.py` behaviour); the default uses a lazily created `aiohttp.ClientSession` with `allow_redirects=False`, a 10 second timeout, and reads at most 64 KiB of the body",
+        "The response is **not** parsed with an XML library. The ID is taken with a regex such as `<steamID64>(7656119\\d{10})</steamID64>` (`re.ASCII`); the first match wins",
+        "Mapping: ID found -> return it; a 200 body containing an `<error>` element or no ID -> `VanityNotFoundError`; 404 -> `VanityNotFoundError`; 429 -> `RateLimitedError`; redirects (3xx), other non-2xx, timeouts, `aiohttp.ClientError`, `OSError` and `UnicodeDecodeError` -> `SteamLookupError`; warnings are logged without tracebacks and without the response body",
+        "`aclose()` closes the session and is safe to call twice or when no session was created",
+        "A fixture `tests/fixtures/steam/profile.xml` (trimmed real shape: `<profile>` with `steamID64`, `steamID`, `privacyState`) and `profile_not_found.xml` (`<response><error><![CDATA[The specified profile could not be found.]]></error></response>`) are used by the tests",
+        "Unit tests with a stub `fetch`: public and private profile bodies, not-found body, 404, 429, 302, 500, timeout, `ClientError`, `UnicodeDecodeError`, an oversized body that still contains an ID after the cap (must not be found), a body with two IDs (first wins), the exact URL requested, an invalid name making zero requests, and `aclose` idempotence",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 2,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-003",
-      "title": "Distinguish \"match not found\" from \"player not found\"",
-      "description": "As a user, I want a wrong match id to say the match was not found, not that the player is unknown.",
+      "title": "Use the resolver in `/link`",
+      "description": "As a user, I want `/link` to resolve my custom URL and link my account in one step.",
       "acceptanceCriteria": [
-        "`cs2/models.py` adds `MatchNotFoundError(Cs2Error)` with a friendly `default_message` that names the match id problem (e.g. \"Leetify has no match with that id. Check the id, or leave `match` empty for the latest match.\")",
-        "In `cs2/client.py`, `_raise_for_status` takes the error to raise for a 404 (default `PlayerNotFoundError`); `get_match` passes `MatchNotFoundError`; `get_profile` and `get_recent_matches` keep `PlayerNotFoundError`",
-        "Other status mappings are unchanged (403 -> `PrivateProfileError`, 429 -> `RateLimitedError`, other non-2xx -> `ApiError`)",
-        "`/scoreboard match:<bad id>` shows the new message through the existing `Cs2Error` path",
-        "Unit tests with a stub `fetch`: 404 on `/v2/matches/...` raises `MatchNotFoundError`, 404 on `/v3/profile` and `/v3/profile/matches` still raise `PlayerNotFoundError`, the other statuses on `get_match` are unchanged, and the cog replies with the match message for an unknown id",
+        "`Cs2` takes a `SteamResolver` by injection; `setup` builds a `SteamCommunityResolver`, and `cog_unload` closes it as well as the stats provider",
+        "`handle_link` flow: parse (invalid input is answered immediately and does not defer or take the cooldown); for a `SteamId` the flow is unchanged (already-linked check, cooldown, defer, profile lookup, save), with **zero** resolver calls",
+        "For a `VanityName`: take the `/link` cooldown, defer, resolve to a SteamID64, then check the stored link (same ID -> the existing \"already linked\" message through the followup), then look up the Leetify profile and save, as for an ID",
+        "The cooldown applies to vanity lookups exactly as for any API-backed `/link` (taken before the first network call, not refunded afterwards)",
+        "`VanityNotFoundError`, `SteamLookupError`, `RateLimitedError` and other `Cs2Error`s from the resolver are sent ephemerally through `_send_safely` with their `message`; unexpected exceptions are logged and answered with the generic message",
+        "The success reply names the account as before (the Leetify name), and when the input was a vanity name it also shows the resolved SteamID64 so the user can check it is theirs (for example `Linked to **Name** on Leetify (Steam ID 7656119...)`)",
+        "Unit tests with a fake resolver, fake provider and fake store: vanity URL and bare name link successfully, SteamID64 and `/profiles/` input make no resolver call, vanity resolves to the already linked ID, resolver errors of each type, a vanity name that resolves but has no Leetify profile (`PlayerNotFoundError` message), the cooldown is taken once and not refunded, defer happens before the resolver call (assert order), and `cog_unload` closes both objects",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 3,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-004",
-      "title": "Treat undecodable responses as API errors",
-      "description": "As the owner, I want upstream faults to be friendly `ApiError`s, not logged stack traces.",
+      "title": "Documentation",
+      "description": "As the owner, I want the docs to say what `/link` accepts and what the bot needs to reach.",
       "acceptanceCriteria": [
-        "In `LeetifyClient._get`, the exceptions caught around the fetch include `UnicodeDecodeError` (raised by `response.text()` on non-UTF-8 or truncated bodies) in addition to `aiohttp.ClientError` and `OSError`; it logs a warning without a traceback and raises `ApiError`",
-        "The injected `fetch` contract is documented in the `FetchFn` comment: it may raise `aiohttp.ClientError`, `OSError`, `UnicodeDecodeError` or `TimeoutError`, and all of them become `ApiError`",
-        "The API key never appears in log lines or error messages for this path (assert in the test)",
-        "Unit tests with a stub `fetch` that raises `UnicodeDecodeError`, plus a regression test for the existing `ClientError`, `OSError`, timeout and non-JSON cases",
+        "README `/link` text lists the accepted inputs (SteamID64, `/profiles/<id>` URL, `/id/<name>` URL, bare custom URL name), says vanity names are resolved through Steam's public profile page without an API key, and adds manual checks: link by custom URL, by bare name, by SteamID64, a non-existent name, and relinking the same account by name (\"already linked\")",
+        "`docs/deployment.md` states that the bot needs outbound HTTPS to `steamcommunity.com` as well as the Leetify API host, and its troubleshooting table gains a row for \"Steam couldn't be reached\" / vanity lookups failing (network, Steam outage, rate limiting; workaround: use the 17-digit ID)",
+        "`CLAUDE.md` architecture list gains `cs2/resolver.py` and mentions `parse_steam_target` in `steam.py`",
+        "The old \"vanity URLs aren't supported\" wording is gone from README, docs and error messages",
         "Typecheck passes",
         "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-005",
-      "title": "One newest-first helper",
-      "description": "As a developer, I want a single implementation of the newest-first sort so the two copies cannot drift apart.",
-      "acceptanceCriteria": [
-        "`cs2/models.py` exposes one public generic helper `newest_first(items)` for any item with a `finished_at: datetime | None`; it sorts newest first, is stable, and keeps items without a time in their original order **after** the dated ones",
-        "`parse_profile` (recent matches) and `LeetifyClient.get_recent_matches` both use it; `client._newest_first` and `client._EPOCH` are removed, and the unused `datetime` import goes with them",
-        "Behaviour for existing inputs is unchanged (existing tests keep passing)",
-        "Unit tests: mixed dated and undated items for both `Match` and `RecentMatch`, equal timestamps keep their order, all-undated input keeps its order, an empty list, and a timezone-aware vs naive-safe check (the helper must not raise `TypeError` on tz-aware times)",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 5,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-006",
-      "title": "Escape player names in embed text",
-      "description": "As a user, I want a player called `[free nitro](https://evil.example)` or `**x**` to show as plain text, not a link or formatting.",
-      "acceptanceCriteria": [
-        "`cs2/formatting.py` adds `escape_name(name: str | None) -> str` that returns the name with `discord.utils.escape_markdown` applied (so `*`, `_`, `~`, `|`, backticks, and the `[` `]` `(` `)` link syntax cannot render), strips control characters and newlines, truncates to 32 characters with `…`, and returns `?` for empty or `None`",
-        "`build_match_embed` uses `escape_name` for the player name in every award line (`**Title**: name (detail)`)",
-        "Every other place where a Leetify name is put in embed text **outside** a code block is audited (profile embed title/description, focus-player field name, anywhere in `cogs/cs2.py` messages) and uses the right escaping; names inside code blocks keep using `clean_name`",
-        "The cog's `linked_message` and `not_linked_message` keep escaping, now via the shared helper where practical",
-        "Unit tests: masked-link name, `**`, `_`, `~~`, `||spoiler||`, newline and control characters, a 100-character name, an empty or `None` name, and an end-to-end check that the awards field of a built embed contains no unescaped link syntax from a hostile name",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 6,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-007",
-      "title": "Fetch the match and the profile concurrently",
-      "description": "As a user, I want `/scoreboard` to be as fast as its slowest request, not the sum of two.",
-      "acceptanceCriteria": [
-        "`_scoreboard_deferred` starts the match fetch (`_fetch_match`) and the profile fetch (`_fetch_profile_or_none`) at the same time (`asyncio.gather` or equivalent), for both the latest-match and the explicit `match:` paths",
-        "Error behaviour is unchanged: a `Cs2Error` from the match fetch is answered with its message and nothing is posted; a `Cs2Error` from the profile fetch still just drops the breakdown; an unexpected exception from either gives the generic message, and no task is left running or unawaited (no \"Task exception was never retrieved\" warnings)",
-        "If the match fetch fails, the in-flight profile request is cancelled or its result discarded without logging noise",
-        "Unit tests with fakes that block on `asyncio.Event`s: both provider calls have started before either finishes; a match error with a slow profile; a profile `Cs2Error` with a good match still posts the embed; an unexpected profile error gives the generic message; the posted embed is the same as before for the success path",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 7,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-008",
-      "title": "Add `aclose` to the `StatsProvider` protocol",
-      "description": "As a developer, I want the cog to close any provider the same way, without checking for the concrete class.",
-      "acceptanceCriteria": [
-        "`StatsProvider` in `cs2/client.py` gains `async def aclose(self) -> None`; `LeetifyClient.aclose` already satisfies it",
-        "`Cs2.cog_unload` calls `await self.stats.aclose()` with no `isinstance(..., LeetifyClient)` check, and the `LeetifyClient` import in the cog is removed if no longer needed there (it is still used in `setup`)",
-        "Test fakes that implement `StatsProvider` get a no-op or recording `aclose`; the shared fake in the CS2 tests records that it was closed",
-        "A comment on the protocol says wrappers (such as the squad PRD's cache wrapper) must delegate `aclose` to the provider they wrap",
-        "Unit tests: unloading the cog closes the provider exactly once, closing a client with an injected `fetch` is a no-op, and closing twice is safe",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 8,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-009",
-      "title": "Fix table alignment (single width constant, display width)",
-      "description": "As a user, I want scoreboard tables to line up even with long, wide-character or emoji names.",
-      "acceptanceCriteria": [
-        "`_ROW_FORMAT` in `cs2/formatting.py` no longer hardcodes `12`; the name column width comes from `NAME_WIDTH` (build the format string from the constant, or pad explicitly), so changing `NAME_WIDTH` keeps header and rows aligned",
-        "A small helper `display_width(text)` counts East Asian wide and fullwidth characters (`unicodedata.east_asian_width` of `W` or `F`) as 2 columns, combining marks and zero-width characters as 0, and everything else as 1",
-        "`clean_name` truncates by display width (to `NAME_WIDTH` columns, ending with `…`) and the name is padded with spaces by display width, so a row with CJK or emoji characters has the same visual width as a row with ASCII",
-        "`clean_name` still strips backticks and non-printable characters and still returns `?` for an empty result; names that fit in `NAME_WIDTH` columns are unchanged",
-        "The `max_chars` cap in `format_team_table` still holds for the widest case (10 rows of 12 wide characters)",
-        "Unit tests: ASCII name, 20-character ASCII name, all-CJK name, mixed emoji and ASCII, a combining-mark name, `NAME_WIDTH` monkeypatched to 8 and to 16 (header and every row have equal display width), and the `max_chars` bound",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 9,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-010",
-      "title": "Honest `.env.example` for unbuilt settings",
-      "description": "As the owner, I don't want `.env.example` to promise a feature that does not exist yet.",
-      "acceptanceCriteria": [
-        "The `.env.example` comments for `CS2_CHANNEL_ID` and `CS2_POLL_SECONDS` say they are reserved for automatic match posts, which are not implemented yet, and that setting them has no effect today; wording matches the README and `docs/deployment.md`",
-        "`config.py` keeps parsing and validating both values (the squad PRD needs them) with a comment saying the values are reserved; a malformed value still raises `ConfigError` (fail fast), and this is stated in the `.env.example` comment",
-        "`SqliteLinkStore.all_links` and the `LinkStore.all_links` protocol method stay (the squad PRD uses them); a one-line comment says they are used by the upcoming leaderboard and poller",
-        "No behaviour change: the existing config tests keep passing",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 10,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-011",
-      "title": "Documentation",
-      "description": "As the owner, I want the docs to reflect the new behaviour.",
-      "acceptanceCriteria": [
-        "README's `/scoreboard` section: `/link` has a 15-second cooldown that applies after a valid request, re-linking the same account is a no-op, a wrong `match:` id gets a \"match not found\" reply, and names are escaped; the manual checklist gains: `/link` twice quickly (second is throttled), `/link` with the same account again (already linked), `/scoreboard match:nonsense` (match-not-found message), a player name with markdown in a test match (rendered as plain text)",
-        "`CLAUDE.md` architecture list mentions `escape_name` / `display_width` in `formatting.py`, `newest_first` in `models.py` and `aclose` on `StatsProvider`",
-        "`tasks/prd-cs2-squad.md` US-005 says the `CachedStatsProvider` must delegate `aclose` to its inner provider (edit the squad PRD if it does not already say so)",
-        "Typecheck passes",
-        "./scripts/check.sh passes (ruff, ruff format, mypy strict, pytest)"
-      ],
-      "priority": 11,
-      "passes": true,
+      "passes": false,
       "notes": ""
     }
   ]
