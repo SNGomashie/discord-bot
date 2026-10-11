@@ -83,3 +83,8 @@
 - Docs: none user-visible yet (final docs story).
 - Learnings: GETTING_STARTED mentions /download etc., so "command not shown" tests must look at group fields only (`fields[1:]`) and match the backticked usage.
 ---
+
+## 2026-10-11 - US-004
+- Added `build_command_embed(info, help_entry)` to `src/ninja_bot/help/embed.py`: title `/<name>` (cut to `TITLE_LIMIT` 256), description `summary\n\ndetails` (or the Discord description when there is no entry), fields Usage (code block), Parameters (`parameter_lines`), Examples (one code block, one example per line), Notes (`• note`); empty fields omitted. Lines are dropped from the bottom with `+N more` (`_fit_lines` / `_fit_code_block`, the marker sits outside the code block), then `_fit_total` drops trailing fields.
+- Tests: tests/test_help_embed.py (params/choices/notes, no params, `help_entry=None`, oversized notes/params/title, total limit, every real COMMANDS entry within limits and untrimmed).
+- No docs change: /help is not registered until the cog story.

@@ -6,19 +6,26 @@ from collections.abc import Sequence
 
 import discord
 
-from ninja_bot.help.commands import CommandInfo, usage_line
+from ninja_bot.help.commands import CommandInfo, parameter_lines, usage_line
 from ninja_bot.help.content import (
     COMMANDS,
+    EXAMPLES_FIELD,
     FOOTER,
     GETTING_STARTED,
     GETTING_STARTED_TITLE,
     GROUPS,
+    NOTES_FIELD,
     OTHER_GROUP_TITLE,
     OVERVIEW_INTRO,
     OVERVIEW_TITLE,
+    PARAMETERS_FIELD,
+    USAGE_FIELD,
+    CommandHelp,
 )
 
 # Discord embed limits.
+TITLE_LIMIT = 256
+DESCRIPTION_LIMIT = 4096
 FIELD_VALUE_LIMIT = 1024
 EMBED_TOTAL_LIMIT = 6000
 MAX_FIELDS = 25
@@ -62,6 +69,54 @@ def build_overview_embed(commands: Sequence[CommandInfo]) -> discord.Embed:
     embed.set_footer(text=FOOTER)
     _fit_total(embed)
     return embed
+
+
+def build_command_embed(info: CommandInfo, help_entry: CommandHelp | None) -> discord.Embed:
+    """Full help for one registered command: usage, parameters, examples and notes."""
+    if help_entry is None:
+        description = info.description
+    else:
+        description = "\n\n".join(part for part in (help_entry.summary, help_entry.details) if part)
+    embed = discord.Embed(
+        title=_cut(f"/{info.name}", TITLE_LIMIT),
+        description=_cut(description, DESCRIPTION_LIMIT) or None,
+        colour=HELP_COLOUR,
+    )
+    notes = help_entry.parameter_notes if help_entry else {}
+    examples = list(help_entry.examples) if help_entry else []
+    bullets = [f"• {note}" for note in help_entry.notes] if help_entry else []
+    fields = [
+        (USAGE_FIELD, _code_block([_cut(usage_line(info), FIELD_VALUE_LIMIT - 8)])),
+        (PARAMETERS_FIELD, _fit_lines(parameter_lines(info, notes), FIELD_VALUE_LIMIT)),
+        (EXAMPLES_FIELD, _fit_code_block(examples, FIELD_VALUE_LIMIT)),
+        (NOTES_FIELD, _fit_lines(bullets, FIELD_VALUE_LIMIT)),
+    ]
+    for name, value in fields:
+        if value:
+            embed.add_field(name=name, value=value, inline=False)
+    _fit_total(embed)
+    return embed
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _code_block(lines: list[str]) -> str:
+    return "```\n" + "\n".join(lines) + "\n```" if lines else ""
+
+
+def _fit_code_block(lines: list[str], limit: int) -> str:
+    """Whole lines in one code block, dropping them from the bottom (+N more) until it fits."""
+    for keep in range(len(lines), -1, -1):
+        dropped = len(lines) - keep
+        parts = [_code_block(lines[:keep])] if keep else []
+        if dropped:
+            parts.append(f"+{dropped} more")
+        text = "\n".join(parts)
+        if len(text) <= limit:
+            return text
+    return ""
 
 
 def _command_line(info: CommandInfo, summary: str) -> str:
