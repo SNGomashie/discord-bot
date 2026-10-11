@@ -2,8 +2,10 @@
 
 Fetches the profile, the recent matches list and the latest match's details for one
 SteamID64, replaces every `steam64_id` and `name` value with a placeholder, and writes
-the JSON to data/leetify-capture/ (gitignored). Needs LEETIFY_API_KEY and ENVIRONMENT=dev
-(from the environment or .env). The key is never printed.
+the JSON to data/leetify-capture/ (gitignored). Then prints how many players each match
+lists, to show whether the history endpoint returns every player or only the requested
+one. Needs LEETIFY_API_KEY and ENVIRONMENT=dev (from the environment or .env). The key
+is never printed.
 
 Not part of scripts/check.sh (needs network + key). Run manually:
     uv run python scripts/capture_leetify.py <steam64_id>
@@ -105,6 +107,81 @@ def latest_match_id(matches: Any) -> str | None:
     return str(newest["id"])
 
 
+COMPARE_FEWER = "history endpoint returns only the requested player"
+COMPARE_SAME = "both endpoints return all players"
+COMPARE_UNKNOWN = "could not compare"
+
+
+def _player_count(match: Any) -> int | None:
+    stats = match.get("stats") if isinstance(match, dict) else None
+    return len(stats) if isinstance(stats, list) else None
+
+
+def _describe_match(label: str, match: Any, match_ids: dict[str, str]) -> str:
+    """One summary line with counts only (never ids or names from the document)."""
+    if not isinstance(match, dict):
+        return f"{label}: not a JSON object"
+    raw_id = match.get("id")
+    if raw_id is None:
+        match_label = "match without id"
+    else:
+        match_label = match_ids.setdefault(str(raw_id), f"match-{len(match_ids) + 1}")
+    stats = match.get("stats")
+    if not isinstance(stats, list):
+        return f"{label} {match_label}: no stats list"
+    players = [p for p in stats if isinstance(p, dict)]
+    team_numbers = {p.get("initial_team_number") for p in players} - {None}
+    unassigned = sum(1 for p in players if p.get("initial_team_number") is None)
+    return (
+        f"{label} {match_label}: {len(stats)} players in stats, "
+        f"{len(team_numbers)} distinct team numbers, {unassigned} without a team number"
+    )
+
+
+def _compare(history: Any, single: Any) -> str:
+    if not isinstance(history, list) or not isinstance(single, dict):
+        return COMPARE_UNKNOWN
+    single_id = single.get("id")
+    entry = next(
+        (
+            m
+            for m in history
+            if isinstance(m, dict) and single_id is not None and m.get("id") == single_id
+        ),
+        None,
+    )
+    history_count = _player_count(entry)
+    single_count = _player_count(single)
+    if history_count is None or single_count is None:
+        return COMPARE_UNKNOWN
+    return COMPARE_FEWER if history_count < single_count else COMPARE_SAME
+
+
+def summarize_documents(documents: dict[str, Any]) -> list[str]:
+    """Player counts per captured match plus a verdict on the history endpoint.
+
+    Match ids are replaced by `match-N` labels (the same label for the same id), and no
+    other values from the documents are copied, so the summary is safe to print.
+    """
+    match_ids: dict[str, str] = {}
+    lines: list[str] = []
+    history = documents.get("matches")
+    if isinstance(history, list):
+        if not history:
+            lines.append("history: no entries")
+        for entry in history:
+            lines.append(_describe_match("history", entry, match_ids))
+    else:
+        lines.append("history: not a JSON list")
+    single = documents.get("match")
+    if single is None:
+        lines.append("single match: not fetched")
+    else:
+        lines.append(_describe_match("single match", single, match_ids))
+    lines.append(f"Result: {_compare(history, single)}")
+    return lines
+
+
 async def fetch_json(
     session: aiohttp.ClientSession,
     api_key: str,
@@ -176,8 +253,11 @@ async def main(argv: list[str]) -> int:
     except CaptureError as exc:
         print(f"FAIL: {exc}")
         return 1
-    for path in write_documents(anonymize(documents, steam64_id), OUTPUT_DIR):
+    anonymized = anonymize(documents, steam64_id)
+    for path in write_documents(anonymized, OUTPUT_DIR):
         print(f"Wrote {path}")
+    for line in summarize_documents(anonymized):
+        print(line)
     return 0
 
 
