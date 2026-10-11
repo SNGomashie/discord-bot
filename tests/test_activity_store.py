@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from ninja_bot.activity.store import ActivityStore, Session, SqliteActivityStore
+from ninja_bot.activity.store import ActivityStore, PokemonEvent, Session, SqliteActivityStore
 
 USER_A = 1
 USER_B = 2
@@ -245,3 +245,34 @@ async def test_blocking_calls_run_in_thread(
         "_mark_report_posted",
         "_report_posted",
     ]
+
+
+async def test_pokemon_events_round_trip_and_ignore_duplicates(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    catch = PokemonEvent(10, USER_A, 50.0, "catch", "Herdier", True)
+    await store.record_pokemon_event(catch)
+    await store.record_pokemon_event(PokemonEvent(10, USER_B, 60.0, "cooldown"))
+    await store.record_pokemon_event(PokemonEvent(11, USER_B, 40.0, "cooldown"))
+
+    assert await store.pokemon_events_between(0.0, 100.0) == [
+        PokemonEvent(11, USER_B, 40.0, "cooldown", None, False),
+        catch,
+    ]
+
+
+async def test_pokemon_events_between_is_half_open(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    for message_id, ts in ((1, 9.0), (2, 10.0), (3, 19.0), (4, 20.0)):
+        await store.record_pokemon_event(PokemonEvent(message_id, USER_A, ts, "catch", "Eevee"))
+
+    events = await store.pokemon_events_between(10.0, 20.0)
+
+    assert [event.message_id for event in events] == [2, 3]
+
+
+async def test_known_users_include_pokemon_only_users(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.open_session(USER_A, CHANNEL_X, 1.0)
+    await store.record_pokemon_event(PokemonEvent(1, USER_B, 2.0, "cooldown"))
+
+    assert await store.known_users() == {USER_A, USER_B}

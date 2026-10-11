@@ -1,5 +1,5 @@
 {
-  "_comment": "Derived from replies.md (copied from the Discord UI). Raw form is assumed: mentions are <@id>; cases with assumed=true are variations, not observed replies. Replace with raw dev-bot captures when available.",
+  "_comment": "Derived from replies.md (copied from the Discord UI). Raw form is assumed: mentions are <@id>; cases with assumed=true are variations, not observed replies. Replace with raw dev-bot captures when available. Cases with from_toasty=false are replies by another bot: nothing may be recorded for them (the parser alone would still read them).",
   "cases": [
     {
       "name": "catch_trailing_char",
@@ -11,7 +11,8 @@
         "kind": "catch",
         "pokemon": "Mimikyu",
         "shiny": false
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "catch_plain",
@@ -23,7 +24,8 @@
         "kind": "catch",
         "pokemon": "Frillish",
         "shiny": false
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "catch_article_an",
@@ -35,7 +37,8 @@
         "kind": "catch",
         "pokemon": "Eevee",
         "shiny": false
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "catch_punctuated_name",
@@ -47,7 +50,8 @@
         "kind": "catch",
         "pokemon": "Mr. Mime",
         "shiny": false
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "shiny_all_in_content",
@@ -59,7 +63,8 @@
         "kind": "catch",
         "pokemon": "Herdier",
         "shiny": true
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "shiny_text_in_embed",
@@ -75,7 +80,8 @@
         "kind": "catch",
         "pokemon": "Herdier",
         "shiny": true
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "cooldown",
@@ -86,7 +92,8 @@
       "expected": {
         "kind": "cooldown",
         "wait_seconds": 6616
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "cooldown_minutes_only",
@@ -97,7 +104,8 @@
       "expected": {
         "kind": "cooldown",
         "wait_seconds": 303
-      }
+      },
+      "from_toasty": true
     },
     {
       "name": "cooldown_unparseable_duration",
@@ -108,6 +116,43 @@
       "expected": {
         "kind": "cooldown",
         "wait_seconds": null
+      },
+      "from_toasty": true
+    },
+    {
+      "name": "catch_gender_symbol",
+      "assumed": true,
+      "from_toasty": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Nidoran♀!",
+      "reply_embeds": [],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Nidoran♀",
+        "shiny": false
+      }
+    },
+    {
+      "name": "catch_in_embed_field",
+      "assumed": true,
+      "from_toasty": true,
+      "invoker_content": ";pokemon",
+      "reply_content": "",
+      "reply_embeds": [
+        {
+          "title": "Catch!",
+          "fields": [
+            {
+              "name": "Result",
+              "value": "<@111111111111111111>, you've caught a Farfetch'd!"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "kind": "catch",
+        "pokemon": "Farfetch'd",
+        "shiny": false
       }
     },
     {
@@ -115,6 +160,16 @@
       "assumed": true,
       "invoker_content": ";pokemon",
       "reply_content": "Here is your Pokédex page.",
+      "reply_embeds": [],
+      "expected": null,
+      "from_toasty": true
+    },
+    {
+      "name": "non_toasty_reply",
+      "assumed": true,
+      "from_toasty": false,
+      "invoker_content": ";pokemon",
+      "reply_content": "<@111111111111111111>, you've caught a Magikarp!",
       "reply_embeds": [],
       "expected": null
     }

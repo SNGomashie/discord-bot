@@ -15,9 +15,10 @@ from discord.ext import commands, tasks
 from ninja_bot.activity.embed import build_monthly_embed, build_profile_embed
 from ninja_bot.activity.formatting import month_label
 from ninja_bot.activity.periods import InvalidMonthError, Month, resolve_month
+from ninja_bot.activity.pokemon import Catch, PendingCommands, is_pokemon_command, parse_reply
 from ninja_bot.activity.report import MonthlyReport, build_monthly_report, user_profile
 from ninja_bot.activity.reporter import MonthlyReporter
-from ninja_bot.activity.store import ActivityStore, SqliteActivityStore
+from ninja_bot.activity.store import ActivityStore, PokemonEvent, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
 from ninja_bot.cs2.channels import (
     CHANNEL_MISSING,
@@ -399,6 +400,66 @@ class Activity(commands.Cog):
             )
 
 
+class PokemonTracker(commands.Cog):
+    """Records Toasty's replies to `;pokemon`; only added when `TOASTY_BOT_ID` is set.
+
+    Only parsed fields are stored, never message text.
+    """
+
+    def __init__(
+        self,
+        store: ActivityStore,
+        toasty_bot_id: int,
+        guild_id: int | None = None,
+        pending: PendingCommands | None = None,
+    ) -> None:
+        self.store = store
+        self.toasty_bot_id = toasty_bot_id
+        self.guild_id = guild_id
+        self.pending = pending if pending is not None else PendingCommands()
+
+    def _in_scope(self, message: discord.Message) -> bool:
+        if self.guild_id is None:
+            return True
+        return message.guild is not None and message.guild.id == self.guild_id
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if not self._in_scope(message):
+            return
+        if message.author.id == self.toasty_bot_id:
+            await self.record_reply(message)
+        elif not message.author.bot and is_pokemon_command(message.content):
+            self.pending.remember(message.id, message.author.id)
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        # Recording is idempotent per reply id, so a re-parse never double counts.
+        if self._in_scope(after) and after.author.id == self.toasty_bot_id:
+            await self.record_reply(after)
+
+    async def record_reply(self, message: discord.Message) -> None:
+        """Record a Toasty reply to a remembered `;pokemon` command; ignore anything else."""
+        reference = message.reference
+        if reference is None or reference.message_id is None:
+            return
+        user_id = self.pending.author_of(reference.message_id)
+        if user_id is None:
+            return
+        try:
+            result = parse_reply(message.content, [embed.to_dict() for embed in message.embeds])
+            if result is None:
+                return
+            ts = message.created_at.timestamp()
+            if isinstance(result, Catch):
+                event = PokemonEvent(message.id, user_id, ts, "catch", result.pokemon, result.shiny)
+            else:
+                event = PokemonEvent(message.id, user_id, ts, "cooldown")
+            await self.store.record_pokemon_event(event)
+        except Exception:
+            log.exception("Failed to record a Toasty reply")
+
+
 async def setup(bot: NinjaBot) -> None:
     store = SqliteActivityStore(Path(bot.config.data_dir) / "activity.sqlite3")
     await bot.add_cog(
@@ -411,3 +472,5 @@ async def setup(bot: NinjaBot) -> None:
             channel_id=bot.config.activity_channel_id,
         )
     )
+    if bot.config.toasty_bot_id is not None:
+        await bot.add_cog(PokemonTracker(store, bot.config.toasty_bot_id, bot.config.guild_id))

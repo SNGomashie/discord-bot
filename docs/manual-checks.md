@@ -102,6 +102,17 @@ The inserted session makes January the first month with data, so every ended mon
 - [ ] Remove the bot's Send Messages (or Embed Links) in the channel and repeat: one warning `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is missing ...` in the log, nothing posted, and the month is not in `reports_posted`; restoring the permission posts it within an hour (or on restart)
 - [ ] Without `ACTIVITY_CHANNEL_ID` nothing is posted
 
+### Toasty `;pokemon` (with `TOASTY_BOT_ID` set)
+
+Enable **Message Content Intent** for the dev application first. Check the rows with `sqlite3 data/activity.sqlite3 "SELECT * FROM pokemon_events ORDER BY ts DESC LIMIT 5"`.
+
+- [ ] Send `;pokemon` and get a catch: a `catch` row with your user ID, the Pokémon name (without `Shiny `) and `shiny` 0
+- [ ] A shiny catch (whenever one happens) gives `shiny` 1 and the name without `Shiny `
+- [ ] `;pokemon` again during the cooldown: a `cooldown` row with an empty `pokemon`
+- [ ] `; pokemon` (with a space) is recorded too; `;pokemon list` and someone else's message are not
+- [ ] Note whether Toasty edits its reply or puts the text in an embed, and replace the `assumed` cases in `tests/fixtures/toasty/replies.json` with what you see
+- [ ] Without `TOASTY_BOT_ID` (and the intent off in the portal) the bot starts and records nothing
+
 ## /help
 
 - [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint

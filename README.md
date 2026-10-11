@@ -333,6 +333,16 @@ With `ACTIVITY_CHANNEL_ID` set, the bot posts the `/activity` overview of the pr
   where the cause is `missing`, `not a text channel`, or `missing View Channel, Send Messages or Embed Links`.
 - Members appear as mentions, but nobody is pinged.
 
+### Toasty ;pokemon catches
+
+With `TOASTY_BOT_ID` set to the user ID of the Toasty bot, the bot also records what members catch with Toasty's `;pokemon` command. Without it nothing is read or recorded.
+
+- **What is tracked:** a member's message that is exactly `;pokemon` (any case, one optional space after the `;`, nothing else; `;pokemon list` doesn't count), then Toasty's reply to that message within 5 minutes. A reply `you've caught a <Name>!` is recorded as a catch of that Pokémon (`Shiny <Name>` as a shiny catch); `You need to wait ... before catching another Pokemon!` is recorded as a cooldown. The reply's text and embeds are both read, and an edited reply is read again (a reply is never counted twice). The catch goes to the author of the `;pokemon` message, not to whoever the reply mentions.
+- **What is stored:** only the parsed fields (who, when, catch or cooldown, the Pokémon name and whether it was shiny) in `pokemon_events`; never the message text. See [Data and storage](#data-and-storage). Members with only Toasty events also count as known members for the wall of shame.
+- **Ignored:** `;pokemon` sent by bots, other Toasty messages, replies by other bots, replies to messages the bot didn't see (or saw more than 5 minutes earlier), and other servers when `GUILD_ID` is set.
+- **Message Content intent:** reading these messages needs the privileged **Message Content** intent. The bot requests it only when `TOASTY_BOT_ID` is set, and it must also be enabled in the Developer Portal (see [Configuration](#configuration)).
+- Catches are recorded but not shown yet.
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
@@ -357,12 +367,13 @@ The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds three tables:
 | `posted_matches` | `match_id` (primary key), `posted_at` | Matches already auto-posted; pruned to the newest 500. |
 | `seeded_players` | `steam64_id` (primary key) | Players whose old matches were recorded silently. |
 
-The activity database at `<DATA_DIR>/activity.sqlite3` holds two tables:
+The activity database at `<DATA_DIR>/activity.sqlite3` holds three tables:
 
 | Table | Columns | Purpose |
 |---|---|---|
 | `voice_sessions` | `id` (primary key), `user_id`, `channel_id`, `start_ts`, `end_ts`, `last_seen` | One row per stretch of voice time (Unix timestamps). `end_ts` is empty while the member is still connected; `last_seen` is the last heartbeat, used to close sessions left open by a crash or restart. Never pruned. |
 | `reports_posted` | `month_key` (primary key, `YYYY-MM`), `posted_at` | Months whose activity overview was already auto-posted. |
+| `pokemon_events` | `message_id` (primary key, Toasty's reply), `user_id`, `ts`, `kind` (`catch` or `cooldown`), `pokemon` (empty for cooldowns), `shiny` | One row per Toasty reply to a member's `;pokemon` (only with `TOASTY_BOT_ID`; see [Toasty ;pokemon catches](#toasty-pokemon-catches)). No message text. Never pruned. |
 
 In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
 
@@ -392,6 +403,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **One download at a time**, bot-wide, with no persistent queue.
 - **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
+- **Toasty catches:** only recorded while the bot is online, and only when Toasty replies to a `;pokemon` message (catches by any other route, or replies to a message the bot missed, are not seen). The reply formats are derived from a few observed replies, so a Toasty wording change can stop the recording without an error.
 - **Monthly post after a crash:** a month is recorded as posted right after the send. If the bot stops between the two, that month's overview is posted again after the restart.
 
 ## Development
@@ -403,14 +415,14 @@ src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
-  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions), tracker (voice transitions)
+  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
-tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/ and tests/fixtures/steam/
+tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md
 tasks/            the PRD of every feature, written before it was built
 ```

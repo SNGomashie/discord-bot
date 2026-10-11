@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS voice_sessions (id INTEGER PRIMARY KEY,"
@@ -14,6 +14,10 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS voice_sessions_user_start ON voice_sessions (user_id, start_ts)",
     "CREATE TABLE IF NOT EXISTS reports_posted"
     " (month_key TEXT PRIMARY KEY, posted_at REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS pokemon_events (message_id INTEGER PRIMARY KEY,"
+    " user_id INTEGER NOT NULL, ts REAL NOT NULL, kind TEXT NOT NULL,"
+    " pokemon TEXT NULL, shiny INTEGER NOT NULL DEFAULT 0)",
+    "CREATE INDEX IF NOT EXISTS pokemon_events_ts ON pokemon_events (ts)",
 )
 
 _SESSION_COLUMNS = "id, user_id, channel_id, start_ts, end_ts, last_seen"
@@ -29,6 +33,33 @@ class Session:
     start_ts: float
     end_ts: float | None
     last_seen: float | None
+
+
+PokemonKind = Literal["catch", "cooldown"]
+
+
+@dataclass(frozen=True)
+class PokemonEvent:
+    """One parsed Toasty reply to a `;pokemon` command; `message_id` is the reply's id."""
+
+    message_id: int
+    user_id: int
+    ts: float
+    kind: PokemonKind
+    pokemon: str | None = None
+    shiny: bool = False
+
+
+def _pokemon_event(row: tuple[Any, ...]) -> PokemonEvent:
+    message_id, user_id, ts, kind, pokemon, shiny = row
+    return PokemonEvent(
+        message_id=int(message_id),
+        user_id=int(user_id),
+        ts=float(ts),
+        kind="catch" if kind == "catch" else "cooldown",
+        pokemon=None if pokemon is None else str(pokemon),
+        shiny=bool(shiny),
+    )
 
 
 def _session(row: tuple[Any, ...]) -> Session:
@@ -70,7 +101,15 @@ class ActivityStore(Protocol):
         ...
 
     async def known_users(self) -> set[int]:
-        """Every user ever seen."""
+        """Every user ever seen (in voice or with a `;pokemon` event)."""
+        ...
+
+    async def record_pokemon_event(self, event: PokemonEvent) -> None:
+        """Store a parsed Toasty reply; a second event with the same `message_id` is ignored."""
+        ...
+
+    async def pokemon_events_between(self, start_ts: float, end_ts: float) -> list[PokemonEvent]:
+        """Events with `start_ts <= ts < end_ts`, oldest first."""
         ...
 
     async def first_session_start(self) -> float | None:
@@ -83,7 +122,7 @@ class ActivityStore(Protocol):
 
 
 class SqliteActivityStore:
-    """Voice sessions and posted monthly reports in one SQLite file; disk work runs in a thread."""
+    """Voice sessions, `;pokemon` events and posted reports in one SQLite file; I/O in a thread."""
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
@@ -154,8 +193,34 @@ class SqliteActivityStore:
 
     def _known_users(self) -> set[int]:
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT DISTINCT user_id FROM voice_sessions").fetchall()
+            rows = conn.execute(
+                "SELECT user_id FROM voice_sessions UNION SELECT user_id FROM pokemon_events"
+            ).fetchall()
         return {int(user_id) for (user_id,) in rows}
+
+    def _record_pokemon_event(self, event: PokemonEvent) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO pokemon_events"
+                " (message_id, user_id, ts, kind, pokemon, shiny) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    event.message_id,
+                    event.user_id,
+                    event.ts,
+                    event.kind,
+                    event.pokemon,
+                    int(event.shiny),
+                ),
+            )
+
+    def _pokemon_events_between(self, start_ts: float, end_ts: float) -> list[PokemonEvent]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT message_id, user_id, ts, kind, pokemon, shiny FROM pokemon_events"
+                " WHERE ts >= ? AND ts < ? ORDER BY ts, message_id",
+                (start_ts, end_ts),
+            ).fetchall()
+        return [_pokemon_event(row) for row in rows]
 
     def _first_session_start(self) -> float | None:
         with closing(self._connect()) as conn:
@@ -196,6 +261,12 @@ class SqliteActivityStore:
 
     async def known_users(self) -> set[int]:
         return await asyncio.to_thread(self._known_users)
+
+    async def record_pokemon_event(self, event: PokemonEvent) -> None:
+        await asyncio.to_thread(self._record_pokemon_event, event)
+
+    async def pokemon_events_between(self, start_ts: float, end_ts: float) -> list[PokemonEvent]:
+        return await asyncio.to_thread(self._pokemon_events_between, start_ts, end_ts)
 
     async def first_session_start(self) -> float | None:
         return await asyncio.to_thread(self._first_session_start)
