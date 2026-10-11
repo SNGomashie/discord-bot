@@ -4,7 +4,7 @@ What shipped in each merged pull request of [SNGomashie/discord-bot](https://git
 
 ## 2026-10-11
 
-### Activity tracking: voice hours, monthly report and Toasty catches
+### Activity tracking: voice hours, monthly report and Toasty catches (`2026.41.10`)
 - The bot now records voice time per member (the AFK channel is excluded). Open sessions are heartbeated every 60 seconds, so a restart or crash closes them at the last heartbeat and reopens the people still in voice. Data goes to `<DATA_DIR>/activity.sqlite3`.
 - New `/activity [month]`: leaderboard with shared ranks, a wall of shame (members seen in voice within the last 90 days, including 0h, never members who left), awards (night owl, early bird, marathon, most consistent, biggest climber and drop for completed months) and social stats (most time together, busiest hour and weekday). New `/myactivity [user] [month]`: hours with rank, active days, streaks, longest and average session, a day strip and awards. Both reply publicly without pinging, with a 10-second per-user cooldown. A day is active from 5 minutes of voice time, and months follow `ACTIVITY_TIMEZONE`.
 - With `ACTIVITY_CHANNEL_ID` set, the previous month's overview is posted automatically, once per month and restart-safe. A failed report build is retried the next hour; a failed send is not repeated.
