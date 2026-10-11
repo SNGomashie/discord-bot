@@ -16,6 +16,7 @@ from ninja_bot.activity.pokemon import (
     is_pokemon_command,
     parse_duration,
     parse_reply,
+    to_event,
 )
 from ninja_bot.activity.store import PokemonEvent, SqliteActivityStore
 from ninja_bot.cogs.activity import PokemonTracker
@@ -144,6 +145,20 @@ def test_pending_lookup_does_not_consume() -> None:
 
     assert pending.author_of(1) == USER
     assert pending.author_of(1) == USER
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (Catch("Frillish", shiny=False), PokemonEvent(2, USER, 10.0, "catch", "Frillish", False)),
+        (Catch("Mr. Mime", shiny=True), PokemonEvent(2, USER, 10.0, "catch", "Mr. Mime", True)),
+        (Cooldown(wait_seconds=6616), PokemonEvent(2, USER, 10.0, "cooldown")),
+        (Cooldown(wait_seconds=None), PokemonEvent(2, USER, 10.0, "cooldown")),
+    ],
+    ids=["catch", "shiny", "cooldown", "cooldown-unknown-wait"],
+)
+def test_to_event(result: Catch | Cooldown, expected: PokemonEvent) -> None:
+    assert to_event(result, 2, USER, 10.0) == expected
 
 
 # --- cog -----------------------------------------------------------------------------
@@ -340,3 +355,13 @@ async def test_setup_adds_tracker_only_with_toasty_bot_id(
     assert bool(trackers) is registered
     if registered:
         assert trackers[0].store is bot.added[0].store
+
+
+async def test_reply_is_stamped_with_its_creation_time(tmp_path: Path) -> None:
+    tracker = make_tracker(tmp_path)
+    reply = make_message(2, TOASTY, CATCH_TEXT, bot=True, reply_to=1)
+    reply.created_at = datetime(2026, 10, 1, 8, 30, tzinfo=UTC)
+    reply.edited_at = REPLY_TIME
+    await command_then_reply(tracker, reply)
+
+    assert [event.ts for event in await events(tracker)] == [reply.created_at.timestamp()]

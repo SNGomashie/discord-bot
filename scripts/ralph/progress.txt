@@ -204,3 +204,9 @@
 ## 2026-10-11 - US-010
 - Removed the ignored `tz` parameter from `Month.days()` (periods.py); updated callers in activity/report.py, activity/stats.py and tests/test_activity_periods.py. No behaviour change, no docs (internal).
 ---
+
+## 2026-10-11 - US-011
+- New pure `to_event(result, message_id, user_id, ts) -> PokemonEvent` in activity/pokemon.py (imports `PokemonEvent` from store.py; no cycle); `PokemonTracker.record_reply` now only extracts ids + `message.created_at`, calls `parse_reply`/`to_event` and stores.
+- Tests: tests/test_activity_pokemon.py `test_to_event` (catch, shiny, cooldown with/without wait) and a fake-message test that the creation time (not `edited_at`) is stored.
+- Docs: CLAUDE.md Architecture (pokemon.py lists `to_event`); no user-visible change.
+---

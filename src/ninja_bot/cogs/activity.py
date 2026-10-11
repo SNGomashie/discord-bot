@@ -15,7 +15,12 @@ from discord.ext import commands, tasks
 from ninja_bot.activity.embed import build_monthly_embed, build_profile_embed
 from ninja_bot.activity.formatting import month_label
 from ninja_bot.activity.periods import InvalidMonthError, Month, resolve_month
-from ninja_bot.activity.pokemon import Catch, PendingCommands, is_pokemon_command, parse_reply
+from ninja_bot.activity.pokemon import (
+    PendingCommands,
+    is_pokemon_command,
+    parse_reply,
+    to_event,
+)
 from ninja_bot.activity.report import (
     SHAME_LIMIT,
     MonthlyReport,
@@ -24,7 +29,7 @@ from ninja_bot.activity.report import (
     without_departed,
 )
 from ninja_bot.activity.reporter import MonthlyReporter
-from ninja_bot.activity.store import ActivityStore, PokemonEvent, SqliteActivityStore
+from ninja_bot.activity.store import ActivityStore, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
 from ninja_bot.cogs.cs2 import MemberCache, member_lookup
 from ninja_bot.cs2.channels import PostChannel
@@ -458,11 +463,7 @@ class PokemonTracker(commands.Cog):
             result = parse_reply(message.content, [embed.to_dict() for embed in message.embeds])
             if result is None:
                 return
-            ts = message.created_at.timestamp()
-            if isinstance(result, Catch):
-                event = PokemonEvent(message.id, user_id, ts, "catch", result.pokemon, result.shiny)
-            else:
-                event = PokemonEvent(message.id, user_id, ts, "cooldown")
+            event = to_event(result, message.id, user_id, message.created_at.timestamp())
             await self.store.record_pokemon_event(event)
         except Exception:
             log.exception("Failed to record a Toasty reply")

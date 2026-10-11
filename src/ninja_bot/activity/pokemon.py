@@ -9,6 +9,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ninja_bot.activity.store import PokemonEvent
+
 # Remembered `;pokemon` commands expire after this long (Toasty replies within seconds).
 PENDING_TTL_SECONDS = 300.0
 PENDING_MAX_SIZE = 256
@@ -88,6 +90,13 @@ def parse_reply(content: str, embeds: Sequence[Mapping[str, Any]]) -> Catch | Co
         if cooldown is not None:
             return Cooldown(wait_seconds=parse_duration(cooldown["wait"]))
     return None
+
+
+def to_event(result: Catch | Cooldown, message_id: int, user_id: int, ts: float) -> PokemonEvent:
+    """The event to store for a parsed reply; a cooldown's wait time isn't kept."""
+    if isinstance(result, Catch):
+        return PokemonEvent(message_id, user_id, ts, "catch", result.pokemon, result.shiny)
+    return PokemonEvent(message_id, user_id, ts, "cooldown")
 
 
 class PendingCommands:
