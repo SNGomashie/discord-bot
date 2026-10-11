@@ -18,10 +18,11 @@ _STEAM_ID_RE = re.compile(r"7656119\d{10}", re.ASCII)
 # Steam custom URL names: 2-32 ASCII letters, digits, `_` and `-`.
 VANITY_NAME_RE = re.compile(r"[A-Za-z0-9_-]{2,32}", re.ASCII)
 _PREFIX = r"(?:https?://)?(?:www\.)?steamcommunity\.com"
-_PROFILE_URL_RE = re.compile(_PREFIX + r"/profiles/(\d+)/?", re.ASCII | re.IGNORECASE)
-_VANITY_URL_RE = re.compile(
-    _PREFIX + r"/id/([^/?#]+)/?(?:[?#].*)?", re.ASCII | re.IGNORECASE | re.DOTALL
-)
+# Optional end of a profile URL: `/`, then an ignored `?...` query or `#...` fragment.
+_URL_TAIL = r"/?(?:[?#].*)?"
+_URL_FLAGS = re.ASCII | re.IGNORECASE | re.DOTALL
+_PROFILE_URL_RE = re.compile(_PREFIX + r"/profiles/(\d+)" + _URL_TAIL, _URL_FLAGS)
+_VANITY_URL_RE = re.compile(_PREFIX + r"/id/([^/?#]+)" + _URL_TAIL, _URL_FLAGS)
 _STEAM_ID_LENGTH = 17
 
 

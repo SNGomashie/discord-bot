@@ -1,18 +1,34 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
-from ninja_bot.cs2.models import MatchOutcome, Profile, RecentMatch
+from ninja_bot.cs2.models import (
+    ApiError,
+    Cs2Error,
+    Match,
+    MatchOutcome,
+    PlayerNotFoundError,
+    PrivateProfileError,
+    Profile,
+    RateLimitedError,
+    RecentMatch,
+)
 from ninja_bot.cs2.squad import (
+    MAX_LEADERBOARD_LINKS,
     LeaderboardRow,
     Metric,
     SquadEntry,
+    SquadFetch,
     Trend,
     compute_trend,
+    fetch_squad,
     format_metric_value,
     format_trend,
+    leaderboard_notes,
     metric_label,
     rank_squad,
 )
@@ -317,3 +333,158 @@ def test_metric_values_and_labels() -> None:
 )
 def test_format_metric_value(metric: Metric, value: float | None, expected: str) -> None:
     assert format_metric_value(metric, value) == expected
+
+
+# --- fetch_squad / leaderboard_notes ---
+
+
+def _steam_id(discord_id: int) -> str:
+    return f"7656119800000{discord_id:04d}"
+
+
+class _SquadProvider:
+    """Profile or error per Steam ID; records the order of `get_profile` calls."""
+
+    def __init__(self, results: Mapping[int, Profile | Exception]) -> None:
+        self.results = {_steam_id(d): r for d, r in results.items()}
+        self.calls: list[str] = []
+        self.active = 0
+        self.peak = 0
+
+    async def get_profile(self, steam64_id: str) -> Profile:
+        self.calls.append(steam64_id)
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0)
+        self.active -= 1
+        result = self.results[steam64_id]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def get_recent_matches(self, steam64_id: str) -> list[Match]:
+        raise NotImplementedError
+
+    async def get_match(self, game_id: str) -> Match:
+        raise NotImplementedError
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _links(results: Mapping[int, object]) -> dict[int, str]:
+    return {d: _steam_id(d) for d in results}
+
+
+def _squad(*discord_ids: int) -> dict[int, Profile | Exception]:
+    return {d: _profile(f"P{d}", _steam_id(d)) for d in discord_ids}
+
+
+def _ids(fetch: SquadFetch) -> list[int]:
+    return [entry.discord_id for entry in fetch.entries]
+
+
+async def test_fetch_squad_lowest_discord_id_first_one_at_a_time() -> None:
+    results = _squad(3, 1, 2)
+    provider = _SquadProvider(results)
+    fetch = await fetch_squad(provider, _links(results))
+    assert provider.calls == [_steam_id(1), _steam_id(2), _steam_id(3)]
+    assert provider.peak == 1
+    assert _ids(fetch) == [1, 2, 3]
+    assert fetch == SquadFetch(fetch.entries, 0, 0, rate_limited=False)
+
+
+@pytest.mark.parametrize(
+    "error", [PrivateProfileError(), PlayerNotFoundError(), ApiError()], ids=type
+)
+async def test_fetch_squad_skips_cs2_errors(error: Cs2Error) -> None:
+    results = _squad(1, 3)
+    results[2] = error
+    results[4] = ApiError()
+    provider = _SquadProvider(results)
+    fetch = await fetch_squad(provider, _links(results))
+    assert len(provider.calls) == 4
+    assert _ids(fetch) == [1, 3]
+    assert fetch.skipped == 2
+    assert not fetch.rate_limited
+    assert fetch.not_loaded == 0
+
+
+async def test_fetch_squad_rate_limit_stops_and_keeps_collected() -> None:
+    results = _squad(1, 2, 4, 5)
+    results[3] = RateLimitedError()
+    provider = _SquadProvider(results)
+    fetch = await fetch_squad(provider, _links(results))
+    assert provider.calls == [_steam_id(1), _steam_id(2), _steam_id(3)]
+    assert _ids(fetch) == [1, 2]
+    assert fetch.rate_limited
+    assert fetch.not_loaded == 3
+    assert fetch.skipped == 0
+
+
+async def test_fetch_squad_rate_limit_counts_only_wanted_links() -> None:
+    results = _squad(*range(2, 11))
+    results[1] = RateLimitedError()
+    provider = _SquadProvider(results)
+    fetch = await fetch_squad(provider, _links(results), limit=4)
+    assert fetch.entries == []
+    assert fetch.not_loaded == 4
+
+
+async def test_fetch_squad_unexpected_error_propagates() -> None:
+    results = _squad(1)
+    results[2] = RuntimeError("boom")
+    provider = _SquadProvider(results)
+    with pytest.raises(RuntimeError):
+        await fetch_squad(provider, _links(results))
+
+
+async def test_fetch_squad_caps_at_limit() -> None:
+    count = MAX_LEADERBOARD_LINKS + 5
+    results = _squad(*range(1, count + 1))
+    provider = _SquadProvider(results)
+    fetch = await fetch_squad(provider, _links(results))
+    assert MAX_LEADERBOARD_LINKS == 25
+    assert provider.calls == [_steam_id(d) for d in range(1, MAX_LEADERBOARD_LINKS + 1)]
+    assert len(fetch.entries) == MAX_LEADERBOARD_LINKS
+    small = await fetch_squad(_SquadProvider(results), _links(results), limit=2)
+    assert _ids(small) == [1, 2]
+
+
+async def test_fetch_squad_empty() -> None:
+    fetch = await fetch_squad(_SquadProvider({}), {})
+    assert fetch == SquadFetch([], 0, 0, rate_limited=False)
+
+
+@pytest.mark.parametrize(
+    ("fetch", "total", "expected"),
+    [
+        (SquadFetch([], 0, 0, rate_limited=False), 3, []),
+        (SquadFetch([], 2, 0, rate_limited=False), 3, ["Skipped: 2 (private or unavailable)"]),
+        (
+            SquadFetch([], 0, 2, rate_limited=True),
+            3,
+            ["Stopped early, Leetify is rate limiting us: 2 not loaded"],
+        ),
+        (
+            SquadFetch([], 1, 1, rate_limited=True),
+            3,
+            [
+                "Skipped: 1 (private or unavailable)",
+                "Stopped early, Leetify is rate limiting us: 1 not loaded",
+            ],
+        ),
+        (
+            SquadFetch([], 0, 0, rate_limited=False),
+            MAX_LEADERBOARD_LINKS,
+            [],
+        ),
+        (
+            SquadFetch([], 0, 0, rate_limited=False),
+            MAX_LEADERBOARD_LINKS + 1,
+            ["Only the first 25 linked players are checked"],
+        ),
+    ],
+)
+def test_leaderboard_notes(fetch: SquadFetch, total: int, expected: list[str]) -> None:
+    assert leaderboard_notes(fetch, total) == expected

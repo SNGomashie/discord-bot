@@ -146,14 +146,18 @@ class LeetifyClient:
             return FetchResponse(response.status, await response.text())
 
 
-async def full_match(provider: StatsProvider, match: Match) -> Match:
+async def full_match(provider: StatsProvider, match: Match, *, strict: bool = False) -> Match:
     """`match` with every player, re-fetching it by id when it looks incomplete.
 
     The match-history endpoint may return only the requested player, so a history
     entry without two non-empty teams is fetched again with `get_match`. The by-id
-    result is used only if it has at least as many players; on a CS2 error the
-    original is returned (logged at INFO). Anything that announces a match from the
-    history (e.g. the squad poller) must go through this function first.
+    result is used only if it has at least as many players.
+
+    On a CS2 error from `get_match`, the default (`strict=False`, used by
+    `/scoreboard`) logs at INFO and returns the history entry. With `strict=True`
+    the error is re-raised instead, so the caller can retry later. Anything that
+    announces a match from the history (e.g. the squad poller) must use
+    `strict=True`, so a partial match is never posted.
     """
     first, second = match.teams()
     if first and second:
@@ -161,6 +165,8 @@ async def full_match(provider: StatsProvider, match: Match) -> Match:
     try:
         fetched = await provider.get_match(match.id)
     except Cs2Error as exc:
+        if strict:
+            raise
         log.info("Full match lookup failed, using history entry (%s)", type(exc).__name__)
         return match
     if len(fetched.players) < len(match.players):

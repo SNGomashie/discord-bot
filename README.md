@@ -84,10 +84,11 @@ At most 25 linked players are checked. Private or unavailable Leetify profiles a
 ## Auto-posted matches (CS2)
 With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (default 300) for new matches of linked players and posts a scoreboard for each one in that channel. Unset, nothing runs.
 - **Silent seeding:** the first time the bot sees a linked player (after a new `/link`, or the first start with this feature), it records their current match history as already posted and announces nothing. Only matches played after that are posted.
-- **One post per match:** a match with several linked friends is posted once. The embed highlights the squad (`▸` in the team tables and a `Squad` field with each friend's stats, mentions that never ping) and is coloured by the squad's result.
+- **One post per match:** a match with several linked friends is posted once. The embed highlights the squad (`▸` in the team tables and a `Squad` field with each friend's stats, mentions that never ping) and is coloured by the squad's result. A linked friend who left the server is still listed in the `Squad` field with their Steam name, just without a mention.
+- **Complete scoreboards only:** if the full match (all players) can't be fetched from Leetify, the post waits and is retried in the next cycle instead of posting a partial scoreboard. Retries stop once the match passes the 3-hour age limit.
 - **Posted matches are remembered** in `<DATA_DIR>/cs2.sqlite3` (the newest 500), so a restart never reposts them. A match is marked as posted even if sending it failed, so a broken post is not retried every cycle.
 - **3-hour age limit:** matches that finished more than 3 hours ago are skipped (and marked as posted), so a bot that was offline for a while doesn't flood the channel.
-- **At most 3 posts per cycle**, oldest first; the rest follow in the next cycles. When Leetify rate limits the bot, it backs off and catches up in a later cycle.
+- **At most 3 posts per cycle**, oldest first; the rest follow in the next cycles. When Leetify rate limits the bot, it posts what it already has, skips the next cycle, and then resumes from the player where it stopped, so every friend gets checked.
 - Matches can take a while to appear on Leetify after they end, and players with a private Leetify profile are never posted.
 - The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links in that channel; otherwise it logs one warning and posts nothing. See [deployment](docs/deployment.md#permissions).
 
@@ -98,6 +99,10 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 - [ ] Restart the bot after a post → the same match is not posted again
 - [ ] Match with two linked friends → posted once, both in the `Squad` field
 - [ ] `/link` a new account that has older matches → none of its old matches are posted
+- [ ] Leetify rate limit → one skipped cycle (log), then posting resumes; if it can't be triggered, note it as unverifiable (covered by unit tests)
+- [ ] Remove a linked friend from the server, then they finish a match → the post lists their Steam name in the `Squad` field without a mention
+- [ ] `/link` a custom URL whose Steam nickname is Cyrillic or CJK → links the right account
+- [ ] `/link` a profile link with `?utm_source=x` (e.g. `https://steamcommunity.com/profiles/<id>?utm_source=x`) → accepted
 
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).

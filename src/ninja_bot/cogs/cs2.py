@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable, Mapping
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,7 +14,14 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from ninja_bot.cs2.awards import compute_awards
-from ninja_bot.cs2.cache import CachedStatsProvider
+from ninja_bot.cs2.cache import CachedStatsProvider, TtlCache
+from ninja_bot.cs2.channels import (
+    CHANNEL_MISSING,
+    CHANNEL_NOT_TEXT,
+    PostChannel,
+    channel_problem,
+    is_post_channel,
+)
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     build_announcement_embed,
@@ -33,7 +41,13 @@ from ninja_bot.cs2.models import (
 )
 from ninja_bot.cs2.poller import MatchPoller, NewMatch
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
-from ninja_bot.cs2.squad import Metric, SquadEntry, metric_label, rank_squad
+from ninja_bot.cs2.squad import (
+    Metric,
+    fetch_squad,
+    leaderboard_notes,
+    metric_label,
+    rank_squad,
+)
 from ninja_bot.cs2.steam import (
     MAX_STEAM_INPUT_LENGTH,
     SteamId,
@@ -57,18 +71,13 @@ NOTHING_TO_UNLINK_MESSAGE = "You don't have a linked Steam account."
 MAX_MATCH_ID_LENGTH = 64
 INVALID_MATCH_ID_MESSAGE = "That doesn't look like a Leetify match id."
 LEADERBOARD_COOLDOWN_SECONDS = 30.0
-# Profiles are fetched one by one, so this bounds the requests per /leaderboard.
-MAX_LEADERBOARD_LINKS = 25
 ALL_PROFILES_FAILED_MESSAGE = (
     "Couldn't load any linked player's Leetify profile. Please try again later."
 )
-# Channel types auto-posts can go to (all have guild permissions and `send`).
-POST_CHANNEL_TYPES = (discord.TextChannel, discord.Thread, discord.VoiceChannel)
-type PostChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
-# Causes for a skipped auto-post cycle; each is logged once until the channel works again.
-CHANNEL_MISSING = "missing"
-CHANNEL_NOT_TEXT = "not a text channel"
-CHANNEL_NO_PERMISSIONS = "missing View Channel, Send Messages or Embed Links"
+# Discord display names are cached briefly to save REST calls; a 404 for a shorter time.
+MEMBER_NAME_TTL_SECONDS = 300.0
+MEMBER_MISSING_TTL_SECONDS = 60.0
+MEMBER_CACHE_SIZE = 512
 
 
 @dataclass(frozen=True)
@@ -79,28 +88,6 @@ class AutoPost:
     poller: MatchPoller
     channel_id: int | None
     poll_seconds: float
-
-
-@dataclass(frozen=True)
-class SquadFetch:
-    entries: list[SquadEntry]
-    # Profiles that failed with a CS2 error (private, unknown, API error).
-    skipped: int
-    # Links never fetched because Leetify rate limited us (0 if not rate limited).
-    not_loaded: int
-    rate_limited: bool
-
-
-def leaderboard_notes(fetch: SquadFetch, total_links: int) -> list[str]:
-    """Footer notes for players missing from the leaderboard."""
-    notes: list[str] = []
-    if fetch.skipped:
-        notes.append(f"Skipped: {fetch.skipped} (private or unavailable)")
-    if fetch.rate_limited:
-        notes.append(f"Stopped early, Leetify is rate limiting us: {fetch.not_loaded} not loaded")
-    if total_links > MAX_LEADERBOARD_LINKS:
-        notes.append(f"Only the first {MAX_LEADERBOARD_LINKS} linked players are checked")
-    return notes
 
 
 def linked_message(name: str, steam64_id: str | None = None) -> str:
@@ -133,20 +120,62 @@ def clean_match_id(match: str | None) -> str | None:
     return match.strip() or None
 
 
-def member_lookup(guild: discord.Guild) -> MemberLookup:
-    """Display name of a guild member: cache first, then REST (no Server Members intent)."""
+class MemberCache:
+    """Display names per (guild ID, user ID); only definitive answers are cached."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        max_size: int = MEMBER_CACHE_SIZE,
+    ) -> None:
+        self.names: TtlCache[tuple[int, int], str] = TtlCache(
+            MEMBER_NAME_TTL_SECONDS, clock, max_size
+        )
+        # Confirmed "not a member" (Discord answered 404); the value is always True.
+        self.not_members: TtlCache[tuple[int, int], bool] = TtlCache(
+            MEMBER_MISSING_TTL_SECONDS, clock, max_size
+        )
+        # Lookups in progress, so concurrent callers share one REST call.
+        self.pending: dict[tuple[int, int], asyncio.Task[str | None]] = {}
+
+
+def member_lookup(guild: discord.Guild, cache: MemberCache) -> MemberLookup:
+    """Display name of a guild member: our cache, then the member cache, then REST.
+
+    No Server Members intent is needed. Transient HTTP errors are not cached, so the next
+    lookup tries again.
+    """
+
+    async def fetch(key: tuple[int, int]) -> str | None:
+        try:
+            member = await guild.fetch_member(key[1])
+        except discord.NotFound:
+            cache.not_members.set(key, True)
+            return None
+        except discord.HTTPException as exc:
+            log.warning("Could not fetch a Discord member: HTTP %s", exc.status)
+            return None
+        cache.names.set(key, member.display_name)
+        return member.display_name
 
     async def lookup(discord_id: int) -> str | None:
+        key = (guild.id, discord_id)
+        name = cache.names.get(key)
+        if name is not None:
+            return name
+        if cache.not_members.get(key):
+            return None
         member = guild.get_member(discord_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(discord_id)
-            except discord.NotFound:
-                return None
-            except discord.HTTPException as exc:
-                log.warning("Could not fetch a Discord member: HTTP %s", exc.status)
-                return None
-        return member.display_name
+        if member is not None:
+            cache.names.set(key, member.display_name)
+            return member.display_name
+        task = cache.pending.get(key)
+        if task is None:
+            task = asyncio.create_task(fetch(key))
+            cache.pending[key] = task
+            task.add_done_callback(lambda _: cache.pending.pop(key, None))
+        # Shielded so one cancelled caller doesn't cancel the lookup for the others.
+        return await asyncio.shield(task)
 
     return lookup
 
@@ -171,6 +200,7 @@ class Cs2(commands.Cog):
         resolver: SteamResolver | None = None,
         leaderboard_cooldown: UserCooldown | None = None,
         auto_post: AutoPost | None = None,
+        members: MemberCache | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -193,6 +223,8 @@ class Cs2(commands.Cog):
         self._skip_next_poll = False
         # Channel problems already logged, so a broken setup warns once instead of every cycle.
         self._channel_warnings: set[str] = set()
+        # Discord member names for scoreboards and auto-posts; in memory only.
+        self.members = members if members is not None else MemberCache()
 
     async def cog_load(self) -> None:
         if self.auto_post is None or self.auto_post.channel_id is None:
@@ -229,11 +261,12 @@ class Cs2(commands.Cog):
             channel = await self._post_channel(self.auto_post.bot, self.auto_post.channel_id)
             if channel is None:
                 return
-            for new_match in await self.auto_post.poller.poll():
+            result = await self.auto_post.poller.poll()
+            for new_match in result.matches:
                 await self._announce(channel, self.auto_post.poller, new_match)
-        except RateLimitedError:
-            log.info("Leetify rate limited the CS2 poll; skipping the next cycle")
-            self._skip_next_poll = True
+            if result.rate_limited:
+                log.info("Leetify rate limited the CS2 poll; skipping the next cycle")
+                self._skip_next_poll = True
         except Exception:
             log.exception("Unexpected error in a CS2 poll cycle")
 
@@ -243,7 +276,7 @@ class Cs2(commands.Cog):
         """Send one announcement; the match is confirmed even if the send failed."""
         try:
             match = new_match.match
-            identities = await self._match_identities_or_empty(channel.guild, match)
+            identities = await self._match_identities_or_none(channel.guild, match)
             embed = build_announcement_embed(
                 match, compute_awards(match), new_match.squad, identities=identities
             )
@@ -263,17 +296,12 @@ class Cs2(commands.Cog):
             except (discord.NotFound, discord.Forbidden):
                 self._warn_channel(CHANNEL_MISSING)
                 return None
-        if not isinstance(channel, POST_CHANNEL_TYPES):
+        if not is_post_channel(channel):
             self._warn_channel(CHANNEL_NOT_TEXT)
             return None
-        permissions = channel.permissions_for(channel.guild.me)
-        can_send = (
-            permissions.send_messages_in_threads
-            if isinstance(channel, discord.Thread)
-            else permissions.send_messages
-        )
-        if not (permissions.view_channel and can_send and permissions.embed_links):
-            self._warn_channel(CHANNEL_NO_PERMISSIONS)
+        problem = channel_problem(channel, channel.guild.me)
+        if problem is not None:
+            self._warn_channel(problem)
             return None
         self._channel_warnings.clear()
         return channel
@@ -478,7 +506,7 @@ class Cs2(commands.Cog):
         """Fetch and post the scoreboard; True only if the embed was posted."""
         try:
             match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
-            identities = await self._match_identities_or_empty(interaction.guild, match)
+            identities = await self._match_identities_or_none(interaction.guild, match)
             embed = build_match_embed(
                 match, compute_awards(match), steam64_id, profile, identities=identities
             )
@@ -518,7 +546,7 @@ class Cs2(commands.Cog):
                     interaction.followup.send(embed=build_leaderboard_embed([], metric))
                 )
                 return False
-            fetch = await self._fetch_squad(links)
+            fetch = await fetch_squad(self.stats, links)
             if not fetch.entries:
                 message = (
                     RateLimitedError.default_message
@@ -539,27 +567,6 @@ class Cs2(commands.Cog):
         return await _send_safely(
             interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         )
-
-    async def _fetch_squad(self, links: Mapping[int, str]) -> SquadFetch:
-        """Fetch linked profiles one by one (lowest Discord ID first, capped).
-
-        CS2 errors skip the player; a rate limit stops fetching and keeps what was collected.
-        """
-        wanted = sorted(links.items())[:MAX_LEADERBOARD_LINKS]
-        entries: list[SquadEntry] = []
-        skipped = 0
-        for index, (discord_id, steam64_id) in enumerate(wanted):
-            try:
-                profile = await self.stats.get_profile(steam64_id)
-            except RateLimitedError:
-                log.info("Leaderboard stopped early: Leetify rate limit")
-                return SquadFetch(entries, skipped, len(wanted) - index, rate_limited=True)
-            except Cs2Error as exc:
-                log.info("Leaderboard skipped a player: %s", type(exc).__name__)
-                skipped += 1
-                continue
-            entries.append(SquadEntry(discord_id, profile))
-        return SquadFetch(entries, skipped, 0, rate_limited=False)
 
     async def _fetch_match_and_profile(
         self, steam64_id: str, game_id: str | None
@@ -589,17 +596,23 @@ class Cs2(commands.Cog):
         """Linked server members among the match players; empty outside a server."""
         if guild is None:
             return {}
-        return await resolve_identities(match.players, self.links, member_lookup(guild))
+        return await resolve_identities(
+            match.players, self.links, member_lookup(guild, self.members)
+        )
 
-    async def _match_identities_or_empty(
+    async def _match_identities_or_none(
         self, guild: discord.Guild | None, match: Match
-    ) -> dict[str, Identity]:
-        """Names and mentions are extras, so a failure here never stops the scoreboard."""
+    ) -> dict[str, Identity] | None:
+        """The linked members in the match, or None if the lookup failed.
+
+        Names and mentions are extras, so a failure here never stops the scoreboard; None
+        (lookup broke) is kept apart from `{}` (nobody in the match is a member).
+        """
         try:
             return await self._match_identities(guild, match)
         except Exception:
             log.exception("Posting scoreboard without Discord names")
-            return {}
+            return None
 
     async def _fetch_profile_or_none(self, steam64_id: str) -> Profile | None:
         """The profile only adds the breakdown, so its CS2 errors don't stop the scoreboard."""

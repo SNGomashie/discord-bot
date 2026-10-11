@@ -352,10 +352,11 @@ async def test_full_match_refetches_one_team_history_entry() -> None:
     assert stats.match_calls == [full.id]
 
 
-async def test_full_match_skips_request_when_complete() -> None:
+@pytest.mark.parametrize("strict", [False, True])
+async def test_full_match_skips_request_when_complete(strict: bool) -> None:
     full = _full()
     stats = FullMatchStats(error=AssertionError("should not be called"))
-    assert await full_match(stats, full) is full
+    assert await full_match(stats, full, strict=strict) is full
     assert stats.match_calls == []
 
 
@@ -370,12 +371,26 @@ async def test_full_match_cs2_error_returns_original(
     assert all(r.levelno == logging.INFO for r in caplog.records)
 
 
-async def test_full_match_fewer_players_returns_original() -> None:
+@pytest.mark.parametrize("error", [ApiError(), MatchNotFoundError(), RateLimitedError()])
+async def test_full_match_strict_reraises_cs2_error(error: Exception) -> None:
+    partial = _only(_full(), 1)
+    with pytest.raises(type(error)):
+        await full_match(FullMatchStats(error=error), partial, strict=True)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+async def test_full_match_fewer_players_returns_original(strict: bool) -> None:
     full = _full()
     one_team = _one_team(full)
     stats = FullMatchStats(by_id=_only(full, 1))
-    assert await full_match(stats, one_team) is one_team
+    assert await full_match(stats, one_team, strict=strict) is one_team
     assert stats.match_calls == [full.id]
+
+
+async def test_full_match_strict_uses_fetched_match() -> None:
+    full = _full()
+    stats = FullMatchStats(by_id=full)
+    assert await full_match(stats, _only(full, 1), strict=True) is full
 
 
 async def test_full_match_unexpected_error_propagates() -> None:

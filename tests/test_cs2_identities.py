@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from ninja_bot.cogs.cs2 import Cs2, member_lookup
+from ninja_bot.cogs.cs2 import (
+    MEMBER_MISSING_TTL_SECONDS,
+    MEMBER_NAME_TTL_SECONDS,
+    Cs2,
+    MemberCache,
+    member_lookup,
+)
 from ninja_bot.cs2.identities import MAX_LOOKUPS, Identity, resolve_identities
 from ninja_bot.cs2.models import Match, PlayerMatchStats
 
@@ -167,7 +173,7 @@ async def test_cog_lookup_cache_hit() -> None:
     guild = MagicMock()
     guild.get_member.return_value = make_member("Cached")
     guild.fetch_member = AsyncMock()
-    assert await member_lookup(guild)(1) == "Cached"
+    assert await member_lookup(guild, MemberCache())(1) == "Cached"
     guild.fetch_member.assert_not_awaited()
 
 
@@ -175,7 +181,7 @@ async def test_cog_lookup_fetch_fallback() -> None:
     guild = MagicMock()
     guild.get_member.return_value = None
     guild.fetch_member = AsyncMock(return_value=make_member("Fetched"))
-    assert await member_lookup(guild)(1) == "Fetched"
+    assert await member_lookup(guild, MemberCache())(1) == "Fetched"
     guild.fetch_member.assert_awaited_once_with(1)
 
 
@@ -183,7 +189,7 @@ async def test_cog_lookup_not_found() -> None:
     guild = MagicMock()
     guild.get_member.return_value = None
     guild.fetch_member = AsyncMock(side_effect=http_error(404))
-    assert await member_lookup(guild)(1) is None
+    assert await member_lookup(guild, MemberCache())(1) is None
 
 
 async def test_cog_lookup_http_error(caplog: pytest.LogCaptureFixture) -> None:
@@ -191,8 +197,131 @@ async def test_cog_lookup_http_error(caplog: pytest.LogCaptureFixture) -> None:
     guild.get_member.return_value = None
     guild.fetch_member = AsyncMock(side_effect=http_error(500))
     with caplog.at_level(logging.WARNING):
-        assert await member_lookup(guild)(1) is None
+        assert await member_lookup(guild, MemberCache())(1) is None
     assert "500" in caplog.text
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def make_guild(guild_id: int = 10, member: MagicMock | None = None) -> MagicMock:
+    """Guild whose member cache is empty unless `member` is given."""
+    guild = MagicMock()
+    guild.id = guild_id
+    guild.get_member.return_value = member
+    guild.fetch_member = AsyncMock(return_value=make_member("Fetched"))
+    return guild
+
+
+async def test_cached_lookup_makes_no_discord_calls() -> None:
+    guild = make_guild()
+    lookup = member_lookup(guild, MemberCache(FakeClock()))
+    assert await lookup(1) == "Fetched"
+    guild.get_member.reset_mock()
+    assert await lookup(1) == "Fetched"
+    guild.get_member.assert_not_called()
+    guild.fetch_member.assert_awaited_once_with(1)
+
+
+async def test_member_cache_hit_is_cached() -> None:
+    guild = make_guild(member=make_member("Cached"))
+    lookup = member_lookup(guild, MemberCache(FakeClock()))
+    assert await lookup(1) == "Cached"
+    assert await lookup(1) == "Cached"
+    guild.get_member.assert_called_once_with(1)
+    guild.fetch_member.assert_not_awaited()
+
+
+async def test_not_found_is_cached_then_retried() -> None:
+    clock = FakeClock()
+    guild = make_guild()
+    guild.fetch_member.side_effect = http_error(404)
+    lookup = member_lookup(guild, MemberCache(clock))
+    assert await lookup(1) is None
+    clock.now += MEMBER_MISSING_TTL_SECONDS - 1
+    assert await lookup(1) is None
+    assert guild.fetch_member.await_count == 1
+    clock.now += 1
+    guild.fetch_member.side_effect = None
+    assert await lookup(1) == "Fetched"
+    assert guild.fetch_member.await_count == 2
+
+
+async def test_http_error_is_not_cached(caplog: pytest.LogCaptureFixture) -> None:
+    guild = make_guild()
+    guild.fetch_member.side_effect = http_error(429)
+    lookup = member_lookup(guild, MemberCache(FakeClock()))
+    with caplog.at_level(logging.WARNING):
+        assert await lookup(1) is None
+    assert all(record.exc_info is None for record in caplog.records)
+    guild.fetch_member.side_effect = None
+    assert await lookup(1) == "Fetched"
+    assert guild.fetch_member.await_count == 2
+
+
+async def test_forbidden_is_not_cached_as_stranger() -> None:
+    guild = make_guild()
+    response = MagicMock(status=403, reason="Forbidden")
+    guild.fetch_member.side_effect = discord.Forbidden(response, "no")
+    cache = MemberCache(FakeClock())
+    assert await member_lookup(guild, cache)(1) is None
+    assert cache.not_members.get((10, 1)) is None
+
+
+async def test_names_expire_after_ttl() -> None:
+    clock = FakeClock()
+    guild = make_guild()
+    lookup = member_lookup(guild, MemberCache(clock))
+    await lookup(1)
+    clock.now += MEMBER_NAME_TTL_SECONDS - 1
+    await lookup(1)
+    assert guild.fetch_member.await_count == 1
+    clock.now += 1
+    guild.fetch_member.return_value = make_member("Renamed")
+    assert await lookup(1) == "Renamed"
+    assert guild.fetch_member.await_count == 2
+
+
+async def test_guilds_do_not_collide() -> None:
+    cache = MemberCache(FakeClock())
+    first = make_guild(10, make_member("In first"))
+    second = make_guild(20)
+    second.fetch_member.side_effect = http_error(404)
+    assert await member_lookup(first, cache)(1) == "In first"
+    assert await member_lookup(second, cache)(1) is None
+    assert await member_lookup(first, cache)(1) == "In first"
+    second.fetch_member.assert_awaited_once_with(1)
+
+
+async def test_concurrent_lookups_share_rest_calls() -> None:
+    gate = asyncio.Event()
+    guild = make_guild()
+
+    async def fetch_member(discord_id: int) -> MagicMock:
+        await gate.wait()
+        return make_member(f"User {discord_id}")
+
+    guild.fetch_member = AsyncMock(side_effect=fetch_member)
+    lookup = member_lookup(guild, MemberCache(FakeClock()))
+    tasks = [asyncio.create_task(lookup(i % 5)) for i in range(10)]
+    await asyncio.sleep(0)
+    gate.set()
+    names = await asyncio.gather(*tasks)
+    assert names == [f"User {i % 5}" for i in range(10)]
+    assert guild.fetch_member.await_count == 5
+
+
+async def test_cog_keeps_one_member_cache() -> None:
+    cog = Cs2(MagicMock(), FakeLinks({STEAM_A: 1}))
+    guild = make_guild()
+    await cog._match_identities(guild, make_match(STEAM_A))
+    await cog._match_identities(guild, make_match(STEAM_A))
+    guild.fetch_member.assert_awaited_once_with(1)
 
 
 def make_match(*steam64_ids: str) -> Match:
@@ -221,3 +350,22 @@ async def test_cog_identities_in_guild() -> None:
     interaction.guild.get_member.return_value = make_member("Alice")
     result = await cog._match_identities(interaction.guild, make_match(STEAM_A, STEAM_B))
     assert result == {STEAM_A: Identity(STEAM_A, 1, "Alice")}
+
+
+class BrokenLinks(FakeLinks):
+    async def discord_ids_for(self, steam64_ids: Collection[str]) -> dict[str, int]:
+        raise RuntimeError("db down")
+
+
+async def test_cog_identities_or_none_on_failure(caplog: pytest.LogCaptureFixture) -> None:
+    cog = Cs2(MagicMock(), BrokenLinks())
+    assert await cog._match_identities_or_none(make_guild(), make_match(STEAM_A)) is None
+    assert "Posting scoreboard without Discord names" in caplog.text
+
+
+async def test_cog_identities_or_none_returns_dict() -> None:
+    cog = Cs2(MagicMock(), FakeLinks({STEAM_A: 1}))
+    guild = make_guild()
+    assert await cog._match_identities_or_none(guild, make_match(STEAM_B)) == {}
+    result = await cog._match_identities_or_none(guild, make_match(STEAM_A))
+    assert result == {STEAM_A: Identity(STEAM_A, 1, "Fetched")}

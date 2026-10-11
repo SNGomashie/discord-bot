@@ -102,7 +102,6 @@ def test_bare_vanity_names(text: str) -> None:
         f"https://evilsteamcommunity.com/profiles/{STEAM_ID}",
         f"ftp://steamcommunity.com/profiles/{STEAM_ID}",
         f"https://steamcommunity.com/profiles/{STEAM_ID}/games",
-        f"https://steamcommunity.com/profiles/{STEAM_ID}?tab=all",
         "https://steamcommunity.com/profiles/",
         "https://steamcommunity.com/profiles/12345678901234567",
         "https://steamcommunity.com/profiles/gaben",
@@ -136,6 +135,70 @@ def test_rejects_overlong_input_before_parsing() -> None:
     with pytest.raises(InvalidSteamIdError):
         parse_steam_target(text)
     assert parse_steam_target(text[:-1]) == SteamId(STEAM_ID)
+
+
+# Both URL kinds with the value they parse to.
+URL_KINDS = [
+    pytest.param(
+        f"https://steamcommunity.com/profiles/{STEAM_ID}", SteamId(STEAM_ID), id="profiles"
+    ),
+    pytest.param("https://steamcommunity.com/id/gaben", VanityName("gaben"), id="id"),
+]
+URL_TAILS = [
+    "?utm_source=x",
+    "#top",
+    "/?utm_source=x",
+    "/#top",
+    "?",
+    "#",
+    "/?",
+    "?q=gäben&x=✓",
+    "#ünïcode",
+    f"?id={STEAM_ID[:-1]}9&name=other",
+    "?a=1\nb=2",
+]
+
+
+@pytest.mark.parametrize("tail", URL_TAILS)
+@pytest.mark.parametrize(("url", "expected"), URL_KINDS)
+def test_url_tail_is_ignored(url: str, expected: SteamId | VanityName, tail: str) -> None:
+    assert parse_steam_target(url) == expected
+    assert parse_steam_target(url + tail) == expected
+    assert parse_steam_target(f"  {url}{tail}  ") == expected
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "https://steamcommunity.com.evil.example",
+        "steamcommunity.com.evil.example",
+        "https://evil.example",
+        "https://evilsteamcommunity.com",
+    ],
+)
+@pytest.mark.parametrize("path", [f"/profiles/{STEAM_ID}", "/id/gaben"])
+@pytest.mark.parametrize("tail", ["", "?utm_source=x", "/#top"])
+def test_url_tail_does_not_allow_other_hosts(prefix: str, path: str, tail: str) -> None:
+    with pytest.raises(InvalidSteamIdError):
+        parse_steam_target(prefix + path + tail)
+
+
+@pytest.mark.parametrize(
+    "path", [f"/profiles/{STEAM_ID}/games", "/id/gaben/games", f"/profiles/{STEAM_ID}x", "/id/"]
+)
+@pytest.mark.parametrize("tail", ["?utm_source=x", "#top"])
+def test_url_tail_does_not_allow_extra_segments(path: str, tail: str) -> None:
+    with pytest.raises(InvalidSteamIdError):
+        parse_steam_target("https://steamcommunity.com" + path + tail)
+
+
+@pytest.mark.parametrize(("url", "expected"), URL_KINDS)
+def test_url_with_tail_respects_input_cap(url: str, expected: SteamId | VanityName) -> None:
+    text = url + "?" + "a" * (MAX_STEAM_INPUT_LENGTH - len(url) - 1)
+    assert len(text) == MAX_STEAM_INPUT_LENGTH
+    assert parse_steam_target(text) == expected
+    with pytest.raises(InvalidSteamIdError):
+        parse_steam_target(text + "a")
 
 
 def test_rejects_overlong_vanity_url() -> None:

@@ -31,6 +31,17 @@ class NewMatch:
     squad: tuple[SquadMember, ...]
 
 
+@dataclass(frozen=True)
+class PollResult:
+    """One poll cycle: completed matches (safe to announce) and whether Leetify refused a request.
+
+    The caller owns the backoff: after `rate_limited` it should skip a cycle.
+    """
+
+    matches: list[NewMatch]
+    rate_limited: bool = False
+
+
 class MatchPoller:
     """Collects unposted matches of linked players; never marks them posted itself.
 
@@ -52,20 +63,28 @@ class MatchPoller:
         self._clock = clock
         self._max_age_seconds = max_age_seconds
         self._max_per_cycle = max_per_cycle
+        # The player whose history request was refused by a rate limit; the next cycle
+        # starts there so players later in the list are not starved.
+        self._resume_from: str | None = None
 
-    async def poll(self) -> list[NewMatch]:
+    async def poll(self) -> PollResult:
         links = await self._store.all_links()
         # Steam ID -> lowest linked Discord ID, in Discord ID order.
         members: dict[str, int] = {}
         for discord_id in sorted(links):
             members.setdefault(links[discord_id], discord_id)
 
+        rate_limited = False
         candidates: dict[str, Match] = {}
-        for steam64_id in members:
+        order = _rotated(list(members), self._resume_from)
+        self._resume_from = None
+        for steam64_id in order:
             try:
                 matches = await self._provider.get_recent_matches(steam64_id)
             except RateLimitedError:
                 log.info("Leetify rate limited the match poller; stopping this cycle")
+                rate_limited = True
+                self._resume_from = steam64_id
                 break
             except Cs2Error as exc:
                 log.info("Skipping a player in the match poller (%s)", type(exc).__name__)
@@ -74,12 +93,22 @@ class MatchPoller:
                 candidates.setdefault(match.id, match)
 
         fresh = await self._drop_stale(list(candidates.values()))
-        selected = sorted(fresh, key=_oldest_first_key)[: self._max_per_cycle]
         result: list[NewMatch] = []
-        for match in selected:
-            full = await full_match(self._provider, match)
+        for match in sorted(fresh, key=_oldest_first_key):
+            if len(result) >= self._max_per_cycle:
+                break
+            try:
+                full = await full_match(self._provider, match, strict=True)
+            except RateLimitedError:
+                log.info("Leetify rate limited the match poller; stopping this cycle")
+                rate_limited = True
+                break
+            except Cs2Error as exc:
+                # Not marked posted: retried next cycle until the age limit drops it.
+                log.info("Skipping match %s in the match poller (%s)", match.id, type(exc).__name__)
+                continue
             result.append(NewMatch(full, _squad(full, members)))
-        return result
+        return PollResult(result, rate_limited)
 
     async def confirm(self, new_match: NewMatch) -> None:
         await self._store.mark_posted([new_match.match.id])
@@ -109,6 +138,14 @@ def _oldest_first_key(match: Match) -> tuple[bool, float]:
     if match.finished_at is None:
         return (True, 0.0)
     return (False, match.finished_at.timestamp())
+
+
+def _rotated(steam64_ids: list[str], start: str | None) -> list[str]:
+    """`steam64_ids` starting at `start`, wrapping around; unchanged if `start` is not in it."""
+    if start is None or start not in steam64_ids:
+        return steam64_ids
+    index = steam64_ids.index(start)
+    return steam64_ids[index:] + steam64_ids[:index]
 
 
 def _squad(match: Match, members: dict[str, int]) -> tuple[SquadMember, ...]:

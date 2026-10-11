@@ -20,7 +20,6 @@ from ninja_bot.cogs.cs2 import (
     INVALID_MATCH_ID_MESSAGE,
     LEADERBOARD_COOLDOWN_SECONDS,
     LINK_COOLDOWN_SECONDS,
-    MAX_LEADERBOARD_LINKS,
     MAX_MATCH_ID_LENGTH,
     NOTHING_TO_UNLINK_MESSAGE,
     UNLINKED_MESSAGE,
@@ -1364,7 +1363,8 @@ ABSENT_ID = 8  # linked, but not a member of the server
 class FakeGuild:
     """Members by ID; `fetch_member` raises NotFound for anyone else (like Discord)."""
 
-    def __init__(self, members: Mapping[int, str]) -> None:
+    def __init__(self, members: Mapping[int, str], guild_id: int = 1) -> None:
+        self.id = guild_id
         self.members = dict(members)
         self.fetch_calls: list[int] = []
 
@@ -1561,26 +1561,6 @@ async def test_leaderboard_ranks_linked_players() -> None:
     assert cooldown.try_acquire(USER_ID) > 0
 
 
-async def test_leaderboard_fetches_sequentially() -> None:
-    active = 0
-    peak = 0
-    cog, stats, _ = leaderboard_cog(squad((1, "A", 1), (2, "B", 2), (3, "C", 3)))
-    original = stats.get_profile
-
-    async def get_profile(steam64_id: str) -> Profile:
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        await asyncio.sleep(0)
-        active -= 1
-        return await original(steam64_id)
-
-    stats.get_profile = get_profile  # type: ignore[method-assign]
-    await cog.handle_leaderboard(make_interaction(), Metric.AIM)
-    assert peak == 1
-    assert len(stats.profile_calls) == 3
-
-
 async def test_leaderboard_defers_before_loading_links() -> None:
     calls: list[str] = []
     cog, _, _ = leaderboard_cog(squad((1, "A", 1)))
@@ -1625,49 +1605,20 @@ async def test_leaderboard_posts_each_metric(metric: Metric) -> None:
     assert "<@1>" in leaderboard_lines(embed)[0]
 
 
-@pytest.mark.parametrize(
-    "error", [PrivateProfileError(), PlayerNotFoundError(), ApiError()], ids=type
-)
-async def test_leaderboard_skips_failed_profiles(error: Cs2Error) -> None:
-    results = squad((1, "Alice", 50), (3, "Cy", 60))
-    results[2] = error
-    results[4] = ApiError()
-    cog, stats, cooldown = leaderboard_cog(results)
-    interaction = make_interaction()
-    await cog.handle_leaderboard(interaction, Metric.AIM)
-    assert len(stats.profile_calls) == 4
-    embed = posted_embed(interaction)
-    lines = leaderboard_lines(embed)
-    assert len(lines) == 2
-    assert "<@3>" in lines[0]
-    assert embed.footer.text == "Skipped: 2 (private or unavailable)"
-    assert cooldown.try_acquire(USER_ID) > 0
-
-
-async def test_leaderboard_rate_limit_posts_collected_players() -> None:
-    results = squad((1, "Alice", 50), (2, "Bob", 60), (4, "Dee", 70))
-    results[3] = RateLimitedError()
-    cog, stats, cooldown = leaderboard_cog(results)
-    interaction = make_interaction()
-    await cog.handle_leaderboard(interaction, Metric.AIM)
-    assert stats.profile_calls == [squad_steam_id(1), squad_steam_id(2), squad_steam_id(3)]
-    embed = posted_embed(interaction)
-    assert len(leaderboard_lines(embed)) == 2
-    assert embed.footer.text == "Stopped early, Leetify is rate limiting us: 2 not loaded"
-    assert cooldown.try_acquire(USER_ID) > 0
-
-
-async def test_leaderboard_rate_limit_and_skips_share_the_footer() -> None:
+async def test_leaderboard_footer_shows_fetch_notes() -> None:
     results = squad((1, "Alice", 50))
     results[2] = PrivateProfileError()
     results[3] = RateLimitedError()
-    cog, _, _ = leaderboard_cog(results)
+    cog, _, cooldown = leaderboard_cog(results)
     interaction = make_interaction()
     await cog.handle_leaderboard(interaction, Metric.AIM)
-    assert posted_embed(interaction).footer.text == (
+    embed = posted_embed(interaction)
+    assert len(leaderboard_lines(embed)) == 1
+    assert embed.footer.text == (
         "Skipped: 1 (private or unavailable)"
         " · Stopped early, Leetify is rate limiting us: 1 not loaded"
     )
+    assert cooldown.try_acquire(USER_ID) > 0
 
 
 async def test_leaderboard_rate_limited_first_replies_and_refunds() -> None:
@@ -1697,19 +1648,6 @@ async def test_leaderboard_all_failures_reply_error_and_refund() -> None:
     await cog.handle_leaderboard(interaction)
     assert followup_reply(interaction) == ((ALL_PROFILES_FAILED_MESSAGE,), {})
     assert cooldown.try_acquire(USER_ID) == 0
-
-
-async def test_leaderboard_fetches_at_most_the_link_cap() -> None:
-    count = MAX_LEADERBOARD_LINKS + 5
-    cog, stats, _ = leaderboard_cog(squad(*((d, f"P{d}", float(d)) for d in range(1, count + 1))))
-    interaction = make_interaction()
-    await cog.handle_leaderboard(interaction, Metric.AIM)
-    assert MAX_LEADERBOARD_LINKS == 25
-    assert stats.profile_calls == [squad_steam_id(d) for d in range(1, MAX_LEADERBOARD_LINKS + 1)]
-    embed = posted_embed(interaction)
-    shown = "\n".join(f.value or "" for f in embed.fields).split("\n")
-    assert len(shown) == MAX_LEADERBOARD_LINKS
-    assert embed.footer.text == "Only the first 25 linked players are checked"
 
 
 async def test_leaderboard_cooldown_blocks_second_use() -> None:
