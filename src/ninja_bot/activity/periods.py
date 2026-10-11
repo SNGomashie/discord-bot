@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import calendar
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 MONTH_RE = re.compile(r"(\d{4})-(\d{2})", re.ASCII)
@@ -62,6 +64,34 @@ class Month:
         if self.month == 12:
             return Month(self.year + 1, 1)
         return Month(self.year, self.month + 1)
+
+
+def _next_boundary(local: datetime, unit: Literal["hour", "day"]) -> float:
+    """Timestamp of the next local hour or midnight after `local` (wall-clock arithmetic)."""
+    if unit == "hour":
+        top = local.replace(minute=0, second=0, microsecond=0)
+        return (top + timedelta(hours=1)).timestamp()
+    next_day = local.date() + timedelta(days=1)
+    return datetime.combine(next_day, time(), tzinfo=local.tzinfo).timestamp()
+
+
+def split_local(
+    start: float, end: float, tz: ZoneInfo, unit: Literal["hour", "day"]
+) -> Iterator[tuple[float, float, datetime]]:
+    """Split [start, end) at local hour or day boundaries.
+
+    Yields (piece start, piece end, local start of piece); pieces are real seconds,
+    so DST days have 23 or 25 hours. Nothing is yielded when `end <= start`.
+    """
+    cursor = start
+    while cursor < end:
+        local = datetime.fromtimestamp(cursor, tz)
+        boundary = _next_boundary(local, unit)
+        if boundary <= cursor:  # wall-clock arithmetic around a DST change
+            boundary = cursor + 3600
+        piece_end = min(boundary, end)
+        yield cursor, piece_end, local
+        cursor = piece_end
 
 
 def month_of(timestamp: float, tz: ZoneInfo) -> Month:

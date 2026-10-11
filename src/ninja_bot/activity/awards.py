@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
-from ninja_bot.activity.periods import Month
+from ninja_bot.activity.periods import Month, split_local
 from ninja_bot.activity.stats import UserStats, clip
 from ninja_bot.activity.store import Session
 
@@ -80,17 +80,8 @@ def _clipped(
 
 def _hour_pieces(start: float, end: float, tz: ZoneInfo) -> Iterator[tuple[datetime, float]]:
     """Split [start, end) at local hour boundaries: (local start of piece, real seconds)."""
-    cursor = start
-    while cursor < end:
-        local = datetime.fromtimestamp(cursor, tz)
-        boundary = (
-            local.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        ).timestamp()
-        if boundary <= cursor:  # wall-clock arithmetic around a DST change
-            boundary = cursor + 3600
-        piece_end = min(boundary, end)
-        yield local, piece_end - cursor
-        cursor = piece_end
+    for piece_start, piece_end, local in split_local(start, end, tz, "hour"):
+        yield local, piece_end - piece_start
 
 
 def _winners(

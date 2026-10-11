@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -14,6 +15,7 @@ from ninja_bot.activity.periods import (
     month_of,
     parse_month,
     resolve_month,
+    split_local,
 )
 
 UTC_TZ = ZoneInfo("UTC")
@@ -174,3 +176,79 @@ def test_resolve_month_rejects_months_before_min_year() -> None:
             resolve_month(text, UTC_TZ, now)
         assert excinfo.value.message == INVALID_MONTH_MESSAGE
     assert resolve_month("2015-01", UTC_TZ, now) == Month(2015, 1)
+
+
+def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> float:
+    return datetime(year, month, day, hour, minute, tzinfo=AMSTERDAM).timestamp()
+
+
+def _pieces(start: float, end: float, unit: Literal["hour", "day"]) -> list[tuple[float, float]]:
+    return [
+        (piece_start, piece_end)
+        for piece_start, piece_end, _ in split_local(start, end, AMSTERDAM, unit)
+    ]
+
+
+def test_split_local_within_one_hour_is_one_piece() -> None:
+    start, end = _ts(2026, 9, 3, 14, 10), _ts(2026, 9, 3, 14, 50)
+    assert list(split_local(start, end, AMSTERDAM, "hour")) == [
+        (start, end, datetime(2026, 9, 3, 14, 10, tzinfo=AMSTERDAM))
+    ]
+    assert _pieces(start, end, "day") == [(start, end)]
+
+
+def test_split_local_spanning_midnight() -> None:
+    start, end = _ts(2026, 9, 3, 23, 30), _ts(2026, 9, 4, 0, 45)
+    midnight = _ts(2026, 9, 4)
+    assert _pieces(start, end, "day") == [(start, midnight), (midnight, end)]
+    assert _pieces(start, end, "hour") == [(start, midnight), (midnight, end)]
+    days = [local.day for _, _, local in split_local(start, end, AMSTERDAM, "day")]
+    assert days == [3, 4]
+
+
+def test_split_local_spanning_several_days() -> None:
+    start, end = _ts(2026, 9, 3, 12), _ts(2026, 9, 6, 6)
+    pieces = list(split_local(start, end, AMSTERDAM, "day"))
+    assert [local.day for _, _, local in pieces] == [3, 4, 5, 6]
+    assert [piece_end - piece_start for piece_start, piece_end, _ in pieces] == [
+        12 * 3600,
+        24 * 3600,
+        24 * 3600,
+        6 * 3600,
+    ]
+    hours = _pieces(start, end, "hour")
+    assert len(hours) == 66
+    assert hours[0][0] == start and hours[-1][1] == end
+
+
+def test_split_local_spring_forward_day() -> None:
+    start, end = _ts(2026, 3, 29), _ts(2026, 3, 30)
+    days = list(split_local(start, end, AMSTERDAM, "day"))
+    assert [(piece_end - piece_start, local.day) for piece_start, piece_end, local in days] == [
+        (23 * 3600, 29)
+    ]
+    hours = list(split_local(start, end, AMSTERDAM, "hour"))
+    assert len(hours) == 23
+    assert all(piece_end - piece_start == 3600 for piece_start, piece_end, _ in hours)
+    assert 2 not in [local.hour for _, _, local in hours]
+    assert sum(piece_end - piece_start for piece_start, piece_end, _ in hours) == end - start
+
+
+def test_split_local_fall_back_day() -> None:
+    start, end = _ts(2026, 10, 25), _ts(2026, 10, 26)
+    days = list(split_local(start, end, AMSTERDAM, "day"))
+    assert [(piece_end - piece_start, local.day) for piece_start, piece_end, local in days] == [
+        (25 * 3600, 25)
+    ]
+    hours = list(split_local(start, end, AMSTERDAM, "hour"))
+    assert sum(piece_end - piece_start for piece_start, piece_end, _ in hours) == 25 * 3600
+    # The repeated 02:00 hour stays one two-hour piece: both count as local hour 2.
+    two_am = [piece_end - piece_start for piece_start, piece_end, local in hours if local.hour == 2]
+    assert two_am == [2 * 3600]
+    assert len(hours) == 24
+
+
+def test_split_local_zero_length_interval_yields_nothing() -> None:
+    point = _ts(2026, 9, 3, 12)
+    assert list(split_local(point, point, AMSTERDAM, "hour")) == []
+    assert list(split_local(point, point - 60, AMSTERDAM, "day")) == []

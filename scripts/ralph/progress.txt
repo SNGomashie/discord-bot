@@ -1,6 +1,7 @@
 # Ralph progress log — started 2026-10-11 (feature: activity-tracking; patterns carried over)
 
 ## Codebase Patterns
+- Local-time splitting: `periods.split_local(start, end, tz, "hour"|"day")` yields (piece_start, piece_end, local) in real seconds with the DST no-advance guard; use it instead of hand-rolled cursor loops. On the fall-back day the repeated 02:00 hour is one 2-hour piece (local.hour 2).
 - Auto-post channels (src/ninja_bot/posting.py): `PostChannelResolver(bot, warning_template, channel_id).resolve()` is the one get_channel -> fetch_channel -> is_post_channel -> channel_problem flow (warn once per cause, cleared on success; non-NotFound/Forbidden HTTP errors = `CHANNEL_UNAVAILABLE`). Cogs build it only when the channel id is set (`self._post_channel` None = auto-post off) and keep a local `_send_safely` that just binds the `send_safely(send, what)` log label.
 - Help (tasks/prd-help-command.md): every /help string lives in `src/ninja_bot/help/content.py` (`COMMANDS` of `CommandHelp`, `GROUPS`, text constants incl. `OTHER_GROUP_TITLE`, `SUGGESTIONS_TEXT` `{names}`/`NO_SUGGESTIONS` for the `{suggestions}` slot, `PUBLIC_COOLDOWN_MESSAGE` with `{seconds}`/`{unit}`). Tests import the constants and check structure only, never prose. content.py must not import discord/ninja_bot (checked with ast in tests/test_help_content.py).
 - The cog's `stats` is a `CachedStatsProvider` wrapping `LeetifyClient` (cs2/cache.py); profiles are cached 5 min, so code that needs fresh profile data must bypass/clear it. New StatsProvider wrappers must delegate `aclose`.
@@ -194,3 +195,8 @@
 - Tests: tests/test_posting.py (each cause, once-per-cause, clear on success, send_safely), HTTP error cases in tests/test_{cs2,activity}_autopost.py; existing tests untouched.
 - Docs: CLAUDE.md Architecture, README layout + both cause lists, docs/deployment.md permissions paragraph.
 ---
+
+## 2026-10-11 - US-009
+- Added `split_local` to activity/periods.py (hour/day boundaries, DST guard); `stats._seconds_per_day` and `awards._hour_pieces` use it; removed `_next_midnight`. `awards._clipped` already used `stats.clip`.
+- Tests: tests/test_activity_periods.py (one hour, midnight, several days, Amsterdam spring-forward/fall-back, zero length). Existing stats/awards tests unchanged.
+- Learning: fall-back hour split merges the repeated 02:00 hour into one 7200 s piece (kept as-is: no behaviour change).

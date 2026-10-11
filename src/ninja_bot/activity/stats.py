@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from ninja_bot.activity.periods import Month, month_of
+from ninja_bot.activity.periods import Month, month_of, split_local
 from ninja_bot.activity.store import Session
 
 # A local day counts as active with at least this much voice time that day.
@@ -50,19 +50,11 @@ def clip(session: Session, start: float, end: float, now: float) -> tuple[float,
     return clipped_start, clipped_end
 
 
-def _next_midnight(timestamp: float, tz: ZoneInfo) -> float:
-    local_day = datetime.fromtimestamp(timestamp, tz).date()
-    return datetime.combine(local_day + timedelta(days=1), time(), tzinfo=tz).timestamp()
-
-
 def _seconds_per_day(start: float, end: float, tz: ZoneInfo) -> dict[int, float]:
     """Split [start, end) at local midnights; keys are local days of the month."""
     per_day: dict[int, float] = defaultdict(float)
-    cursor = start
-    while cursor < end:
-        piece_end = min(_next_midnight(cursor, tz), end)
-        per_day[datetime.fromtimestamp(cursor, tz).day] += piece_end - cursor
-        cursor = piece_end
+    for piece_start, piece_end, local in split_local(start, end, tz, "day"):
+        per_day[local.day] += piece_end - piece_start
     return per_day
 
 
