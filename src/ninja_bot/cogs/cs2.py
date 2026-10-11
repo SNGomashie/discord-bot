@@ -229,11 +229,12 @@ class Cs2(commands.Cog):
             channel = await self._post_channel(self.auto_post.bot, self.auto_post.channel_id)
             if channel is None:
                 return
-            for new_match in await self.auto_post.poller.poll():
+            result = await self.auto_post.poller.poll()
+            for new_match in result.matches:
                 await self._announce(channel, self.auto_post.poller, new_match)
-        except RateLimitedError:
-            log.info("Leetify rate limited the CS2 poll; skipping the next cycle")
-            self._skip_next_poll = True
+            if result.rate_limited:
+                log.info("Leetify rate limited the CS2 poll; skipping the next cycle")
+                self._skip_next_poll = True
         except Exception:
             log.exception("Unexpected error in a CS2 poll cycle")
 

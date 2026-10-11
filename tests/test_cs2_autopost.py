@@ -16,8 +16,8 @@ from ninja_bot.cogs.cs2 import (
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.embed import build_announcement_embed
 from ninja_bot.cs2.identities import Identity
-from ninja_bot.cs2.models import Match, PlayerMatchStats, RateLimitedError, TeamScore
-from ninja_bot.cs2.poller import NewMatch
+from ninja_bot.cs2.models import Match, PlayerMatchStats, TeamScore
+from ninja_bot.cs2.poller import NewMatch, PollResult
 from ninja_bot.cs2.squad import SquadMember
 
 STEAM_A = "76561198000000001"
@@ -43,18 +43,22 @@ def new_match(match_id: str) -> NewMatch:
 
 
 class FakePoller:
-    def __init__(self, events: list[str], *results: list[NewMatch] | Exception) -> None:
+    def __init__(
+        self, events: list[str], *results: list[NewMatch] | PollResult | Exception
+    ) -> None:
         self.events = events
         self.results = list(results)
         self.poll_calls = 0
         self.confirmed: list[str] = []
 
-    async def poll(self) -> list[NewMatch]:
+    async def poll(self) -> PollResult:
         self.poll_calls += 1
         result = self.results.pop(0) if self.results else []
         if isinstance(result, Exception):
             raise result
-        return result
+        if isinstance(result, PollResult):
+            return result
+        return PollResult(result)
 
     async def confirm(self, new_match: NewMatch) -> None:
         self.events.append(f"confirm {new_match.match.id}")
@@ -307,17 +311,29 @@ async def test_poll_exception_is_logged_and_loop_continues(
     assert poller.confirmed == ["m1"]
 
 
-async def test_rate_limit_skips_next_cycle_once() -> None:
+async def test_rate_limit_announces_partial_then_skips_next_cycle_once() -> None:
     events: list[str] = []
     channel = make_channel(events)
-    poller = FakePoller(events, RateLimitedError(), [new_match("m1")])
+    poller = FakePoller(events, PollResult([new_match("m1")], rate_limited=True), [new_match("m2")])
     cog = make_cog(poller, make_bot(channel))
     await cog.run_poll_cycle()
+    assert poller.confirmed == ["m1"]
     await cog.run_poll_cycle()
     assert poller.poll_calls == 1
     await cog.run_poll_cycle()
     assert poller.poll_calls == 2
-    assert poller.confirmed == ["m1"]
+    assert poller.confirmed == ["m1", "m2"]
+
+
+async def test_no_backoff_without_rate_limit() -> None:
+    events: list[str] = []
+    channel = make_channel(events)
+    poller = FakePoller(events, PollResult([new_match("m1")]), [new_match("m2")])
+    cog = make_cog(poller, make_bot(channel))
+    await cog.run_poll_cycle()
+    await cog.run_poll_cycle()
+    assert poller.poll_calls == 2
+    assert poller.confirmed == ["m1", "m2"]
 
 
 async def test_cycle_without_channel_does_nothing() -> None:
