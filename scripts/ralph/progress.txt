@@ -135,3 +135,7 @@
 - docs/deployment.md: fixed the activity.sqlite3 backup sentence; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post. docs/manual-checks.md: Toasty startup-without-intent and unseen-command checks. CLAUDE.md: intent rule names the conditional Message Content intent.
 - Relative links/anchors checked with a small script (the only hit was an example `[x](y)` in a code span).
 - Needs manual check: everything in docs/manual-checks.md "Activity tracking", "Monthly auto-post", "Toasty ;pokemon".
+
+
+---
+# Review follow-ups (tasks/prd-activity-tracking-review.md): first run archived in scripts/ralph/archive/2026-10-11-activity-tracking/
