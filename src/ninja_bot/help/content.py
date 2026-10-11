@@ -31,12 +31,14 @@ class CommandHelp:
 MEDIA = "media"
 CS2 = "cs2"
 ACTIVITY = "activity"
+SESSIONS = "sessions"
 UTILITY = "utility"
 
 GROUPS: tuple[HelpGroup, ...] = (
     HelpGroup(MEDIA, "Media"),
     HelpGroup(CS2, "CS2 stats"),
     HelpGroup(ACTIVITY, "Voice activity"),
+    HelpGroup(SESSIONS, "Session polls"),
     HelpGroup(UTILITY, "Utility"),
 )
 
@@ -207,6 +209,37 @@ COMMANDS: tuple[CommandHelp, ...] = (
         },
     ),
     CommandHelp(
+        name="session_poll",
+        group=SESSIONS,
+        summary="Start a poll to find a date for a game session.",
+        details=(
+            "Posts a poll in this channel with one slot per chosen day and start time "
+            "in the coming weeks. You run it as the GM and are joined automatically. "
+            "Players press Join to take part and Leave to drop out (their votes go with them). "
+            "Slot times show in everyone's own time zone."
+        ),
+        examples=(
+            "/session_poll name:Curse of Strahd days:fri,sat times:19:00",
+            "/session_poll name:One-shot days:weekend times:14:00,19:30 weeks:3 min_players:4",
+            "/session_poll name:Campaign days:sat times:13:00 start:2026-11-07 round_hours:48",
+        ),
+        notes=(
+            "A poll offers at most 25 slots; use fewer days, times or weeks if it says more.",
+            "A server can have at most 5 open polls at a time.",
+            "Errors are only visible to you, and they don't use up your cooldown.",
+        ),
+        parameter_notes={
+            "days": (
+                "Comma-separated weekdays: short (fri) or full (friday) names, "
+                "or weekend / weekdays."
+            ),
+            "times": "Comma-separated 24-hour start times like 19:00 or 9:30.",
+            "start": "A date like 2026-11-06 (YYYY-MM-DD), not in the past. Default: tomorrow.",
+            "min_players": "Without it, a date only fits when every joined player can make it.",
+            "round_hours": "Hours each voting round stays open. Leave it empty for no deadline.",
+        },
+    ),
+    CommandHelp(
         name="ping",
         group=UTILITY,
         summary="Check that the bot is online and see its latency.",
@@ -240,6 +273,7 @@ GETTING_STARTED_TITLE = "Getting started"
 GETTING_STARTED = (
     "Link your Steam account with /link, then use /scoreboard, /profile and /leaderboard "
     "for CS2 stats. Use /activity and /myactivity to see who spends the most time in voice. "
+    "Use /session_poll to find a date for a game session. "
     "Use /download to get a video or its audio as a file."
 )
 

@@ -2,12 +2,13 @@
 
 A personal Discord bot for one private server of friends. It is built on discord.py 2.x (Python 3.12+), runs in a Proxmox LXC on a homelab, and makes no LLM calls. Everything it does is rule-based.
 
-It does four things:
+It does five things:
 
 - **Media**: `/download` fetches a video (or a clip of it) with yt-dlp and posts it as an mp3 or mp4.
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 - **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
+- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join with a button.
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -20,6 +21,7 @@ It does four things:
 - [CS2 stats](#cs2-stats)
 - [Auto-posted matches](#auto-posted-matches)
 - [Activity tracking](#activity-tracking)
+- [Session polls](#session-polls)
 - [/help](#help)
 - [Data and storage](#data-and-storage)
 - [Troubleshooting](#troubleshooting)
@@ -42,6 +44,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
+| `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336) | public poll (errors are private); Join/Leave replies are private | 30 s; refunded unless the poll was posted |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -79,7 +82,7 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 
 **Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
 
-**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
+**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). `/session_poll` needs View Channel, Send Messages and Embed Links in the channel it is run in (see [Session polls](#session-polls)). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
 **Logging:** INFO level to stderr (journald captures it under systemd). On start the bot logs `Logged in as <name> (env=<ENVIRONMENT>)`.
 
@@ -356,11 +359,39 @@ When a month has Toasty events (catches or cooldowns), `/activity`, the monthly 
 
 Pokémon names are shown as plain text (markdown escaped) and cut at 32 characters. A month counts by the reply's time in `ACTIVITY_TIMEZONE`. The monthly auto-post only happens for months with voice time, so a month with only Pokémon data is not auto-posted (it still shows in `/activity`).
 
+## Session polls
+
+A GM (whoever runs the command) starts a poll to find a date for a game session. The bot offers candidate slots, players join with a button, and the poll message keeps itself up to date.
+
+### /session_poll
+
+`/session_poll name days times [weeks] [start] [duration_hours] [min_players] [round_hours]` posts the poll in the current channel, publicly. It only works in a server.
+
+| Parameter | Accepted | Default |
+|---|---|---|
+| `name` | 1-60 characters (spaces around it are ignored) | required |
+| `days` | comma-separated weekdays: `fri`, `friday` (any case), `weekend` (Sat + Sun), `weekdays` (Mon-Fri); for example `fri,sat`; at most 64 characters | required |
+| `times` | comma-separated 24-hour start times `H:MM` or `HH:MM`, for example `19:00,14:30`; at most 64 characters | required |
+| `weeks` | 1-8: how many weeks from `start` to offer | 2 |
+| `start` | first day to offer, `YYYY-MM-DD`, today or later | tomorrow |
+| `duration_hours` | 1-12: how long a session lasts | 4 |
+| `min_players` | 2-25: players needed for a date to fit | every joined player |
+| `round_hours` | 1-336: how long each voting round stays open | no deadline |
+
+- **Slots:** every chosen weekday at every chosen time from `start` for `weeks` weeks (start date included, the day `weeks` weeks later excluded), in `SESSIONS_TIMEZONE` (falls back to `ACTIVITY_TIMEZONE`, see [Configuration](#configuration)). Slots that already started are dropped. A time that doesn't exist on a daylight-saving change day is skipped; a time that happens twice uses the first one. A poll offers at most 25 slots (Discord select menus hold 25 options).
+- **The poll message:** the name, `Round 1 of 6`, the GM, the session length and `min_players` (when set), one line per slot with its time (shown in everyone's own time zone) and ✅ / 🤔 counts, the round deadline (when `round_hours` is set), `Joined` (every player as a mention) and `Waiting for` (players without a vote this round, `+N more` when it doesn't fit). Mentions never ping.
+- **Join / Leave buttons:** the GM is joined automatically. **Join** adds you (at most 25 players), **Leave** removes you and your votes; both update the poll message and confirm privately. The GM can't leave their own poll. Pressing Join twice, Leave without having joined, or either button on a poll that no longer takes votes gives a private reply and changes nothing. Buttons keep working after the bot restarts.
+- **Limits:** at most 5 open polls per server.
+- **Cooldown:** 30 s per user, refunded unless the poll was posted (input errors, a channel problem and a failed send cost nothing). Like the other cooldowns it resets when the bot restarts.
+- **Channel:** the bot needs View Channel, Send Messages and Embed Links in the channel (Send Messages in Threads for a thread); otherwise you get "I can't post a poll here: I need View Channel, Send Messages and Embed Links in this channel."
+- **Errors** are private replies: a blank or too long name, days not in the accepted forms ("Use weekdays like `fri,sat` or `friday, saturday` (or `weekend` / `weekdays`)."), bad times ("Use 24-hour times like `19:00,14:30`."), a bad or past start date, an out-of-range number, no slots in the window ("There are no slots in that window; pick a later start date or more weeks."), more than 25 slots ("That gives N slots (max 25); use fewer weeks, days or times."), too many open polls, and "Something went wrong with the session poll. Please try again later." for anything unexpected (logged). If the poll message can't be sent, the poll is cancelled so it doesn't count towards the limit.
+- Polls, players and votes are stored in `sessions.sqlite3`; see [Data and storage](#data-and-storage).
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
 
-- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats, Voice activity and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
+- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats, Voice activity, Session polls and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
 - **Detail** (`command` set): the command's summary and explanation, then Usage, Parameters (required or optional, choices, accepted formats), Examples and Notes.
 - **Command names:** `command` has autocomplete (names that start with what you typed first, then names that contain it, up to 25). Case and a leading `/` are ignored, so `/Link` works like `link`.
 - **Unknown names** get a private reply, "There is no command with that name.", with up to 3 similar names ("Did you mean: /download?") or a pointer to `/help`.
@@ -446,13 +477,14 @@ src/ninja_bot/
   config.py       env-based config (load_config takes an optional dict for tests)
   posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener),
+                  sessions.py (/session_poll, poll buttons)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
-  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds)
+  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md

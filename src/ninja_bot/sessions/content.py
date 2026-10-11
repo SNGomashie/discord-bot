@@ -85,3 +85,17 @@ LIST_POLL_WAITING = "waiting for {players}"
 LIST_POLL_ALL_VOTED = "everyone voted"
 LIST_POLL_AWAITING_CONFIRM = "waiting for the GM to confirm"
 LIST_SESSION_LINE = "**{name}** · {start} ({relative}) · GM {gm}"
+
+# Poll buttons.
+JOIN_BUTTON = "Join"
+LEAVE_BUTTON = "Leave"
+
+# /session_poll and button replies (cog).
+GUILD_ONLY_MESSAGE = "Session polls only work in a server channel."
+CHANNEL_PROBLEM_MESSAGE = (
+    "I can't post a poll here: I need View Channel, Send Messages and Embed Links in this channel."
+)
+# `{seconds}` is the wait rounded up to whole seconds; `{unit}` is "second" or "seconds".
+POLL_COOLDOWN_MESSAGE = "Slow down! You can start another session poll in {seconds} {unit}."
+STALE_BUTTON_MESSAGE = "This button doesn't work any more."
+GENERIC_ERROR_MESSAGE = "Something went wrong with the session poll. Please try again later."

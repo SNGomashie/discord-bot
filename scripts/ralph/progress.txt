@@ -83,6 +83,7 @@
 - Session input (sessions/slots.py): `InvalidSessionInput(message)` is the one parse error (user-facing `.message`, ValueError). `parse_days`/`parse_times` check the raw text length (`MAX_DAYS_LENGTH`/`MAX_TIMES_LENGTH`, reuse as `app_commands.Range` max) before splitting; empty comma parts (`fri,,sat`, trailing comma) are rejected. Times regex is anchored (`fullmatch`) with re.ASCII.
 - Session reminders (sessions/reminders.py): `SessionNotifier.due_reminders()` itself marks overtaken earlier offsets (`skipped_offsets`) as sent, so the cog only posts + `confirm_reminder`; `due_nudges()` reads `store.voting_polls()` (all guilds). Cog must call `confirm_*` after every send attempt.
 - Session embeds (sessions/embed.py): pure builders over `Poll`/`PollSlot`/`Session`/`SlotScore`; strings (incl. field names) in sessions/content.py. Poll names go through `escape_name(name, MAX_NAME_LENGTH)` (escape_name now takes `max_length`; default 32 would cut 60-char poll names). `fit_with_more(lines, limit, hidden=0)` = whole lines + `+N more`; `pack_lines` lives in cs2/embed.py (not formatting.py). `timestamp(unix, style)`/`mention(id)`/`poll_link(poll)` are public helpers for the cog. Tests in tests/test_session_embed.py check `len(embed)` <= 6000 at 25 slots/25 players with long ids/names.
+- Session cog (cogs/sessions.py, sessions/views.py): poll buttons are one `PollButton` DynamicItem (`ses:<poll>:<action>[:<arg>]`); new actions = a `PollAction` member + a `case` in `Sessions.handle_poll_action` (unknown actions reply `STALE_BUTTON_MESSAGE`). `poll_message(poll)` renders embed + view from the store. Only views.py may import `discord.ui` (ast test in tests/test_session_cog.py); annotate with `discord.ui.View` elsewhere. Cog tests use the real `SqliteSessionStore` + `FakeClock` and `make_interaction` (MagicMock; `send_message` returns `MagicMock(message_id=...)`, channel `MagicMock(spec=discord.TextChannel)`). Range params: `Command._params[name].to_dict()` (not `command.parameters`).
 
 
 ## 2026-10-11 - US-001
@@ -163,4 +164,13 @@
 - Docs: CLAUDE.md Architecture (sessions/embed.py, escape_name), README layout block (no user-visible behaviour yet; README feature section comes with the commands).
 - Files: src/ninja_bot/sessions/embed.py, src/ninja_bot/sessions/content.py, src/ninja_bot/cs2/formatting.py, tests/test_session_embed.py, tests/test_cs2_formatting.py, CLAUDE.md, README.md
 - needs manual check: how the poll/result/session embeds look on a phone (with the commands in US-011+).
+---
+## 2026-10-11 - US-011
+- New cogs/sessions.py (`Sessions`, `/session_poll`, `handle_session_poll`, `poll_message`, `handle_poll_action`/`handle_join`/`handle_leave`, 30 s cooldown refunded unless posted, `cog_app_command_error`), registered in `EXTENSIONS`; new sessions/views.py (`PollButton` DynamicItem, `custom_id`, `PollAction`, `poll_view`).
+- Choices: the channel is checked before the poll is created (no orphan polls); a poll whose message can't be sent (or rendered) is cancelled via the service so it doesn't count towards `MAX_OPEN_POLLS`; the message id comes from `InteractionCallbackResponse.message_id` (fallback `original_response()`); Join/Leave success = `edit_message` + ephemeral followup with the JOIN_MESSAGES text, refusals = ephemeral `send_message`.
+- sessions/content.py: button labels, guild-only, channel problem, cooldown, stale button, generic error strings.
+- help/content.py: `SESSIONS` group ("Session polls"), `session_poll` CommandHelp, Getting started line; tests/test_help_content.py expects 5 groups.
+- Docs: README (intro, Contents, commands table, new "Session polls" section, /help groups, invite permissions note, layout block), docs/deployment.md (session poll channel permissions), CLAUDE.md Architecture.
+- Tests: tests/test_session_cog.py.
+- needs manual check: `/session_poll` in the test server (poll posts publicly with Join/Leave, Join/Leave update the message and confirm privately, buttons still work after a bot restart, refusal in a channel without Embed Links).
 ---

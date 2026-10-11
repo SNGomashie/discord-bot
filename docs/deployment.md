@@ -51,6 +51,8 @@ Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator,
 
 **Activity channel (`ACTIVITY_CHANNEL_ID`):** the monthly activity overview is a normal message too, with the same requirements: **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread) in that channel. Otherwise the bot logs one warning, `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>` (same causes as above), and posts nothing until the channel works. See the [README](../README.md#monthly-auto-post).
 
+**Session poll channels:** `/session_poll` checks the channel it is run in for the same **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread), because later poll updates are posted there as normal messages. Without them the GM gets a private refusal and no poll is created. See the [README](../README.md#session-polls).
+
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
 - The upload size limit comes from the server (`guild.filesize_limit`): 10 MiB by default, higher with server boosts. The bot picks the best quality that fits. A boosted server gives better quality downloads.
