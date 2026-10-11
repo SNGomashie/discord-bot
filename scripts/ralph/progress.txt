@@ -44,6 +44,7 @@
 - Steam vanity lookups (cs2/resolver.py): `steamcommunity.com/id/<name>/?xml=1` is unofficial, so every failure degrades to a friendly message pointing at the 17-digit ID; never parse the response with an XML library (regex only, body capped, no redirects). Fixtures in tests/fixtures/steam/ are hand-written.
 - Capture summary (scripts/capture_leetify.py): `summarize_documents(documents)` copies no values from the documents (match ids become `match-N` labels, everything else is counts), so it is safe on raw or anonymized data; `main` prints it after writing files. Verdict strings are `COMPARE_FEWER`/`COMPARE_SAME`/`COMPARE_UNKNOWN`.
 - Scoreboard players (tasks/prd-cs2-scoreboard-players.md): it is unconfirmed whether Leetify's `/v3/profile/matches` lists all players or only the requested one, so `full_match` (cs2/client.py) re-fetches by id when the history entry lacks two non-empty teams; `scripts/capture_leetify.py` prints which case the real API is. Mentions never render in code blocks or embed field names: use them only in normal embed text/field values, always with `AllowedMentions.none()`, and build them only from stored numeric Discord IDs. Member lookups use REST (`fetch_member`), no Server Members intent.
+- Partial matches in tests: `dataclasses.replace(match, players=...)`; cog `FakeStats(by_id=[full])` makes `get_match` return a different match than the history entry.
 
 ## 2026-10-11 - US-001
 - Added `summarize_documents` (+ `_describe_match`, `_compare`, `COMPARE_*` verdicts) to scripts/capture_leetify.py; `main` prints the summary of the anonymized documents after writing them.
@@ -51,4 +52,12 @@
 - Tests in tests/test_capture_leetify.py: both full, one-player history, missing single match, null/missing team numbers, unanonymized input, bad shapes; success test checks the printed verdict has no real IDs/names/key.
 - Needs manual check: owner runs `uv run python scripts/capture_leetify.py <steam64_id>` and reads the `Result:` line.
 - Learnings: summary lines only contain counts and labels, so no anonymizer dependency for safety.
+---
+
+## 2026-10-11 - US-002
+- Added module-level `full_match(provider, match)` to cs2/client.py: returns `match` unchanged if `teams()` has two non-empty teams; otherwise `get_match(match.id)`, used only if it has >= as many players. `Cs2Error` -> INFO log (type name only) + original; other exceptions propagate.
+- `Cs2._fetch_match` (cogs/cs2.py) wraps the latest history entry in `full_match`; explicit `match:<id>` path unchanged.
+- Tests: tests/test_cs2_client.py (`FullMatchStats` fake; one-player/one-team entries, complete entry, ApiError/MatchNotFound/RateLimited, fewer players, unexpected error); tests/test_cs2_cog.py (one-player history entry posts the ten-player embed; explicit id doesn't refetch). `FakeStats` got `by_id=[...]` (checked before `matches` in `get_match`).
+- Needs manual check: `/scoreboard` in the test server shows all ten players.
+- Learnings: build partial matches in tests with `dataclasses.replace(match, players=...)`.
 ---

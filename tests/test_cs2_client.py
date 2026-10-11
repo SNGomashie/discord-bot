@@ -1,5 +1,7 @@
 import asyncio
+import dataclasses
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -7,14 +9,23 @@ from typing import Any
 import aiohttp
 import pytest
 
-from ninja_bot.cs2.client import DEFAULT_BASE_URL, FetchResponse, LeetifyClient, StatsProvider
+from ninja_bot.cs2.client import (
+    DEFAULT_BASE_URL,
+    FetchResponse,
+    LeetifyClient,
+    StatsProvider,
+    full_match,
+)
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
+    Match,
     MatchNotFoundError,
     PlayerNotFoundError,
     PrivateProfileError,
+    Profile,
     RateLimitedError,
+    parse_match,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
@@ -287,3 +298,86 @@ async def test_default_fetch_creates_and_closes_session(monkeypatch: pytest.Monk
     assert seen["url"] == f"{DEFAULT_BASE_URL}/v2/matches/m1"
     assert seen["headers"]["Authorization"] == f"Bearer {SECRET}"
     assert seen["closed"] is True
+
+
+class FullMatchStats:
+    """Fake provider for `full_match`: `get_match` returns `by_id` or raises `error`."""
+
+    def __init__(self, by_id: Match | None = None, error: Exception | None = None) -> None:
+        self.by_id = by_id
+        self.error = error
+        self.match_calls: list[str] = []
+
+    async def get_profile(self, steam64_id: str) -> Profile:
+        raise AssertionError("not used")
+
+    async def get_recent_matches(self, steam64_id: str) -> list[Match]:
+        raise AssertionError("not used")
+
+    async def get_match(self, game_id: str) -> Match:
+        self.match_calls.append(game_id)
+        if self.error is not None:
+            raise self.error
+        assert self.by_id is not None
+        return self.by_id
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _full() -> Match:
+    return parse_match(json.loads(MATCH_JSON))
+
+
+def _only(full: Match, count: int) -> Match:
+    return dataclasses.replace(full, players=full.players[:count])
+
+
+def _one_team(full: Match) -> Match:
+    first, _ = full.teams()
+    return dataclasses.replace(full, players=first)
+
+
+async def test_full_match_refetches_one_player_history_entry() -> None:
+    full = _full()
+    stats = FullMatchStats(by_id=full)
+    assert await full_match(stats, _only(full, 1)) is full
+    assert stats.match_calls == [full.id]
+
+
+async def test_full_match_refetches_one_team_history_entry() -> None:
+    full = _full()
+    stats = FullMatchStats(by_id=full)
+    assert await full_match(stats, _one_team(full)) is full
+    assert stats.match_calls == [full.id]
+
+
+async def test_full_match_skips_request_when_complete() -> None:
+    full = _full()
+    stats = FullMatchStats(error=AssertionError("should not be called"))
+    assert await full_match(stats, full) is full
+    assert stats.match_calls == []
+
+
+@pytest.mark.parametrize("error", [ApiError(), MatchNotFoundError(), RateLimitedError()])
+async def test_full_match_cs2_error_returns_original(
+    error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    partial = _only(_full(), 1)
+    caplog.set_level(logging.INFO, logger="ninja_bot.cs2.client")
+    assert await full_match(FullMatchStats(error=error), partial) is partial
+    assert type(error).__name__ in caplog.text
+    assert all(r.levelno == logging.INFO for r in caplog.records)
+
+
+async def test_full_match_fewer_players_returns_original() -> None:
+    full = _full()
+    one_team = _one_team(full)
+    stats = FullMatchStats(by_id=_only(full, 1))
+    assert await full_match(stats, one_team) is one_team
+    assert stats.match_calls == [full.id]
+
+
+async def test_full_match_unexpected_error_propagates() -> None:
+    with pytest.raises(RuntimeError):
+        await full_match(FullMatchStats(error=RuntimeError("boom")), _only(_full(), 1))

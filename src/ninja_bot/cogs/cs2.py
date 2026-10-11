@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ninja_bot.cs2.awards import compute_awards
-from ninja_bot.cs2.client import LeetifyClient, StatsProvider
+from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.models import Cs2Error, Match, NoMatchesError, NotLinkedError, Profile
@@ -316,7 +316,7 @@ class Cs2(commands.Cog):
         matches = await self.stats.get_recent_matches(steam64_id)
         if not matches:
             raise NoMatchesError()
-        return matches[0]
+        return await full_match(self.stats, matches[0])
 
     async def _fetch_profile_or_none(self, steam64_id: str) -> Profile | None:
         """The profile only adds the breakdown, so its CS2 errors don't stop the scoreboard."""

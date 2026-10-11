@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -79,8 +80,11 @@ class FakeStats:
         error: Exception | None = None,
         matches: list[Match] | None = None,
         match_error: Exception | None = None,
+        by_id: list[Match] | None = None,
     ) -> None:
         self.profile = profile or make_profile()
+        # `get_match` looks in `by_id` first, so history entries can differ from it.
+        self.by_id = by_id if by_id is not None else []
         self.error = error
         self.matches = matches if matches is not None else []
         self.match_error = match_error
@@ -105,7 +109,7 @@ class FakeStats:
         self.match_calls.append(game_id)
         if self.match_error is not None:
             raise self.match_error
-        return next(m for m in self.matches if m.id == game_id)
+        return next(m for m in [*self.by_id, *self.matches] if m.id == game_id)
 
     async def aclose(self) -> None:
         self.close_calls += 1
@@ -784,6 +788,31 @@ async def test_scoreboard_own_latest_match(match: Match, fixture_profile: Profil
     embed = posted_embed(interaction)
     assert BREAKDOWN_FIELD in field_names(embed)
     assert cooldown.try_acquire(USER_ID) > 0  # cooldown kept after posting
+
+
+async def test_scoreboard_one_player_history_entry_posts_full_match(
+    match: Match, fixture_profile: Profile
+) -> None:
+    focus = next(p for p in match.players if p.steam64_id == FIXTURE_STEAM_ID)
+    history_entry = dataclasses.replace(match, players=(focus,))
+    cog, stats, _ = scoreboard_cog(history_entry, fixture_profile, by_id=[match])
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction)
+    assert stats.match_calls == [match.id]
+    assert len(match.players) == 10
+    expected = build_match_embed(match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile)
+    assert posted_embed(interaction).to_dict() == expected.to_dict()
+
+
+async def test_scoreboard_explicit_match_id_does_not_refetch(
+    match: Match, fixture_profile: Profile
+) -> None:
+    history_entry = dataclasses.replace(match, players=match.players[:1])
+    cog, stats, _ = scoreboard_cog(history_entry, fixture_profile)
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction, match=match.id)
+    assert stats.recent_calls == []
+    assert stats.match_calls == [match.id]
 
 
 async def test_scoreboard_uses_first_recent_match(match: Match, fixture_profile: Profile) -> None:
