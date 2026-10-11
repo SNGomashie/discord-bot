@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ninja_bot.cs2.awards import compute_awards
+from ninja_bot.cs2.cache import CachedStatsProvider
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
 from ninja_bot.cs2.formatting import escape_name
@@ -382,7 +383,7 @@ class Cs2(commands.Cog):
 
 
 async def setup(bot: NinjaBot) -> None:
-    client = LeetifyClient(bot.config.leetify_api_key)
+    client = CachedStatsProvider(LeetifyClient(bot.config.leetify_api_key))
     store = SqliteLinkStore(Path(bot.config.data_dir) / "cs2.sqlite3")
     await bot.add_cog(
         Cs2(

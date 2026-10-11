@@ -14,12 +14,13 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
 - `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + `UserCooldown` from `media/cooldown.py`).
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
-- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile` cog (thin wrapper; shared `UserCooldown`, `LeetifyClient` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`).
+- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile` cog (thin wrapper; shared `UserCooldown`, `CachedStatsProvider(LeetifyClient)` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`).
 - `src/ninja_bot/cs2/`: CS2 feature logic (Leetify API):
   - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`, `newest_first` (the one newest-first sort).
   - `steam.py`: `parse_steam_target` (`SteamId` | `VanityName` from a SteamID64, `/profiles/` or `/id/` URL, or bare custom URL name; `is_vanity_name` is the one vanity check), `parse_steam_id` (ID-only wrapper for scripts).
   - `client.py`: `StatsProvider` Protocol (includes `aclose`; wrappers must delegate it), `LeetifyClient` (the only module talking to Leetify; injectable fetch), `full_match` (re-fetches a history entry by id when it lacks players; use it before showing/announcing any history match).
   - `resolver.py`: `SteamResolver` Protocol, `SteamCommunityResolver` (custom URL name -> SteamID64 via `steamcommunity.com/id/<name>/?xml=1`, no API key, regex only; the only module talking to Steam).
+  - `cache.py`: `TtlCache` (generic, injectable clock), `CachedStatsProvider` (caches `get_profile` per Steam ID for 5 min; `setup` wraps the `LeetifyClient` in it).
   - `store.py`: `LinkStore` Protocol, `SqliteLinkStore` (`<DATA_DIR>/cs2.sqlite3`).
   - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name` (names in code blocks), `escape_name` (names in embed text), `display_width` (table alignment).
   - `awards.py`: `compute_awards` (fun match awards).

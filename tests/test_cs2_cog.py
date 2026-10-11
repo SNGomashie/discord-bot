@@ -29,6 +29,7 @@ from ninja_bot.cogs.cs2 import (
 )
 from ninja_bot.config import load_config
 from ninja_bot.cs2.awards import compute_awards
+from ninja_bot.cs2.cache import CachedStatsProvider
 from ninja_bot.cs2.client import FetchResponse, LeetifyClient
 from ninja_bot.cs2.embed import (
     BREAKDOWN_FIELD,
@@ -707,7 +708,9 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     bot.add_cog.assert_awaited_once()
     cog = bot.add_cog.call_args.args[0]
     assert isinstance(cog, Cs2)
-    assert isinstance(cog.stats, LeetifyClient)
+    assert isinstance(cog.stats, CachedStatsProvider)
+    assert isinstance(cog.stats._inner, LeetifyClient)
+    assert cog.stats._inner._api_key == "key"
     assert isinstance(cog.links, SqliteLinkStore)
     assert cog.links._path == tmp_path / "cs2.sqlite3"
     assert cog.cooldown.per_seconds == COOLDOWN_SECONDS == 10.0
