@@ -40,10 +40,18 @@
 - CS2 table widths: name column width is `NAME_WIDTH` in *display columns* (`display_width`: W/F = 2, Mn/Me/Cf/combining = 0). `_ROW_FORMAT` has no name width; `_pad_name` pads header and rows. Read `NAME_WIDTH` at call time (tests monkeypatch `formatting.NAME_WIDTH`).
 - CS2 names in embed text outside code blocks (award lines, field names, embed titles, cog messages) go through `escape_name` (cs2/formatting.py); names inside code blocks use `clean_name`. `escape_markdown` already doubles backslashes but only escapes *complete* `[x](y)` links, so `escape_name` escapes leftover `[ ] ( )` after it (odd backslash run = already escaped). Never pre-escape before `escape_markdown` (it would double your backslashes). Use `ignore_links=False` so URLs get the same treatment.
 - Vanity links (tasks/prd-cs2-vanity-links.md): `steamcommunity.com/id/<name>/?xml=1` fixtures in tests/fixtures/steam/ are hand-written, not captured; the endpoint is unofficial, so every failure must degrade to a friendly message pointing at the 17-digit ID. Never parse that response with an XML library (regex only, body capped).
+- CS2 resolver (cs2/resolver.py): `SteamResolver` Protocol + `SteamCommunityResolver(fetch, timeout_s)` reuses `FetchFn`/`FetchResponse` from client.py; `vanity_url(name)` re-validates with `is_vanity_name` before building the URL. Body capped at `MAX_BODY_BYTES` (64 KiB) twice: in the default aiohttp fetch (`content.read(cap)`, incremental UTF-8 decode so a cut multi-byte char isn't an error) and again on `FetchResponse.body` so injected fetches get the same cap. 429 raises `RateLimitedError(STEAM_RATE_LIMITED_MESSAGE)` (the default message names Leetify). Tests: `StubFetch` + fake `aiohttp.ClientSession` (`get(url, headers, allow_redirects)`, `content.read(n)`) in tests/test_cs2_resolver.py.
 
 ## 2026-10-11 - US-001
 - `parse_steam_target` + `SteamId`/`VanityName` + `is_vanity_name` in cs2/steam.py; `VANITY_URL_MESSAGE` removed. `InvalidSteamIdError.default_message` now lists all four accepted forms.
 - Kept `parse_steam_id` as an ID-only wrapper (capture script needs a SteamID64; the cog still uses it until US-003 wires in the resolver).
 - Files: src/ninja_bot/cs2/steam.py, src/ninja_bot/cs2/models.py, tests/test_cs2_steam.py, tests/test_cs2_cog.py.
 - Learnings: `-76561197960287930` is a valid vanity name under the 2-32 `A-Za-z0-9_-` rule (only exact 17-digit strings are excluded).
+---
+
+## 2026-10-11 - US-002
+- `VanityNotFoundError` / `SteamLookupError` in cs2/models.py; new cs2/resolver.py (`SteamResolver`, `SteamCommunityResolver`, `vanity_url`); hand-written fixtures tests/fixtures/steam/profile.xml + profile_not_found.xml.
+- Mapping: ID regex first (first match wins), else VanityNotFoundError (an `<error>` element only changes the log level); 404 -> not found, 429 -> RateLimitedError with a Steam-specific message, other non-2xx/3xx/timeouts/ClientError/OSError/UnicodeDecodeError -> SteamLookupError. Logs never include the body or tracebacks.
+- Files: src/ninja_bot/cs2/models.py, src/ninja_bot/cs2/resolver.py, tests/test_cs2_resolver.py, tests/fixtures/steam/*.
+- Needs manual check: real `steamcommunity.com/id/<name>/?xml=1` still returns `<steamID64>` (unofficial endpoint) — covered by the US-004 manual /link checks.
 ---

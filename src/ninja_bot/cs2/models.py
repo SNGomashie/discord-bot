@@ -42,6 +42,19 @@ class ApiError(Cs2Error):
     default_message = "Leetify couldn't be reached or sent something unexpected. Try again later."
 
 
+class VanityNotFoundError(Cs2Error):
+    default_message = (
+        "No Steam profile uses that custom URL. Check the spelling, or use your 17-digit SteamID64."
+    )
+
+
+class SteamLookupError(Cs2Error):
+    default_message = (
+        "Steam couldn't be reached to look up that name. "
+        "Try again later, or use your 17-digit SteamID64 instead."
+    )
+
+
 class InvalidSteamIdError(Cs2Error):
     default_message = (
         "That doesn't look like a Steam account. Use your 17-digit SteamID64, "
