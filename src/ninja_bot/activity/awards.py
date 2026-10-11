@@ -35,13 +35,15 @@ class AwardKey(StrEnum):
     BIGGEST_CLIMBER = "biggest_climber"
     BIGGEST_DROP = "biggest_drop"
     EARLY_BIRD = "early_bird"
+    IMPATIENT = "impatient"  # Toasty cooldown hits (activity/pokemon_stats.py)
 
 
 @dataclass(frozen=True)
 class Award:
     """One award winner; a tie gives one `Award` per tied user with the same key.
 
-    `value` is seconds, except MOST_CONSISTENT (active days); BIGGEST_DROP is positive.
+    `value` is seconds, except MOST_CONSISTENT (active days) and IMPATIENT (cooldown hits);
+    BIGGEST_DROP is positive.
     """
 
     key: AwardKey

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from ninja_bot.activity.embed import EMPTY_MONTH_MESSAGE
+from ninja_bot.activity.embed import EMPTY_MONTH_MESSAGE, POKEMON_FIELD
 from ninja_bot.activity.periods import FUTURE_MONTH_MESSAGE, INVALID_MONTH_MESSAGE, Month
-from ninja_bot.activity.store import Session
+from ninja_bot.activity.store import PokemonEvent, Session
 from ninja_bot.cogs.activity import (
     COOLDOWN_SECONDS,
     GENERIC_ERROR_MESSAGE,
@@ -36,8 +36,14 @@ class FakeClock:
 class FakeStore:
     """Only what the commands read; `sessions_between` mirrors the SQL window."""
 
-    def __init__(self, sessions: list[Session] | None = None, fail: bool = False) -> None:
+    def __init__(
+        self,
+        sessions: list[Session] | None = None,
+        fail: bool = False,
+        events: list[PokemonEvent] | None = None,
+    ) -> None:
         self.sessions = sessions or []
+        self.events = events or []
         self.fail = fail
         self.windows: list[tuple[float, float]] = []
 
@@ -51,8 +57,11 @@ class FakeStore:
             if s.start_ts < end_ts and (s.end_ts is None or s.end_ts > start_ts)
         ]
 
+    async def pokemon_events_between(self, start_ts: float, end_ts: float) -> list[PokemonEvent]:
+        return [e for e in self.events if start_ts <= e.ts < end_ts]
+
     async def known_users(self) -> set[int]:
-        return {s.user_id for s in self.sessions}
+        return {s.user_id for s in self.sessions} | {e.user_id for e in self.events}
 
 
 def ts(day: int, hour: int, month: int = 10) -> float:
@@ -273,3 +282,34 @@ def test_commands_and_parameters_have_descriptions() -> None:
         for param in command.parameters:
             assert str(param.description).strip()
             assert not param.required
+
+
+async def test_pokemon_data_shows_in_both_commands() -> None:
+    store = busy_store()
+    store.events = [
+        PokemonEvent(1, USER_ID, ts(3, 12), "catch", "Pikachu", True),
+        PokemonEvent(2, USER_ID, ts(3, 13), "cooldown"),
+        PokemonEvent(3, USER_ID, ts(3, 12, month=9), "catch", "Mew"),
+    ]
+    interaction = make_interaction()
+    cog = make_cog(store)
+    await cog.handle_activity(interaction, None)
+    embed = assert_public_embed(interaction)
+    pokemon = [f.value for f in embed.fields if f.name == POKEMON_FIELD]
+    assert pokemon and "shiny Pikachu" in pokemon[0] and "Mew" not in pokemon[0]
+
+    own = make_interaction(OTHER_ID)
+    await cog.handle_myactivity(own, make_member(USER_ID, "Ash"), None)
+    fields = {f.name: f.value for f in assert_public_embed(own).fields}
+    assert fields[POKEMON_FIELD] == "1 catch · 1 shiny · 1 cooldown hit"
+
+
+async def test_month_with_only_pokemon_keeps_the_cooldown() -> None:
+    store = FakeStore(events=[PokemonEvent(1, USER_ID, ts(3, 12), "catch", "Eevee")])
+    cog = make_cog(store)
+    interaction = make_interaction()
+    await cog.handle_activity(interaction, None)
+    embed = assert_public_embed(interaction)
+    assert embed.description == EMPTY_MONTH_MESSAGE.format(month="October 2026")
+    assert POKEMON_FIELD in [f.name for f in embed.fields]
+    assert cog.cooldown.try_acquire(USER_ID) > 0

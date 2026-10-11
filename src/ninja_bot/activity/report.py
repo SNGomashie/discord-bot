@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 from ninja_bot.activity.awards import Award, SocialStats, compute_awards, social_stats
 from ninja_bot.activity.periods import Month
+from ninja_bot.activity.pokemon_stats import (
+    PokemonStats,
+    PokemonUserStats,
+    impatient_awards,
+    pokemon_stats,
+)
 from ninja_bot.activity.stats import RankedRow, UserStats, monthly_stats, rank, shame_list
-from ninja_bot.activity.store import Session
+from ninja_bot.activity.store import PokemonEvent, Session
 
 # How many members the wall of shame names.
 SHAME_LIMIT = 3
@@ -23,8 +29,9 @@ class MonthlyReport:
     stats: Mapping[int, UserStats]
     leaderboard: list[RankedRow]  # value = total seconds, highest first
     shame: list[tuple[int, float]]  # (user_id, seconds), lowest first, 0 included
-    awards: list[Award]
+    awards: list[Award]  # voice awards, then Impatient
     social: SocialStats
+    pokemon: PokemonStats = field(default_factory=PokemonStats)
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,7 @@ class UserProfile:
     rank: int
     ranked_users: int
     awards: list[Award]
+    pokemon: PokemonUserStats | None = None  # None when the month has no Pokémon data
 
 
 def build_monthly_report(
@@ -47,12 +55,15 @@ def build_monthly_report(
     month: Month,
     tz: ZoneInfo,
     now: float,
+    pokemon_events: Iterable[PokemonEvent] = (),
 ) -> MonthlyReport:
     """Everything the overview shows for `month`; open sessions end at `now`.
 
-    `previous_sessions` cover the month before (for the climber/drop awards).
+    `previous_sessions` cover the month before (for the climber/drop awards);
+    `pokemon_events` outside `month` are ignored.
     """
     session_list = list(sessions)
+    pokemon = pokemon_stats(pokemon_events, month, tz)
     stats = monthly_stats(session_list, month, tz, now)
     previous_stats = monthly_stats(previous_sessions, month.previous(), tz, now)
     totals = {user_id: user.total_seconds for user_id, user in stats.items()}
@@ -63,8 +74,10 @@ def build_monthly_report(
         stats=stats,
         leaderboard=rank(list(totals.items())),
         shame=shame_list(totals, set(known_users) | set(totals), SHAME_LIMIT),
-        awards=compute_awards(stats, previous_stats, session_list, month, tz, now),
+        awards=compute_awards(stats, previous_stats, session_list, month, tz, now)
+        + impatient_awards(pokemon),
         social=social_stats(session_list, month, tz, now),
+        pokemon=pokemon,
     )
 
 
@@ -84,4 +97,9 @@ def user_profile(report: MonthlyReport, user_id: int, display_name: str) -> User
         rank=user_rank,
         ranked_users=len(report.leaderboard),
         awards=[award for award in report.awards if award.user_id == user_id],
+        pokemon=(
+            report.pokemon.users.get(user_id, PokemonUserStats())
+            if report.pokemon.has_data
+            else None
+        ),
     )

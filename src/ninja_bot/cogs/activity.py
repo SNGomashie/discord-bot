@@ -345,7 +345,7 @@ class Activity(commands.Cog):
             )
         )
         # The empty-month embed is a valid reply, but it shouldn't cost the cooldown.
-        return sent and bool(report.leaderboard)
+        return sent and (bool(report.leaderboard) or report.pokemon.has_data)
 
     async def _profile_reply(
         self,
@@ -376,7 +376,7 @@ class Activity(commands.Cog):
         )
 
     async def monthly_report(self, month: Month) -> MonthlyReport:
-        """Load `month` and the month before from the store and build the report."""
+        """Load `month` (sessions and Pokémon events) and the month before; build the report."""
         now = self.clock()
         previous = month.previous()
         sessions = await self.store.sessions_between(
@@ -385,8 +385,13 @@ class Activity(commands.Cog):
         previous_sessions = await self.store.sessions_between(
             previous.start(self.tz).timestamp(), previous.end(self.tz).timestamp()
         )
+        pokemon_events = await self.store.pokemon_events_between(
+            month.start(self.tz).timestamp(), month.end(self.tz).timestamp()
+        )
         known_users = await self.store.known_users()
-        return build_monthly_report(sessions, previous_sessions, known_users, month, self.tz, now)
+        return build_monthly_report(
+            sessions, previous_sessions, known_users, month, self.tz, now, pokemon_events
+        )
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError

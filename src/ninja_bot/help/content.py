@@ -172,6 +172,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "Shows the server's voice leaderboard for a month: total time and active days "
             "per member, the wall of shame (least time), fun awards and who hung out "
             "together most. Time in the AFK channel doesn't count. "
+            "If Toasty tracking is on, it also shows the top Pokémon catchers, shinies, "
+            "the most caught Pokémon and the Impatient award (most ;pokemon cooldown hits). "
             "Days and hours use the server's activity timezone."
         ),
         examples=(
@@ -190,6 +192,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
         details=(
             "Shows one member's month in voice: total time and rank, active days, "
             "current and longest streak, sessions, a day-by-day strip and any awards won. "
+            "If Toasty tracking is on, it also shows their Pokémon catches, shinies and "
+            ";pokemon cooldown hits. "
             "Pick another member with user."
         ),
         examples=(

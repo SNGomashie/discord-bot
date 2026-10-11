@@ -12,6 +12,7 @@ from ninja_bot.activity.embed import (
     LEADERBOARD_CONTINUED_FIELD,
     LEADERBOARD_FIELD,
     MAX_LEADERBOARD_ROWS,
+    POKEMON_FIELD,
     SHAME_FIELD,
     TOGETHER_FIELD,
     build_monthly_embed,
@@ -22,10 +23,11 @@ from ninja_bot.activity.periods import Month
 from ninja_bot.activity.report import (
     SHAME_LIMIT,
     MonthlyReport,
+    UserProfile,
     build_monthly_report,
     user_profile,
 )
-from ninja_bot.activity.store import Session
+from ninja_bot.activity.store import PokemonEvent, PokemonKind, Session
 from ninja_bot.cs2.embed import FIELD_VALUE_LIMIT, TITLE_LIMIT
 
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
@@ -241,3 +243,90 @@ def test_social_stats_without_pair_omit_the_pair_line() -> None:
     report_value = report([session(1, ts(2, 20), 1)])
     embed = build_monthly_embed(MonthlyReport(**{**report_value.__dict__, "social": social}))
     assert field(embed, TOGETHER_FIELD) == "🔊 Server total: 0m"
+
+
+def pokemon_event(
+    user_id: int, when: float, pokemon: str | None = None, shiny: bool = False
+) -> PokemonEvent:
+    kind: PokemonKind = "cooldown" if pokemon is None else "catch"
+    return PokemonEvent(next(_ids), user_id, when, kind, pokemon, shiny)
+
+
+def pokemon_report(
+    sessions: list[Session], events: list[PokemonEvent], known: set[int] | None = None
+) -> MonthlyReport:
+    return build_monthly_report(sessions, [], known or set(), SEPTEMBER, AMSTERDAM, LATER, events)
+
+
+def test_no_pokemon_field_without_pokemon_data() -> None:
+    embed = build_monthly_embed(report([session(1, ts(2, 20), 2)]))
+    assert POKEMON_FIELD not in [f.name for f in embed.fields]
+    profile = user_profile(report([session(1, ts(2, 20), 2)]), 1, "Ash")
+    assert profile is not None
+    assert POKEMON_FIELD not in [f.name for f in build_profile_embed(profile).fields]
+
+
+def test_pokemon_field_ranks_catchers_and_lists_shinies() -> None:
+    events = [
+        pokemon_event(1, ts(1, 12), "Pikachu"),
+        pokemon_event(1, ts(2, 12), "Eevee", shiny=True),
+        pokemon_event(2, ts(3, 12), "Pikachu"),
+        pokemon_event(2, ts(4, 12), "Eevee"),
+        pokemon_event(3, ts(5, 12), "Mew"),
+    ] + [pokemon_event(4, ts(day, 12)) for day in range(1, 4)]
+    embed = build_monthly_embed(pokemon_report([session(1, ts(2, 20), 2)], events))
+    value = field(embed, POKEMON_FIELD)
+    assert value.splitlines() == [
+        "🥇 <@1> **2 catches**",
+        "🥇 <@2> **2 catches**",
+        "🥉 <@3> **1 catch**",
+        "✨ <@1>: shiny Eevee",
+        "🏆 Most caught: Eevee, Pikachu (2 each)",
+        "⏳ Impatient: <@4> (3 cooldown hits)",
+        "🎯 Server: 5 catches · 3 cooldown hits",
+    ]
+    # Impatient lives in the Pokémon field, not in the voice awards.
+    assert "Impatient" not in field(embed, AWARDS_FIELD)
+
+
+def test_pokemon_field_in_a_month_without_voice() -> None:
+    events = [pokemon_event(1, ts(1, 12)), pokemon_event(1, ts(2, 12))]
+    embed = build_monthly_embed(pokemon_report([], events))
+    assert embed.description == EMPTY_MONTH_MESSAGE.format(month="September 2026")
+    # Only cooldowns (below the Impatient minimum): just the server line.
+    assert field(embed, POKEMON_FIELD) == "🎯 Server: 0 catches · 2 cooldown hits"
+
+
+def test_profile_shows_the_members_pokemon() -> None:
+    events = [
+        pokemon_event(1, ts(1, 12), "Pikachu", shiny=True),
+        pokemon_event(1, ts(2, 12), "Eevee"),
+    ] + [pokemon_event(1, ts(day, 13)) for day in range(1, 4)]
+    data = pokemon_report([session(1, ts(2, 20), 2), session(2, ts(3, 20), 1)], events)
+    embed = build_profile_embed(user_profile(data, 1, "Ash") or _fail())
+    assert field(embed, POKEMON_FIELD) == "2 catches · 1 shiny · 3 cooldown hits"
+    assert "⏳ Impatient (3 cooldown hits)" in field(embed, AWARDS_FIELD)
+    # The month has Pokémon data, so members without catches see zeros.
+    other = build_profile_embed(user_profile(data, 2, "Misty") or _fail())
+    assert field(other, POKEMON_FIELD) == "0 catches · 0 shinies · 0 cooldown hits"
+
+
+def test_pokemon_with_40_users_and_long_names_fits_discord_limits() -> None:
+    long_species = "Pika" + "W" * 300
+    users = range(10**17, 10**17 + 40)
+    events = [
+        pokemon_event(user_id, ts(1 + index % 28, 12), f"{long_species}{index % 9}", True)
+        for index, user_id in enumerate(users)
+    ] + [pokemon_event(user_id, ts(2, 13)) for user_id in users for _ in range(3)]
+    data = pokemon_report(busy_month(40), events, known={1, 2, 3})
+    embed = build_monthly_embed(data)
+    assert_within_limits(embed)
+    value = field(embed, POKEMON_FIELD)
+    assert "✨ +35 more" in value
+    profile = user_profile(data, 10**17, LONG_NAME)
+    assert profile is not None
+    assert_within_limits(build_profile_embed(profile))
+
+
+def _fail() -> UserProfile:
+    raise AssertionError("expected a profile")

@@ -7,7 +7,7 @@ It does four things:
 - **Media**: `/download` fetches a video (or a clip of it) with yt-dlp and posts it as an mp3 or mp4.
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
-- **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats.
+- **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -40,7 +40,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
 | `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
-| `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed |
+| `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
@@ -306,16 +306,17 @@ The bot records how long each member spends in voice channels. It always runs; t
 - **Wall of shame:** the 3 members with the least time (🐌), including members who were in voice in an earlier month but not at all in this one (`0m`).
 - **Awards:** 🦉 Night owl (most time between 00:00 and 06:00), 🏃 Marathon (longest single session), 📅 Most consistent (most active days; ties broken by total time), 📈 Biggest climber and 📉 Biggest drop (change in total time against the month before; only when that month has data), 🐦 Early bird (most time between 06:00 and 09:00). Tied winners share the award; an award nobody earned is left out.
 - **Together:** the pair of members who spent the most time in the same channel at the same time (at least 10 minutes), the busiest hour and weekday, and the server's total voice time.
-- A month without any voice time shows "Nobody was in voice in <month>." instead.
+- **Pokémon:** only when the month has [Toasty ;pokemon](#toasty-pokemon-catches) data, see [Pokémon stats](#pokémon-stats).
+- A month without any voice time shows "Nobody was in voice in <month>." instead (still with the Pokémon field when there are catches or cooldowns).
 
 ### /myactivity
 
-`/myactivity [user] [month]` posts one member's month (default: you), publicly: total voice time and rank, active days out of the days in the month, current and longest streak of active days, number of sessions with the longest and average session, a strip with one square per day (🟩 active, ⬜ not), and any awards they won.
+`/myactivity [user] [month]` posts one member's month (default: you), publicly: total voice time and rank, active days out of the days in the month, current and longest streak of active days, number of sessions with the longest and average session, a strip with one square per day (🟩 active, ⬜ not), and any awards they won (including ⏳ Impatient). When the month has Pokémon data, a **Pokémon** field shows their catches, shinies and cooldown hits (`0 catches · 0 shinies · 0 cooldown hits` if they didn't play). A member with Pokémon data but no voice time that month gets the "wasn't in voice" reply.
 
 ### Months, cooldown and errors
 
 - **`month`** is `YYYY-MM` (for example `2026-09`; spaces around it are ignored). Leave it empty for the current month. Months, days, hours and streaks all use `ACTIVITY_TIMEZONE` (see [Configuration](#configuration)); the embed footer names it. The current month runs up to now, including sessions that are still open.
-- **Cooldown:** 10 s per user, shared by both commands, taken only after the month is valid. It is refunded when the reply is an error, when `/activity` finds an empty month, or when the reply could not be sent.
+- **Cooldown:** 10 s per user, shared by both commands, taken only after the month is valid. It is refunded when the reply is an error, when `/activity` finds an empty month (no voice time and no Pokémon data), or when the reply could not be sent.
 - **Errors** are private replies: a month that isn't `YYYY-MM` ("Use a month like `2026-09` (YYYY-MM).") or hasn't started yet ("That month hasn't started yet."), a member without voice time that month ("You weren't in voice in <month>." / "**Name** wasn't in voice in <month>."), and "Something went wrong while loading voice activity. Please try again later." for anything unexpected.
 - Members appear as mentions, but nobody is pinged.
 
@@ -341,7 +342,18 @@ With `TOASTY_BOT_ID` set to the user ID of the Toasty bot, the bot also records 
 - **What is stored:** only the parsed fields (who, when, catch or cooldown, the Pokémon name and whether it was shiny) in `pokemon_events`; never the message text. See [Data and storage](#data-and-storage). Members with only Toasty events also count as known members for the wall of shame.
 - **Ignored:** `;pokemon` sent by bots, other Toasty messages, replies by other bots, replies to messages the bot didn't see (or saw more than 5 minutes earlier), and other servers when `GUILD_ID` is set.
 - **Message Content intent:** reading these messages needs the privileged **Message Content** intent. The bot requests it only when `TOASTY_BOT_ID` is set, and it must also be enabled in the Developer Portal (see [Configuration](#configuration)).
-- Catches are recorded but not shown yet.
+
+#### Pokémon stats
+
+When a month has Toasty events (catches or cooldowns), `/activity`, the monthly auto-post and `/myactivity` include a **Pokémon** field. In `/activity` and the auto-post it shows, in this order:
+
+- **Top catchers:** members with at least one catch, most catches first: `🥇 @member **12 catches**`. Members with the same count share a rank. At most 5 rows, then `+N more`.
+- **Shinies:** `✨ @member: shiny <Name>` per shiny catch, oldest first; at most 5, then `✨ +N more`.
+- **Most caught:** `🏆 Most caught: <Name> (3)`, or every tied Pokémon in name order (`Eevee, Pikachu (2 each)`; at most 5 names, then `+N more`).
+- **⏳ Impatient:** the member(s) whose `;pokemon` hit Toasty's cooldown most often that month, only with at least 3 hits: `⏳ Impatient: @member (5 cooldown hits)`. It is listed here, not in the Awards field; on `/myactivity` it appears under the member's awards.
+- **Server totals:** `🎯 Server: 12 catches · 4 cooldown hits`.
+
+Pokémon names are shown as plain text (markdown escaped) and cut at 32 characters. A month counts by the reply's time in `ACTIVITY_TIMEZONE`. The monthly auto-post only happens for months with voice time, so a month with only Pokémon data is not auto-posted (it still shows in `/activity`).
 
 ## /help
 
@@ -420,7 +432,7 @@ src/ninja_bot/
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
-  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing)
+  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md
