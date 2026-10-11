@@ -115,3 +115,10 @@
 - Learnings: the poller swallows rate limits in its history walk, so `RateLimitedError` only reaches the cog from `full_match`; embed-building errors are also confirmed (never retried) and logged by the cycle.
 - Needs manual check: with `CS2_CHANNEL_ID` set on the dev bot, play/await a match of a linked player and see one post (no pings, ▸ highlights, Squad field); restart and confirm no repost; a wrong channel id / removed Embed Links logs one warning.
 ---
+
+## 2026-10-11 - US-010
+- Documented `/leaderboard` (metrics, trends, skipped/rate-limit notes, cooldown) and auto-posts (silent seeding, one post per match, 3-hour age limit, max 3 per cycle, poll interval) plus a manual checklist in README; deployment.md gains the announcement-channel permissions, the sqlite contents/backup note, optional CS2 lines in the prod `.env` example and two troubleshooting rows; CLAUDE.md lists `squad.py` and the new `store.py` / `embed.py` responsibilities.
+- Files: README.md, docs/deployment.md, CLAUDE.md
+- Learnings: a deleted cs2.sqlite3 does not repost (links are gone and players re-seed silently); reposts only happen with an old copy of the file (seeded rows present, recent posted rows missing), limited to the 3-hour window.
+- Needs manual check: the README checklist under "Auto-posted matches (CS2)".
+---
