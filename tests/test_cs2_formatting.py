@@ -7,6 +7,7 @@ from ninja_bot.cs2.formatting import (
     BAR_FILLED,
     BAR_WIDTH,
     ESCAPED_NAME_LENGTH,
+    HIGHLIGHT,
     NO_PLAYERS,
     NO_RECENT_MATCHES,
     STAR,
@@ -443,3 +444,49 @@ def test_team_table_names_keep_star_and_cap() -> None:
     assert {display_width(row) for row in named} == {display_width(plain[0])}
     for max_chars in (100, 300, FIELD_VALUE_LIMIT):
         assert len(format_team_table(players, max_chars=max_chars, names=names)) <= max_chars
+
+
+def test_team_table_without_highlight_is_unchanged() -> None:
+    players = [_player(i) for i in range(5)]
+    assert format_team_table(players, highlight=()) == format_team_table(players)
+    assert format_team_table(players, highlight={_steam_id(42)}) == format_team_table(players)
+
+
+def test_team_table_highlights_marked_players() -> None:
+    players = [_player(i) for i in range(4)]
+    rows = _rows(
+        format_team_table(
+            players, names={_steam_id(3): "Bob"}, highlight=[_steam_id(1), _steam_id(3)]
+        )
+    )
+
+    assert rows[1][1:].startswith("player0 ")
+    assert rows[2][1:].startswith(f"{HIGHLIGHT}player1 ")
+    assert rows[3][1:].startswith("player2 ")
+    assert rows[4][1:].startswith(f"{HIGHLIGHT}Bob ")
+    # The star column is untouched (player3 has the most MVPs).
+    assert rows[4][0] == STAR
+
+
+@pytest.mark.parametrize("name", ["x" * 40, "日" * 20, "ab😀😀😀😀😀", "abcdefghijk", "`\n"])
+def test_highlighted_rows_keep_the_row_width(name: str) -> None:
+    players = [_player(i, name=name) for i in range(3)]
+    plain = _rows(format_team_table(players))
+    rows = _rows(format_team_table(players, highlight={_steam_id(1)}))
+
+    assert rows[2][1:].startswith(HIGHLIGHT)
+    assert display_width(rows[2][1:].split(" ")[0]) <= formatting.NAME_WIDTH
+    assert {display_width(row) for row in rows} == {display_width(plain[0])}
+
+
+def test_highlight_shortens_long_names_by_one_column() -> None:
+    rows = _rows(format_team_table([_player(0, name="x" * 40)], highlight={_steam_id(0)}))
+    assert rows[1][1:].startswith(f"{HIGHLIGHT}{'x' * 10}… ")
+
+
+def test_highlighted_table_respects_max_chars() -> None:
+    players = [_player(i, name="日" * 20) for i in range(10)]
+    highlight = {_steam_id(i) for i in range(10)}
+    for max_chars in (100, 300, FIELD_VALUE_LIMIT):
+        table = format_team_table(players, max_chars=max_chars, highlight=highlight)
+        assert len(table) <= max_chars

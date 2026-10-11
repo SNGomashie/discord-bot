@@ -210,7 +210,7 @@ async def test_cog_identities_without_guild_skip_the_store() -> None:
     cog = Cs2(MagicMock(), links)
     interaction = MagicMock()
     interaction.guild = None
-    assert await cog._match_identities(interaction, make_match(STEAM_A)) == {}
+    assert await cog._match_identities(interaction.guild, make_match(STEAM_A)) == {}
     assert links.queries == []
 
 
@@ -219,5 +219,5 @@ async def test_cog_identities_in_guild() -> None:
     cog = Cs2(MagicMock(), links)
     interaction = MagicMock()
     interaction.guild.get_member.return_value = make_member("Alice")
-    result = await cog._match_identities(interaction, make_match(STEAM_A, STEAM_B))
+    result = await cog._match_identities(interaction.guild, make_match(STEAM_A, STEAM_B))
     assert result == {STEAM_A: Identity(STEAM_A, 1, "Alice")}

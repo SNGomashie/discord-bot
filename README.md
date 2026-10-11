@@ -48,8 +48,9 @@ CS2 stats from the [Leetify](https://leetify.com) public API:
 
 **Settings** (see [`.env.example`](.env.example) and the [settings reference](docs/deployment.md#5-settings-reference)):
 - `LEETIFY_API_KEY`: get one at [leetify.com/app/developer](https://leetify.com/app/developer). Optional in config (without it requests are sent unauthenticated), but recommended.
-- `CS2_CHANNEL_ID` and `CS2_POLL_SECONDS` (default 300): reserved for automatically posting new matches; parsed and validated, but not used by any code yet.
-- `DATA_DIR` (default `data`): links are stored in `<DATA_DIR>/cs2.sqlite3`. In prod this directory must be writable by the service user and persistent (and backed up), or everyone has to `/link` again.
+- `CS2_CHANNEL_ID`: channel for [automatic match posts](#auto-posted-matches-cs2). Unset = no auto-posts.
+- `CS2_POLL_SECONDS` (default 300): how often to check Leetify for new matches when `CS2_CHANNEL_ID` is set.
+- `DATA_DIR` (default `data`): links and the log of already posted matches are stored in `<DATA_DIR>/cs2.sqlite3`. In prod this directory must be writable by the service user and persistent (and backed up), or everyone has to `/link` again and old matches can be posted again.
 
 **Checking the test fixtures:** the Leetify fixtures in `tests/fixtures/leetify/` are hand-written from the API docs. Run `uv run python scripts/capture_leetify.py <steam64_id>` (dev only, needs `LEETIFY_API_KEY`) to save the real profile, matches list and latest match, with Steam IDs and names replaced by placeholders, to `data/leetify-capture/` (gitignored), then compare field names and units with the fixtures.
 
@@ -74,6 +75,29 @@ CS2 stats from the [Leetify](https://leetify.com) public API:
 - [ ] `/link` with the account you're already linked to → "already linked" reply
 - [ ] `/scoreboard match:nonsense` → "match not found" reply
 - [ ] Player name with markdown (e.g. `*bold*` or `[x](y)`) in a test match → rendered as plain text
+
+## /leaderboard (CS2)
+`/leaderboard [metric]` ranks every linked player in the server by one metric: Leetify rating (default), aim, positioning, utility, clutch, opening duels or winrate. Each line shows the player as a mention (it never pings), their value, and their trend: the average rating of their newest 5 matches against the 5 before (`↑ +0.04`, `↓ -0.02` or `→` within ±0.01; no trend with fewer than 3 rated matches in either window), plus a win or loss streak of 3 or more (`🔥3` / `🧊3`). The top 3 get medals, ties share a rank, and players without a value for the metric are listed last as `-`.
+
+At most 25 linked players are checked. Private or unavailable Leetify profiles are skipped and counted in the footer (`Skipped: N (private or unavailable)`); if Leetify rate limits the bot, it posts what it has with a note. Profiles are cached for 5 minutes, so running it twice in a row doesn't hit Leetify again. `/leaderboard` has its own 30-second per-user cooldown, refunded when nobody is linked or every lookup failed.
+
+## Auto-posted matches (CS2)
+With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (default 300) for new matches of linked players and posts a scoreboard for each one in that channel. Unset, nothing runs.
+- **Silent seeding:** the first time the bot sees a linked player (after a new `/link`, or the first start with this feature), it records their current match history as already posted and announces nothing. Only matches played after that are posted.
+- **One post per match:** a match with several linked friends is posted once. The embed highlights the squad (`▸` in the team tables and a `Squad` field with each friend's stats, mentions that never ping) and is coloured by the squad's result.
+- **Posted matches are remembered** in `<DATA_DIR>/cs2.sqlite3` (the newest 500), so a restart never reposts them. A match is marked as posted even if sending it failed, so a broken post is not retried every cycle.
+- **3-hour age limit:** matches that finished more than 3 hours ago are skipped (and marked as posted), so a bot that was offline for a while doesn't flood the channel.
+- **At most 3 posts per cycle**, oldest first; the rest follow in the next cycles. When Leetify rate limits the bot, it backs off and catches up in a later cycle.
+- Matches can take a while to appear on Leetify after they end, and players with a private Leetify profile are never posted.
+- The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links in that channel; otherwise it logs one warning and posts nothing. See [deployment](docs/deployment.md#permissions).
+
+**Manual test checklist** (dev bot in the test server, with `CS2_CHANNEL_ID` set):
+- [ ] `/leaderboard` with 2+ linked accounts → ranked list with values, trends and medals; try a few `metric` choices
+- [ ] `/leaderboard` with a private Leetify profile linked → that player is missing and the footer says `Skipped: 1 (private or unavailable)`
+- [ ] A linked player finishes a new match → one post in the channel within a poll interval or two (after Leetify has the match), with `▸` highlights and the `Squad` field, without pinging anyone
+- [ ] Restart the bot after a post → the same match is not posted again
+- [ ] Match with two linked friends → posted once, both in the `Squad` field
+- [ ] `/link` a new account that has older matches → none of its old matches are posted
 
 ## Dev container (recommended for Ralph)
 Needs Docker or Podman (`sudo dnf install podman podman-compose`, or Docker CE).

@@ -1,6 +1,7 @@
-# Ralph progress log — started 2026-10-11 (feature: cs2-scoreboard-players; patterns carried over)
+# Ralph progress log — started 2026-10-11 (feature: cs2-squad; patterns carried over)
 
 ## Codebase Patterns
+- The cog's `stats` is a `CachedStatsProvider` wrapping `LeetifyClient` (cs2/cache.py); profiles are cached 5 min, so code that needs fresh profile data must bypass/clear it. New StatsProvider wrappers must delegate `aclose`.
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` (or `_parse_optional_positive_int(source, key)` for values without a default, e.g. channel IDs) in config.py (raises ConfigError naming the variable). New Config fields need a default so existing constructors keep working.
 - yt-dlp has no type stubs; mypy override for `yt_dlp` / `yt_dlp.*` is in pyproject.toml.
 - Media errors: subclass MediaError and set `default_message`; `.message` is the user-facing text (safe to send to Discord).
@@ -50,68 +51,74 @@
 - Partial matches in tests: `dataclasses.replace(match, players=...)`; cog `FakeStats(by_id=[full])` makes `get_match` return a different match than the history entry.
 - CS2 friends field (cs2/embed.py): `format_friends(match, identities, focus)` -> `<@id> as SteamName (Your team|Team A|Team B|No team)` lines in `teams()` order then unassigned, rating desc (None last), max `MAX_FRIEND_LINES` 10; `_fit_lines` drops whole lines (+N more) to fit `FIELD_VALUE_LIMIT` (read at call time; tests monkeypatch it). Requester detail field value starts with `<@id> · SteamName` when they have an identity. The scoreboard `followup.send` passes `allowed_mentions=discord.AllowedMentions.none()`.
 - CS2 /scoreboard identities: `_scoreboard_deferred` calls `_match_identities_or_empty` after the fetch (any exception -> logged, `{}`). Cog test `make_interaction()` has `guild = None` (a MagicMock guild would yield MagicMock display names); attach `FakeGuild(members)` via `guild_interaction(...)` in tests/test_cs2_cog.py for member lookups.
+- Squad (tasks/prd-cs2-squad.md): `full_match(provider, match)` (cs2/client.py) must be applied to history entries before announcing; `resolve_identities` (cs2/identities.py) gives Discord display names for tables. Auto-posts are normal channel messages (not interaction replies): always `allowed_mentions=discord.AllowedMentions.none()`, and a post is confirmed (marked posted) after the send attempt even when it fails, so a broken post is never retried forever.
+- CS2 match log (cs2/store.py): `MatchLog` Protocol is implemented by `SqliteLinkStore` in the same file (`posted_matches`, `seeded_players`; `_SCHEMA` is a tuple of `CREATE TABLE IF NOT EXISTS` statements run on first connect, so old link-only DBs upgrade). `filter_unposted`/`mark_posted` skip the thread for empty input; `mark_posted` is `INSERT OR IGNORE` (keeps the first posted_at) then prunes to `MAX_POSTED_MATCHES` (read at call time; tests monkeypatch it and `store_module.time.time`) ordered by posted_at, rowid. `remove` never touches `seeded_players`.
+- CS2 trends (cs2/squad.py): `compute_trend(recent)` windows are by match position (`recent[:5]` vs `recent[5:10]`), unrated matches are dropped per window (need `MIN_WINDOW_RATINGS` 3). Direction thresholds compare with a 1e-9 epsilon so float noise at exactly ±0.01 still counts. Streak: ties/unknown break it; newest tie/unknown -> (None, 0). `format_trend` reuses `format_rating` for the delta; flat shows only `→`.
+- CS2 ranking (cs2/squad.py): `Metric` is a `StrEnum` (values usable directly as app_commands choices). `metric_value(profile, metric)` treats None/NaN/inf as missing; `rating` = average of rated `recent_matches`. `rank_squad` gives missing rows `rank=None` (last, name order); ties share rank (1, 1, 3), ordered by casefolded name then discord_id. Row name = Leetify name, falling back to steam64_id. `format_metric_value`: signed ratings for rating/clutch/opening, 0-100 ints for aim/positioning/utility, `62%` winrate, `-` when missing.
+- CS2 leaderboard embed (cs2/embed.py): `build_leaderboard_embed(rows, metric)` -> lines from `format_leaderboard_row` (`🥇 <@id> Name · **value** trend`; medals by `rank` so ties share them; `rank=None` -> `UNRANKED` `-`), packed whole into `Ranking`/`Ranking (cont.)` fields by `_pack_lines` (reads `FIELD_VALUE_LIMIT` at call time); max `MAX_LEADERBOARD_ROWS` 25 + `+N more` footer; empty -> `NOBODY_LINKED_MESSAGE` description. embed.py imports from squad.py (no cycle). Send with `AllowedMentions.none()`.
+- CS2 /leaderboard (cogs/cs2.py): `Cs2(..., leaderboard_cooldown=)` (`LEADERBOARD_COOLDOWN_SECONDS` 30, separate from the 10 s stats cooldown); `_run_with_cooldown(interaction, work, cooldown=None)` takes any cooldown. `_fetch_squad(links)` fetches sequentially, lowest Discord ID first, capped at `MAX_LEADERBOARD_LINKS` (25) -> `SquadFetch(entries, skipped, not_loaded, rate_limited)`; `leaderboard_notes` builds footer notes joined with ` · ` after any `+N more`. Empty links -> empty-state embed + refund; no entries -> rate-limit or `ALL_PROFILES_FAILED_MESSAGE` + refund. Tests: `SquadStats` (per-Steam-ID profile/error), `leaderboard_cog(results)` and `squad(...)` in tests/test_cs2_cog.py.
+- CS2 announcement embed (cs2/embed.py): `build_announcement_embed(match, awards, squad, identities=None)` shares `_add_tables_and_awards` with `build_match_embed` (tables + `Other players` + awards); `SquadMember(discord_id, steam64_id)` lives in cs2/squad.py. Members not in `match.players` are ignored; colour = `squad_outcome` (team with the most squad members; even split/unassigned-only/tie -> grey). `Squad` field = `format_squad` lines `<@id> K/D/A · ADR ADR · rating` (best rating first, max `MAX_SQUAD_LINES` 10, `_fit_lines`); no Friends/breakdown/form fields. `format_team_table(..., highlight=)` prefixes `HIGHLIGHT` (`▸`) and cuts the name via `clean_name(name, width)` one column shorter.
+- CS2 poller (cs2/poller.py): `MatchPoller(provider, store, clock=time.time, max_age_seconds, max_per_cycle)`; `store` is `PollerStore` (LinkStore + MatchLog Protocol). `poll()` walks Steam IDs in lowest-Discord-ID order (duplicate links -> lowest ID in `SquadMember`), seeds unseeded players silently, merges candidates by match id, marks stale ones (`finished_at` < now - max_age; undated kept) posted, takes `max_per_cycle` oldest first (undated last), then `full_match` + squad (linked IDs present in the full match, in player order). `confirm(new_match)` marks posted. Tests: `FakeStats`/`FakeStore`/`make_match(id, *steam_ids, finished_at=)` in tests/test_cs2_poller.py.
+- CS2 auto-post loop (cogs/cs2.py): `Cs2(..., auto_post=AutoPost(bot, poller, channel_id, poll_seconds))`; `setup` always builds it from config, `cog_load` starts `poll_loop` (`tasks.loop`, interval via `change_interval`) only when `channel_id` is set, `cog_unload` cancels it. `run_poll_cycle` never raises: channel via `get_channel` then `fetch_channel` (NotFound/Forbidden = missing), must be `POST_CHANNEL_TYPES` with View/Send (threads: Send in Threads)/Embed Links, else one warning per cause (`_channel_warnings`, cleared when the channel works). `_announce` confirms in `finally`. `RateLimitedError` sets `_skip_next_poll`. `_match_identities(_or_empty)` take a `guild` (not an interaction). Tests: tests/test_cs2_autopost.py (`FakePoller`, `make_channel` = `MagicMock(spec=discord.TextChannel)`, `make_bot`).
 
 ## 2026-10-11 - US-001
-- Added `summarize_documents` (+ `_describe_match`, `_compare`, `COMPARE_*` verdicts) to scripts/capture_leetify.py; `main` prints the summary of the anonymized documents after writing them.
-- Per match: `match-N` label, entries in `stats`, distinct `initial_team_number`s, players without one. Verdict compares the history entry with the same id as the single match ("could not compare" if missing/no stats/no matching entry).
-- Tests in tests/test_capture_leetify.py: both full, one-player history, missing single match, null/missing team numbers, unanonymized input, bad shapes; success test checks the printed verdict has no real IDs/names/key.
-- Needs manual check: owner runs `uv run python scripts/capture_leetify.py <steam64_id>` and reads the `Result:` line.
-- Learnings: summary lines only contain counts and labels, so no anonymizer dependency for safety.
+- Added `MatchLog` Protocol + `SqliteLinkStore` implementation (`is_seeded`, `mark_seeded`, `filter_unposted`, `mark_posted` with pruning to `MAX_POSTED_MATCHES` = 500).
+- Files: src/ninja_bot/cs2/store.py, tests/test_cs2_store.py
+- Learnings: batch inserts share one `posted_at`, so pruning breaks ties by rowid (later insert = newer).
 ---
 
 ## 2026-10-11 - US-002
-- Added module-level `full_match(provider, match)` to cs2/client.py: returns `match` unchanged if `teams()` has two non-empty teams; otherwise `get_match(match.id)`, used only if it has >= as many players. `Cs2Error` -> INFO log (type name only) + original; other exceptions propagate.
-- `Cs2._fetch_match` (cogs/cs2.py) wraps the latest history entry in `full_match`; explicit `match:<id>` path unchanged.
-- Tests: tests/test_cs2_client.py (`FullMatchStats` fake; one-player/one-team entries, complete entry, ApiError/MatchNotFound/RateLimited, fewer players, unexpected error); tests/test_cs2_cog.py (one-player history entry posts the ten-player embed; explicit id doesn't refetch). `FakeStats` got `by_id=[...]` (checked before `matches` in `get_match`).
-- Needs manual check: `/scoreboard` in the test server shows all ten players.
-- Learnings: build partial matches in tests with `dataclasses.replace(match, players=...)`.
----
+- Added `cs2/squad.py`: frozen `Trend(direction, delta, streak_kind, streak_length)`, `compute_trend`, `format_trend` (constants TREND_WINDOW, MIN_WINDOW_RATINGS, TREND_THRESHOLD, MIN_SHOWN_STREAK).
+- Tests: tests/test_cs2_squad.py (directions, boundaries, short/too-short histories, missing ratings, streaks, formatting).
+- Learnings: delta boundaries need an epsilon (0.05 - 0.04 != 0.01 in floats).
 
 ## 2026-10-11 - US-003
-- Added `Match.unassigned()` (cs2/models.py; shares `_team_numbers()` with `teams()`) and an `Other players` field (`OTHER_PLAYERS_FIELD`, non-inline, `format_team_table(max_chars=FIELD_VALUE_LIMIT)`) in `build_match_embed` after the team tables, only when non-empty.
-- Unassigned focus player: still found via `match.players`, detail fields render, colour stays neutral (no team number -> `match_outcome` None); no "Your team" label.
-- Tests: tests/test_cs2_models.py (none/third team/no team numbers, sort order, every player shown once); tests/test_cs2_embed.py (no extra field, None team, third team + field order, no team numbers, focus unassigned, limits with 10 unassigned 32-char names).
-- Needs manual check: none beyond US-002 (only shows up if Leetify sends players without a team number).
+- Added `Metric`, `SquadEntry`, `LeaderboardRow`, `metric_value`, `rank_squad`, `metric_label`, `format_metric_value` to `src/ninja_bot/cs2/squad.py`; tests in `tests/test_cs2_squad.py`.
+- **Learnings:** unranked (missing-value) rows carry `rank=None`; the leaderboard embed (US-004) should render them with `-`.
 ---
 
 ## 2026-10-11 - US-004
-- Added `LinkStore.discord_ids_for` + `SqliteLinkStore` implementation (`MIN(discord_id) ... GROUP BY steam64_id`, chunked at 500, via `asyncio.to_thread`; empty input returns `{}` without a query or touching the file).
-- `MemoryLinkStore` fake gets the method.
-- Files: src/ninja_bot/cs2/store.py, tests/test_cs2_store.py, tests/test_cs2_cog.py
-- Tests: found/not found, empty input (no thread, no file), duplicates (lowest ID), 1200 IDs across chunk boundaries, hostile quote/SQL IDs.
+- Added `build_leaderboard_embed`, `format_leaderboard_row`, `_pack_lines` and constants (`LEADERBOARD_FIELD`, `LEADERBOARD_CONTINUED_FIELD`, `MAX_LEADERBOARD_ROWS`, `MEDALS`, `UNRANKED`, `NOBODY_LINKED_MESSAGE`) to src/ninja_bot/cs2/embed.py; tests in tests/test_cs2_embed.py (normal, winrate formatting, ties, missing values, escaping, empty, 30 rows with 32-char all-escaped names, whole-row field packing).
+- Learnings: `escape_name` already caps names at 32 chars, so 25 worst-case rows stay well under 6000.
+- Needs manual check: the leaderboard embed's look in Discord (medals, mentions rendering) once `/leaderboard` exists (US-006).
 ---
 
 ## 2026-10-11 - US-005
-- New src/ninja_bot/cs2/identities.py: frozen `Identity`, `MemberLookup` alias, `resolve_identities` (dedupes players, one reverse-link query, `asyncio.gather` over distinct Discord IDs, any lookup exception -> not a member + warning without traceback).
-- cogs/cs2.py: `member_lookup(guild)` (get_member, then fetch_member; NotFound -> None, HTTPException -> None + log) and `Cs2._match_identities` (no guild -> {} without querying the store). Not wired into /scoreboard yet (US-008).
-- Tests: tests/test_cs2_identities.py (found, not member, unlinked, one user on two Steam IDs, raising lookup, concurrency, empty, cap, cog lookup cache/fetch/NotFound/HTTPException/no guild).
-- Needs manual check: none yet (visible after US-008).
+- Added `cs2/cache.py`: generic `TtlCache[K, V]` (OrderedDict, expiry on access, oldest-first eviction past max_size, `set` refreshes expiry) and `CachedStatsProvider` (caches `get_profile` only; errors never cached; matches pass through; `aclose` delegates).
+- `setup` in cogs/cs2.py wraps `LeetifyClient` in `CachedStatsProvider`; updated `test_setup_registers_cog`.
+- Tests: tests/test_cs2_cache.py (fake clock).
+- **Learnings:** Python 3.12 generic class syntax (`class TtlCache[K: Hashable, V]`) passes ruff + mypy strict here.
 ---
 
 ## 2026-10-11 - US-006
-- `format_team_table` gained optional `names: Mapping[str, str]` (Steam ID -> display name, passed through `clean_name`); `build_match_embed` gained optional `identities: Mapping[str, Identity]` and passes display names to both team tables and `Other players`.
-- Files: src/ninja_bot/cs2/formatting.py, src/ninja_bot/cs2/embed.py, tests/test_cs2_formatting.py, tests/test_cs2_embed.py
-- Tests: names None/{} byte-identical, mixed named/unnamed, IDs not in the table ignored, hostile display names (backticks, newline, @everyone, long, CJK/emoji, blank -> `?`), equal display width rows, star/header/cap unchanged; embed without identities equals today's, identities name players in every table.
-- Needs manual check: friends show by Discord name in the scoreboard tables (after US-008 wires it in).
+- Added `/leaderboard [metric]` (choices from `Metric`, default rating) -> `handle_leaderboard`: 30 s own cooldown, defer, `all_links()`, sequential profile fetches (max 25), `rank_squad` + `build_leaderboard_embed`, `AllowedMentions.none()`. CS2 errors skip players (footer `Skipped: N (private or unavailable)`); a rate limit stops fetching and posts what was collected with a note. No links -> empty-state embed and refund; all failed -> error message and refund; unexpected errors -> generic message, logged.
+- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py
+- Needs manual check: `/leaderboard` in Discord with 2+ linked accounts for each metric, the choice list, a private profile shows the skipped note, mentions render without pinging.
 ---
 
 ## 2026-10-11 - US-007
-- cs2/embed.py: `FRIENDS_FIELD` ("Friends in this match", non-inline, after awards, before the focus field), `format_friends`, `_fit_lines`, `NO_TEAM` label for unassigned friends; focus field value prefixed with `<@id> · SteamName` when the requester is in `identities`.
-- cogs/cs2.py: scoreboard embed sent with `allowed_mentions=discord.AllowedMentions.none()` (identities not wired yet: US-008).
-- Tests: tests/test_cs2_embed.py (no friends, one friend, requester + friends incl. order/labels/no extra detail fields, focus unchanged without identity, mention without stats, escaped names, ten friends with hostile long names + max snowflakes within limits, 10-line cap, whole-line dropping over the limit); tests/test_cs2_cog.py (allowed_mentions on the scoreboard send).
-- Needs manual check: mentions render (not ping) in Discord after US-008.
-- Learnings: ten escaped 32-char names + max-length snowflakes stay under 1024 (~900 chars), so the drop path only triggers with a monkeypatched limit.
+- Added `HIGHLIGHT` + `highlight=` to `format_team_table` (and an optional `width` to `clean_name`), `SquadMember` in cs2/squad.py, and `build_announcement_embed`, `squad_outcome`, `format_squad`, `format_squad_stats`, `_add_tables_and_awards` in cs2/embed.py (`build_match_embed` now uses the shared helper).
+- Files: src/ninja_bot/cs2/formatting.py, src/ninja_bot/cs2/squad.py, src/ninja_bot/cs2/embed.py, tests/test_cs2_formatting.py, tests/test_cs2_embed.py
+- Learnings: `build_announcement_embed` takes an optional `identities` (the PRD signature has none, but display names in tables need them); US-009 should pass `resolve_identities` output there. With an empty squad (or only absent members) the output equals `build_match_embed(match, awards)`.
+- Needs manual check: how `▸` and the Squad field look in Discord (once auto-posts exist, US-009).
 ---
 
 ## 2026-10-11 - US-008
-- cogs/cs2.py: `_scoreboard_deferred` resolves identities after `_fetch_match_and_profile` via new `_match_identities_or_empty` (exceptions logged as "Posting scoreboard without Discord names", scoreboard still posted) and passes them to `build_match_embed(..., identities=)`. `/profile` unchanged.
-- tests/test_cs2_cog.py: `make_interaction` defaults to `guild = None`; new `FakeGuild`, `FailingLinkStore`, `guild_interaction`, `field_value`. Tests: ten-player match with two linked friends (one not in the server), requester-only details, identity failure, no guild, one-player history entry + full refetch with friend names; no extra Leetify calls asserted.
-- Needs manual check: `/scoreboard` in the test server shows friends by Discord name, the friends field with non-pinging mentions, and the requester mention in their detail field.
+- Added `cs2/poller.py`: `NewMatch(match, squad)`, `PollerStore`, `MatchPoller` (`poll`, `confirm`); constants `MAX_AGE_SECONDS` 10800, `MAX_PER_CYCLE` 3.
+- Files: src/ninja_bot/cs2/poller.py, tests/test_cs2_poller.py
+- Learnings: the clock is epoch seconds (`time.time`), compared with `finished_at.timestamp()`; a match exactly `max_age_seconds` old is kept. Matches already collected before a rate limit are still returned (and completed with `full_match`).
 ---
 
 ## 2026-10-11 - US-009
-- README `/scoreboard` section: all players listed (full-match refetch, `Other players`), friends by Discord name + non-pinging `@mention` in `Friends in this match`, details only for the focus player, no extra intent/permission (REST `fetch_member`); manual checklist gained the four new checks.
-- docs/deployment.md Intents section: member lookups use REST, no Server Members intent or extra permission.
-- CLAUDE.md already listed `cs2/identities.py` and `full_match`; tasks/prd-cs2-squad.md already requires `full_match` (US-008) and `resolve_identities` table names (US-007) — no change needed.
-- Needs manual check: the README checklist items for this feature (all ten players, two linked friends, friend who left the server, `Other players`).
+- Added the background auto-post loop to cogs/cs2.py: `AutoPost`, `poll_loop` + `before_loop` (`wait_until_ready`), `run_poll_cycle`, `_announce`, `_post_channel`, `_warn_channel`; `setup` builds `MatchPoller(client, store)`. Updated docs/deployment.md (CS2_CHANNEL_ID / CS2_POLL_SECONDS now used) and CLAUDE.md.
+- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_autopost.py, tests/test_cs2_cog.py, tests/test_cs2_identities.py, docs/deployment.md, CLAUDE.md
+- Learnings: the poller swallows rate limits in its history walk, so `RateLimitedError` only reaches the cog from `full_match`; embed-building errors are also confirmed (never retried) and logged by the cycle.
+- Needs manual check: with `CS2_CHANNEL_ID` set on the dev bot, play/await a match of a linked player and see one post (no pings, ▸ highlights, Squad field); restart and confirm no repost; a wrong channel id / removed Embed Links logs one warning.
+---
+
+## 2026-10-11 - US-010
+- Documented `/leaderboard` (metrics, trends, skipped/rate-limit notes, cooldown) and auto-posts (silent seeding, one post per match, 3-hour age limit, max 3 per cycle, poll interval) plus a manual checklist in README; deployment.md gains the announcement-channel permissions, the sqlite contents/backup note, optional CS2 lines in the prod `.env` example and two troubleshooting rows; CLAUDE.md lists `squad.py` and the new `store.py` / `embed.py` responsibilities.
+- Files: README.md, docs/deployment.md, CLAUDE.md
+- Learnings: a deleted cs2.sqlite3 does not repost (links are gone and players re-seed silently); reposts only happen with an old copy of the file (seeded rows present, recent posted rows missing), limited to the 3-hour window.
+- Needs manual check: the README checklist under "Auto-posted matches (CS2)".
 ---

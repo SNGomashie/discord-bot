@@ -6,24 +6,34 @@ from pathlib import Path
 import discord
 import pytest
 
+from ninja_bot.cs2 import embed as embed_module
 from ninja_bot.cs2.awards import Award, compute_awards
 from ninja_bot.cs2.embed import (
     AWARDS_FIELD,
     BREAKDOWN_FIELD,
     FORM_FIELD,
     FRIENDS_FIELD,
+    LEADERBOARD_CONTINUED_FIELD,
+    LEADERBOARD_FIELD,
     MATCHES_FIELD,
+    MAX_LEADERBOARD_ROWS,
     NO_TEAM,
+    NOBODY_LINKED_MESSAGE,
     OTHER_PLAYERS_FIELD,
     PROFILE_COLOUR,
     RANKS_FIELD,
     RATINGS_FIELD,
+    SQUAD_FIELD,
+    UNRANKED,
     WINRATE_FIELD,
     YOUR_TEAM,
+    build_announcement_embed,
+    build_leaderboard_embed,
     build_match_embed,
     build_profile_embed,
     format_breakdown,
     format_friends,
+    format_leaderboard_row,
     format_player_stats,
     format_ranks,
     format_rating_bars,
@@ -32,6 +42,7 @@ from ninja_bot.cs2.formatting import (
     BAR_EMPTY,
     BAR_FILLED,
     ESCAPED_NAME_LENGTH,
+    HIGHLIGHT,
     escape_name,
     form_strip,
     rating_bar,
@@ -47,6 +58,7 @@ from ninja_bot.cs2.models import (
     parse_match,
     parse_profile,
 )
+from ninja_bot.cs2.squad import LeaderboardRow, Metric, SquadMember, Trend, metric_label
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
 
@@ -703,3 +715,292 @@ def test_friends_lines_dropped_whole_over_the_field_limit(monkeypatch: pytest.Mo
     lines = value.splitlines()
     assert lines[-1] == f"+{4 - (len(lines) - 1)} more"
     assert all(line.endswith("(Team A)") for line in lines[:-1])
+
+
+def leaderboard_row(
+    rank: int | None,
+    discord_id: int,
+    name: str,
+    value: float | None,
+    trend: Trend | None = None,
+) -> LeaderboardRow:
+    return LeaderboardRow(rank=rank, discord_id=discord_id, name=name, value=value, trend=trend)
+
+
+def test_leaderboard_embed_lists_ranked_rows() -> None:
+    trend = Trend(direction="up", delta=0.03, streak_kind="win", streak_length=3)
+    rows = [
+        leaderboard_row(1, 11, "Alice", 0.05, trend),
+        leaderboard_row(2, 22, "Bob", 0.02),
+        leaderboard_row(3, 33, "Carol", 0.0),
+        leaderboard_row(4, 44, "Dave", -0.04),
+    ]
+
+    embed = build_leaderboard_embed(rows, Metric.RATING)
+
+    assert embed.title is not None
+    assert metric_label(Metric.RATING) in embed.title
+    assert [f.name for f in embed.fields] == [LEADERBOARD_FIELD]
+    lines = (embed.fields[0].value or "").split("\n")
+    assert lines == [
+        "🥇 <@11> Alice · **+0.05** ↑ +0.03 🔥3",
+        "🥈 <@22> Bob · **+0.02**",
+        "🥉 <@33> Carol · **+0.00**",
+        "4. <@44> Dave · **-0.04**",
+    ]
+    assert embed.footer.text is None
+
+
+def test_leaderboard_embed_uses_metric_formatting() -> None:
+    embed = build_leaderboard_embed([leaderboard_row(1, 11, "Alice", 0.62)], Metric.WINRATE)
+
+    assert embed.fields[0].value == "🥇 <@11> Alice · **62%**"
+
+
+def test_leaderboard_embed_shares_medals_for_ties() -> None:
+    rows = [
+        leaderboard_row(1, 11, "Alice", 70),
+        leaderboard_row(1, 22, "Bob", 70),
+        leaderboard_row(3, 33, "Carol", 60),
+        leaderboard_row(4, 44, "Dave", 50),
+    ]
+
+    lines = (build_leaderboard_embed(rows, Metric.AIM).fields[0].value or "").split("\n")
+
+    assert [line.split(" ")[0] for line in lines] == ["🥇", "🥇", "🥉", "4."]
+
+
+def test_leaderboard_embed_shows_dash_for_missing_values() -> None:
+    rows = [leaderboard_row(1, 11, "Alice", 0.05), leaderboard_row(None, 22, "Bob", None)]
+
+    lines = (build_leaderboard_embed(rows, Metric.CLUTCH).fields[0].value or "").split("\n")
+
+    assert lines[1] == f"{UNRANKED} <@22> Bob · **-**"
+
+
+def test_leaderboard_embed_escapes_names() -> None:
+    embed = build_leaderboard_embed([leaderboard_row(1, 11, "*bold*", 0.05)], Metric.RATING)
+
+    assert escape_name("*bold*") in (embed.fields[0].value or "")
+
+
+def test_leaderboard_embed_empty_points_to_link() -> None:
+    embed = build_leaderboard_embed([], Metric.RATING)
+
+    assert embed.fields == []
+    assert embed.description == NOBODY_LINKED_MESSAGE
+    assert "/link" in embed.description
+
+
+def test_leaderboard_embed_caps_rows_and_splits_fields() -> None:
+    trend = Trend(direction="down", delta=-0.12, streak_kind="loss", streak_length=12)
+    # Every character escapes, so names are as long as escaping can make them.
+    name = "_" * 32
+    rows = [
+        leaderboard_row(i + 1, 10**19 + i, name, -0.15, trend)
+        for i in range(MAX_LEADERBOARD_ROWS + 5)
+    ]
+
+    embed = build_leaderboard_embed(rows, Metric.OPENING)
+
+    assert len(embed) <= 6000
+    assert len(embed.fields) > 1
+    assert all(len(f.value or "") <= 1024 for f in embed.fields)
+    lines = [line for f in embed.fields for line in (f.value or "").split("\n")]
+    assert len(lines) == MAX_LEADERBOARD_ROWS
+    assert all(line.startswith(f"{i + 1}. ") or i < 3 for i, line in enumerate(lines))
+    assert lines[-1].startswith(f"{MAX_LEADERBOARD_ROWS}. <@{10**19 + 24}>")
+    assert embed.footer.text == "+5 more"
+
+
+def test_leaderboard_embed_fields_hold_whole_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embed_module, "FIELD_VALUE_LIMIT", 60)
+    rows = [leaderboard_row(i + 1, 11 + i, f"Player{i}", 0.01) for i in range(6)]
+    expected = [format_leaderboard_row(row, Metric.RATING) for row in rows]
+
+    embed = build_leaderboard_embed(rows, Metric.RATING)
+
+    assert all(len(f.value or "") <= 60 for f in embed.fields)
+    assert [f.name for f in embed.fields][1:] == [LEADERBOARD_CONTINUED_FIELD] * (
+        len(embed.fields) - 1
+    )
+    assert [line for f in embed.fields for line in (f.value or "").split("\n")] == expected
+
+
+def _member(player: PlayerMatchStats) -> SquadMember:
+    return SquadMember(1000 + int(player.steam64_id[-10:]), player.steam64_id)
+
+
+def _squad_match(*players: PlayerMatchStats, scores: tuple[int, int] = (13, 7)) -> Match:
+    return Match(
+        id="m",
+        map_name="de_inferno",
+        finished_at=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        team_scores=(TeamScore(2, scores[0]), TeamScore(3, scores[1])),
+        players=players,
+    )
+
+
+def _highlighted(value: str) -> list[str]:
+    return [line for line in value.splitlines() if line[1:].startswith(HIGHLIGHT)]
+
+
+@pytest.mark.parametrize("identities", [None, {}])
+def test_announcement_with_empty_squad_matches_plain_embed(
+    match: Match, identities: dict[str, Identity] | None
+) -> None:
+    awards = compute_awards(match)
+    embed = build_announcement_embed(match, awards, [], identities)
+    assert embed.to_dict() == build_match_embed(match, awards).to_dict()
+
+
+def test_announcement_highlights_squad_in_every_table() -> None:
+    players = (_player(1, 2), _player(2, 2), _player(3, 3), _player(4, None))
+    match = _squad_match(*players)
+    squad = [_member(players[0]), _member(players[2]), _member(players[3])]
+
+    embed = build_announcement_embed(match, [], squad)
+
+    fields = _fields(embed)
+    assert [line.split()[0] for line in _highlighted(fields["Team A"])] == [f"{HIGHLIGHT}player1"]
+    assert [line.split()[0] for line in _highlighted(fields["Team B"])] == [f"{HIGHLIGHT}player3"]
+    assert len(_highlighted(fields[OTHER_PLAYERS_FIELD])) == 1
+    assert YOUR_TEAM not in fields
+    assert FRIENDS_FIELD not in fields
+    assert BREAKDOWN_FIELD not in fields
+    assert FORM_FIELD not in fields
+
+
+def test_announcement_uses_identity_names_in_tables() -> None:
+    players = (_player(1, 2), _player(2, 3))
+    match = _squad_match(*players)
+    identities = {players[0].steam64_id: _identity(players[0], "Alice")}
+
+    fields = _fields(build_announcement_embed(match, [], [_member(players[0])], identities))
+
+    assert _highlighted(fields["Team A"])[0][1:].startswith(f"{HIGHLIGHT}Alice ")
+    assert "player1" not in fields["Team A"]
+
+
+def test_announcement_reuses_title_timestamp_and_awards() -> None:
+    players = (_player(1, 2, kills=30), _player(2, 3, kills=3))
+    match = _squad_match(*players)
+    awards = [Award("MVP", players[0].steam64_id, "*star*", "30 kills")]
+
+    embed = build_announcement_embed(match, awards, [_member(players[0])])
+    plain = build_match_embed(match, awards)
+
+    assert embed.title == plain.title == "de_inferno - 13:7"
+    assert embed.timestamp == match.finished_at
+    assert _fields(embed)[AWARDS_FIELD] == _fields(plain)[AWARDS_FIELD]
+    assert [f.name for f in embed.fields] == ["Team A", "Team B", AWARDS_FIELD, SQUAD_FIELD]
+
+
+@pytest.mark.parametrize(
+    ("teams", "scores", "colour"),
+    [
+        ((2,), (13, 7), discord.Colour.green()),
+        ((3,), (13, 7), discord.Colour.red()),
+        ((2, 2, 3), (13, 7), discord.Colour.green()),
+        ((2, 3, 3), (13, 7), discord.Colour.red()),
+        ((2, 3), (13, 7), discord.Colour.light_grey()),
+        ((2, 2), (12, 12), discord.Colour.light_grey()),
+        ((None,), (13, 7), discord.Colour.light_grey()),
+        ((None, None, 3), (13, 7), discord.Colour.red()),
+    ],
+)
+def test_announcement_colour_follows_squad_majority(
+    teams: tuple[int | None, ...], scores: tuple[int, int], colour: discord.Colour
+) -> None:
+    squad_players = [_player(i, team) for i, team in enumerate(teams)]
+    others = [_player(10 + i, 2 + i % 2) for i in range(4)]
+    match = _squad_match(*squad_players, *others, scores=scores)
+
+    embed = build_announcement_embed(match, [], [_member(p) for p in squad_players])
+
+    assert embed.colour == colour
+
+
+def test_announcement_ignores_members_not_in_match() -> None:
+    players = (_player(1, 2, kills=5, deaths=3, assists=1, damage=2000, rounds=20), _player(2, 3))
+    match = _squad_match(*players)
+    stranger = SquadMember(7, "76561199999999999")
+
+    embed = build_announcement_embed(match, [], [stranger, _member(players[0])])
+
+    fields = _fields(embed)
+    assert fields[SQUAD_FIELD] == f"<@{_member(players[0]).discord_id}> 5/3/1 · 100 ADR · -"
+    assert "<@7>" not in fields[SQUAD_FIELD]
+    assert embed.colour == discord.Colour.green()
+
+
+def test_announcement_with_only_absent_members_has_no_squad_field() -> None:
+    match = _squad_match(_player(1, 2), _player(2, 3))
+    embed = build_announcement_embed(match, [], [SquadMember(7, "76561199999999999")])
+    assert embed.to_dict() == build_match_embed(match, []).to_dict()
+
+
+def test_squad_field_lines_by_rating() -> None:
+    players = (
+        _player(1, 2, leetify_rating=0.01, kills=10, deaths=10, assists=2),
+        _player(2, 2, leetify_rating=None),
+        _player(3, 3, leetify_rating=0.09, kills=20, deaths=5, assists=0, damage=2400, rounds=24),
+    )
+    match = _squad_match(*players)
+    squad = [_member(p) for p in players]
+
+    lines = _fields(build_announcement_embed(match, [], squad))[SQUAD_FIELD].splitlines()
+
+    ids = [m.discord_id for m in squad]
+    assert lines == [
+        f"<@{ids[2]}> 20/5/0 · 100 ADR · +0.09",
+        f"<@{ids[0]}> 10/10/2 · - ADR · +0.01",
+        f"<@{ids[1]}> -/-/- · - ADR · -",
+    ]
+
+
+def test_squad_field_capped_at_ten_lines() -> None:
+    players = tuple(_player(i, 2 + i % 2) for i in range(12))
+    embed = build_announcement_embed(_squad_match(*players), [], [_member(p) for p in players])
+    assert len(_fields(embed)[SQUAD_FIELD].splitlines()) == 10
+
+
+def test_announcement_limits_ten_players_five_squad_members() -> None:
+    hostile = "*_~`|[]()" * 4
+    players = tuple(
+        _player(
+            i,
+            2 if i < 5 else 3,
+            name=hostile[:30] + f"{i:02d}",
+            kills=99,
+            deaths=99,
+            assists=99,
+            hs_kills=99,
+            damage=99999,
+            rounds=30,
+            mvps=i,
+            leetify_rating=-0.123,
+            multi5k=9,
+            accuracy=12.3,
+            rounds_survived=29,
+            flash_assists=9,
+            trade_kills=9,
+        )
+        for i in range(10)
+    )
+    match = dataclasses.replace(_squad_match(*players), map_name="de_" + "x" * 300)
+    squad = [SquadMember(18446744073709551615 - i, players[i * 2].steam64_id) for i in range(5)]
+    identities = {m.steam64_id: Identity(m.steam64_id, m.discord_id, "日" * 32) for m in squad}
+
+    embed = build_announcement_embed(match, compute_awards(match, limit=25), squad, identities)
+
+    assert len(embed.fields) <= 25
+    assert len(embed.title or "") <= 256
+    for field in embed.fields:
+        assert len(field.name or "") <= 256
+        assert len(field.value or "") <= 1024
+    assert len(embed) <= 6000
+    _assert_no_empty_fields(embed)
+    assert len(_fields(embed)[SQUAD_FIELD].splitlines()) == 5
+    tables = _fields(embed)["Team A"] + _fields(embed)["Team B"]
+    assert len(_highlighted(tables)) == 5

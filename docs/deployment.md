@@ -36,7 +36,7 @@ The bot uses `discord.Intents.default()`, which only needs the non-privileged in
 
 ### Permissions
 
-All commands are slash commands, which Discord delivers as interactions, and replies to interactions generally do not depend on the bot's channel permissions. Grant the following anyway so the bot behaves the same in every channel and keeps working if a feature posts a normal message:
+All commands are slash commands, which Discord delivers as interactions, and replies to interactions generally do not depend on the bot's channel permissions. Grant the following anyway so the bot behaves the same in every channel:
 
 | Permission | Why |
 |---|---|
@@ -46,6 +46,8 @@ All commands are slash commands, which Discord delivers as interactions, and rep
 | Attach Files | Upload downloaded audio and video |
 
 Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator, no role or member management.
+
+**Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). Check the channel's permission overrides, not just the server role. Without them the bot logs one warning (`Not posting CS2 matches: ...`) and posts nothing.
 
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
@@ -149,6 +151,9 @@ DISCORD_TOKEN=<prod bot token>
 # GUILD_ID intentionally unset in prod: commands sync globally.
 MAX_DURATION_SECONDS=3600
 LEETIFY_API_KEY=<leetify api key>
+# Optional: auto-post new CS2 matches of linked players here.
+# CS2_CHANNEL_ID=<channel id>
+# CS2_POLL_SECONDS=300
 ```
 
 Use the **prod** token only here, never in the dev container or on your workstation.
@@ -187,7 +192,7 @@ systemctl status ninja-bot
 journalctl -u ninja-bot -f       # live logs
 ```
 
-The bot logs to stdout, so journald keeps the logs. The unit's `WorkingDirectory` matters: the bot loads `.env` from there and keeps persistent data in `data/` relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3` (Discord-to-Steam links for `/scoreboard` and `/profile`), so it must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again. If you set `DATA_DIR`, the same applies to that directory.
+The bot logs to stdout, so journald keeps the logs. The unit's `WorkingDirectory` matters: the bot loads `.env` from there and keeps persistent data in `data/` relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which now contains both the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. If you set `DATA_DIR`, the same applies to that directory.
 
 ### 3.6 Verify
 
@@ -248,9 +253,9 @@ Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.
 | `GUILD_ID` | test server ID | unset | Required in dev. When set, commands sync to that server only |
 | `MAX_DURATION_SECONDS` | optional | optional | Longest video/clip `/download` accepts. Default `3600` |
 | `LEETIFY_API_KEY` | optional | recommended | Leetify public API key for `/link`, `/scoreboard`, `/profile` ([leetify.com/app/developer](https://leetify.com/app/developer)). Empty = requests go unauthenticated |
-| `CS2_CHANNEL_ID` | optional | optional | Reserved for automatic CS2 match posts; validated but not used yet |
-| `CS2_POLL_SECONDS` | optional | optional | Reserved for automatic CS2 match posts (poll interval). Default `300`; not used yet |
-| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`). Default `data` (relative to `WorkingDirectory`) |
+| `CS2_CHANNEL_ID` | optional | optional | Channel for automatic CS2 match posts (new matches of linked players). Unset = no auto-posts. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
+| `CS2_POLL_SECONDS` | optional | optional | How often (seconds) to check Leetify for new matches when `CS2_CHANNEL_ID` is set. Default `300`. Each cycle makes one Leetify request per linked player, so don't set it very low |
+| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log). Default `data` (relative to `WorkingDirectory`) |
 | `TEST_CHANNEL_ID` | optional | unused | In `.env.example` but not read by any code yet |
 
 ## 6. Troubleshooting
@@ -270,6 +275,8 @@ Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.
 | `/link` by custom URL name says "Steam couldn't be reached" (logs: `Steam vanity lookup ...`) | The container can't reach `steamcommunity.com` over HTTPS, Steam is down, or Steam is rate limiting the lookups (the profile XML endpoint is unofficial). Check outbound access with `curl -sI https://steamcommunity.com`; meanwhile link with the 17-digit SteamID64, which skips the lookup |
 | "Too large" for videos that should fit | The upload limit is the server's (10 MiB by default). A shorter clip, a lower quality, or a boosted server fixes it |
 | Replies work but files are not attached | Check the bot's channel permission overrides for **Attach Files** and the server's upload limit |
+| Auto-posts: nothing is posted | Check in order: `CS2_CHANNEL_ID` is set in `.env` and is the right channel ID (Developer Mode, right-click the channel, **Copy Channel ID**), then restart; the bot has View Channel, Send Messages and Embed Links in that channel (the log says `Not posting CS2 matches: the CS2_CHANNEL_ID channel is ...`); the player's Leetify profile is public (private profiles are skipped); Leetify has the match (new matches can take a while to show up there, and matches older than 3 hours are never posted). A newly linked player's existing matches are deliberately not posted, only matches after the link |
+| Auto-posts: old matches reposted | The posted-match log in `cs2.sqlite3` lost entries: the file was deleted or swapped for an old backup, or `DATA_DIR`/`WorkingDirectory` changed and the bot opened a different file. An old copy is the risky case: players count as seeded but recent posts are missing, so matches from the last 3 hours can be posted again (older ones never are). A deleted file loses all links too, so after everyone `/link`s again they are seeded silently and nothing old is posted. Keep `data/` persistent and backed up, and restore the newest backup |
 | Disk fills up | Temporary download folders are removed after each request. If the bot is killed mid-download, a leftover `ninja-dl-*` folder can remain; with `PrivateTmp=true` it is cleared when the service stops or restarts |
 
 ## 7. Security checklist

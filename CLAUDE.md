@@ -14,17 +14,20 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
 - `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + `UserCooldown` from `media/cooldown.py`).
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
-- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile` cog (thin wrapper; shared `UserCooldown`, `LeetifyClient` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`).
+- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile`, `/leaderboard` cog (thin wrapper; shared `UserCooldown`, `CachedStatsProvider(LeetifyClient)` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`) plus the auto-post `tasks.loop` (only with `CS2_CHANNEL_ID`; logic in `run_poll_cycle`, driven by `AutoPost(bot, MatchPoller, channel_id, poll_seconds)`).
 - `src/ninja_bot/cs2/`: CS2 feature logic (Leetify API):
   - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`, `newest_first` (the one newest-first sort).
   - `steam.py`: `parse_steam_target` (`SteamId` | `VanityName` from a SteamID64, `/profiles/` or `/id/` URL, or bare custom URL name; `is_vanity_name` is the one vanity check), `parse_steam_id` (ID-only wrapper for scripts).
   - `client.py`: `StatsProvider` Protocol (includes `aclose`; wrappers must delegate it), `LeetifyClient` (the only module talking to Leetify; injectable fetch), `full_match` (re-fetches a history entry by id when it lacks players; use it before showing/announcing any history match).
   - `resolver.py`: `SteamResolver` Protocol, `SteamCommunityResolver` (custom URL name -> SteamID64 via `steamcommunity.com/id/<name>/?xml=1`, no API key, regex only; the only module talking to Steam).
-  - `store.py`: `LinkStore` Protocol, `SqliteLinkStore` (`<DATA_DIR>/cs2.sqlite3`).
+  - `cache.py`: `TtlCache` (generic, injectable clock), `CachedStatsProvider` (caches `get_profile` per Steam ID for 5 min; `setup` wraps the `LeetifyClient` in it).
+  - `store.py`: `LinkStore` and `MatchLog` Protocols (links; seeded players + posted matches, pruned to the newest `MAX_POSTED_MATCHES`), both implemented by `SqliteLinkStore` in one file (`<DATA_DIR>/cs2.sqlite3`; tables created lazily, blocking calls via `asyncio.to_thread`).
   - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name` (names in code blocks), `escape_name` (names in embed text), `display_width` (table alignment).
   - `awards.py`: `compute_awards` (fun match awards).
   - `identities.py`: `Identity`, `resolve_identities` (match players -> linked server members via an injected `lookup`; never imports discord). The cog's `member_lookup(guild)` provides it (cache, then REST `fetch_member`).
-  - `embed.py`: `build_match_embed`, `build_profile_embed`.
+  - `squad.py`: `/leaderboard` and squad logic: `Metric`, `compute_trend`/`format_trend` (newest 5 vs previous 5 ratings, streaks), `rank_squad` (`SquadEntry` -> `LeaderboardRow`, shared ranks), `SquadMember` (linked member in an announced match).
+  - `embed.py`: `build_match_embed` (/scoreboard), `build_announcement_embed` (auto-posts: squad highlights, `Squad` field, `squad_outcome` colour), `build_profile_embed`, `build_leaderboard_embed`.
+  - `poller.py`: `MatchPoller` (new matches of linked players for auto-posts: seeds new players silently, age filter, max per cycle, `full_match` + squad; `confirm` marks a match posted after each send attempt).
 - `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.
 - `tests/`: pytest (asyncio_mode=auto).
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 
 import discord
 
@@ -13,6 +13,7 @@ NAME_WIDTH = 12
 ESCAPED_NAME_LENGTH = 32
 MISSING = "-"
 STAR = "★"
+HIGHLIGHT = "▸"
 FORM_LENGTH = 5
 FORM_EMOJI: dict[MatchOutcome | None, str] = {
     "win": "🟩",
@@ -61,11 +62,14 @@ def format_team_table(
     players: Sequence[PlayerMatchStats],
     max_chars: int = 1000,
     names: Mapping[str, str] | None = None,
+    highlight: Collection[str] = (),
 ) -> str:
     """One team as a monospace code block: name, K/D/A, ADR, HS% and rating per player.
 
     `names` maps Steam IDs to a display name (e.g. a linked Discord member) shown instead
-    of the Steam name; it goes through `clean_name` like any other name.
+    of the Steam name; it goes through `clean_name` like any other name. Players whose
+    Steam ID is in `highlight` get a `HIGHLIGHT` prefix (their name is cut one column
+    shorter, so the row width is unchanged).
 
     The player with the most MVPs (ties: best rating) gets a star. Rows are dropped from
     the bottom with a `+N more` line so the result never exceeds `max_chars`; raises
@@ -78,7 +82,15 @@ def format_team_table(
         return _code_block([header, NO_PLAYERS], max_chars)
     star = _star_player(players)
     names = names or {}
-    rows = [_row(player, player is star, names.get(player.steam64_id)) for player in players]
+    rows = [
+        _row(
+            player,
+            player is star,
+            names.get(player.steam64_id),
+            highlighted=player.steam64_id in highlight,
+        )
+        for player in players
+    ]
     for shown in range(len(rows), -1, -1):
         lines = [header, *rows[:shown]]
         if shown < len(rows):
@@ -106,18 +118,22 @@ def display_width(text: str) -> int:
     return sum(_char_width(c) for c in text)
 
 
-def clean_name(name: str | None) -> str:
-    """A player name safe for a code block, truncated to `NAME_WIDTH` display columns."""
+def clean_name(name: str | None, width: int | None = None) -> str:
+    """A player name safe for a code block, truncated to `width` display columns.
+
+    `width` defaults to `NAME_WIDTH`.
+    """
+    max_width = NAME_WIDTH if width is None else width
     cleaned = "".join(c for c in name or "" if c != "`" and c.isprintable()).strip()
     if not cleaned:
         return "?"
-    if display_width(cleaned) <= NAME_WIDTH:
+    if display_width(cleaned) <= max_width:
         return cleaned
     kept: list[str] = []
-    width = 0
+    used = 0
     for c in cleaned:
-        width += _char_width(c)
-        if width > NAME_WIDTH - 1:
+        used += _char_width(c)
+        if used > max_width - 1:
             break
         kept.append(c)
     return "".join(kept) + "…"
@@ -140,11 +156,18 @@ def escape_name(name: str | None) -> str:
     return _UNESCAPED_LINK_CHAR.sub(r"\1\\\2", escaped)
 
 
-def _row(player: PlayerMatchStats, starred: bool, name: str | None = None) -> str:
+def _row(
+    player: PlayerMatchStats, starred: bool, name: str | None = None, highlighted: bool = False
+) -> str:
     kda = "/".join(_int(v) for v in (player.kills, player.deaths, player.assists))
+    raw_name = player.name if name is None else name
+    if highlighted:
+        shown = HIGHLIGHT + clean_name(raw_name, NAME_WIDTH - display_width(HIGHLIGHT))
+    else:
+        shown = clean_name(raw_name)
     return _ROW_FORMAT.format(
         star=STAR if starred else " ",
-        name=_pad_name(clean_name(player.name if name is None else name)),
+        name=_pad_name(shown),
         kda=kda,
         adr=_int(player.adr),
         hs=_int(player.hs_percent),
