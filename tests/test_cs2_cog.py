@@ -42,10 +42,13 @@ from ninja_bot.cs2.models import (
     PrivateProfileError,
     Profile,
     RateLimitedError,
+    SteamLookupError,
+    VanityNotFoundError,
     parse_match,
     parse_profile,
 )
-from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH, STEAM_ID_ONLY_MESSAGE
+from ninja_bot.cs2.resolver import SteamCommunityResolver
+from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH
 from ninja_bot.cs2.store import SqliteLinkStore
 from ninja_bot.media.cooldown import UserCooldown
 
@@ -242,7 +245,7 @@ def test_not_linked_message_escapes_links() -> None:
     ("steam", "message"),
     [
         ("not an id", InvalidSteamIdError.default_message),
-        ("https://steamcommunity.com/id/someone", STEAM_ID_ONLY_MESSAGE),
+        ("evil.example/id/gaben", InvalidSteamIdError.default_message),
     ],
 )
 async def test_link_invalid_id_is_ephemeral_and_skips_api(steam: str, message: str) -> None:
@@ -383,6 +386,213 @@ async def test_link_store_lookup_error_is_generic(caplog: pytest.LogCaptureFixtu
     assert cog.link_cooldown.try_acquire(USER_ID) == 0.0
 
 
+VANITY_NAME = "ninja_42"
+
+
+class FakeResolver:
+    def __init__(self, steam64_id: str = STEAM_ID, error: Exception | None = None) -> None:
+        self.steam64_id = steam64_id
+        self.error = error
+        self.calls: list[str] = []
+        self.close_calls = 0
+
+    async def resolve_vanity(self, name: str) -> str:
+        self.calls.append(name)
+        if self.error is not None:
+            raise self.error
+        return self.steam64_id
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+def vanity_cog(
+    links: dict[int, str] | None = None,
+    resolver: FakeResolver | None = None,
+    **stats_kwargs: Any,
+) -> tuple[Cs2, FakeStats, MemoryLinkStore, FakeResolver, FakeClock]:
+    clock = FakeClock()
+    stats = FakeStats(**stats_kwargs)
+    store = MemoryLinkStore(links)
+    resolver = resolver or FakeResolver()
+    cog = Cs2(
+        stats,
+        store,
+        UserCooldown(COOLDOWN_SECONDS, clock),
+        UserCooldown(LINK_COOLDOWN_SECONDS, clock),
+        resolver,
+    )
+    return cog, stats, store, resolver, clock
+
+
+@pytest.mark.parametrize(
+    "steam",
+    [
+        VANITY_NAME,
+        f"https://steamcommunity.com/id/{VANITY_NAME}/",
+        f"steamcommunity.com/id/{VANITY_NAME}?l=english",
+    ],
+)
+async def test_link_vanity_resolves_and_links(steam: str) -> None:
+    cog, stats, store, resolver, _ = vanity_cog()
+    interaction = make_interaction()
+    await Cs2.link.callback(cog, interaction, steam)
+    assert resolver.calls == [VANITY_NAME]
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {USER_ID: STEAM_ID}
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    interaction.response.send_message.assert_not_awaited()
+    args, kwargs = followup_reply(interaction)
+    assert args == (linked_message("Ninja", STEAM_ID),)
+    assert kwargs == {"ephemeral": True}
+    assert "Ninja" in args[0]
+    assert STEAM_ID in args[0]
+
+
+def test_linked_message_shows_resolved_id() -> None:
+    assert linked_message("Ninja", STEAM_ID) == (
+        f"Linked to **Ninja** on Leetify (Steam ID {STEAM_ID})."
+    )
+    assert STEAM_ID not in linked_message("Ninja")
+
+
+@pytest.mark.parametrize("steam", [STEAM_ID, f"https://steamcommunity.com/profiles/{STEAM_ID}"])
+async def test_link_steam_id_makes_no_resolver_call(steam: str) -> None:
+    cog, _, store, resolver, _ = vanity_cog()
+    interaction = make_interaction()
+    await cog.handle_link(interaction, steam)
+    assert resolver.calls == []
+    assert store.links == {USER_ID: STEAM_ID}
+    assert followup_reply(interaction) == ((linked_message("Ninja"),), {"ephemeral": True})
+
+
+async def test_link_already_linked_steam_id_makes_no_resolver_call() -> None:
+    cog, _, _, resolver, _ = vanity_cog({USER_ID: STEAM_ID})
+    interaction = make_interaction()
+    await cog.handle_link(interaction, STEAM_ID)
+    assert resolver.calls == []
+    assert reply(interaction) == ((ALREADY_LINKED_MESSAGE,), {"ephemeral": True})
+
+
+async def test_link_vanity_already_linked_replies_through_followup() -> None:
+    cog, stats, store, resolver, _ = vanity_cog({USER_ID: STEAM_ID})
+    interaction = make_interaction()
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert resolver.calls == [VANITY_NAME]
+    assert stats.profile_calls == []
+    assert store.links == {USER_ID: STEAM_ID}
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    interaction.response.send_message.assert_not_awaited()
+    assert followup_reply(interaction) == ((ALREADY_LINKED_MESSAGE,), {"ephemeral": True})
+
+
+async def test_link_vanity_relinks_different_id() -> None:
+    cog, _, store, _, _ = vanity_cog({USER_ID: "76561198000000999"})
+    await cog.handle_link(make_interaction(), VANITY_NAME)
+    assert store.links == {USER_ID: STEAM_ID}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [VanityNotFoundError(), SteamLookupError(), RateLimitedError("Steam is busy"), Cs2Error("x")],
+    ids=type,
+)
+async def test_link_vanity_resolver_errors_are_ephemeral(error: Cs2Error) -> None:
+    cog, stats, store, _, _ = vanity_cog(resolver=FakeResolver(error=error))
+    interaction = make_interaction()
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert stats.profile_calls == []
+    assert store.links == {}
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    assert followup_reply(interaction) == ((error.message,), {"ephemeral": True})
+
+
+async def test_link_vanity_unexpected_resolver_error_is_generic(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cog, _, store, _, _ = vanity_cog(resolver=FakeResolver(error=RuntimeError("boom")))
+    interaction = make_interaction()
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert store.links == {}
+    assert followup_reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    assert "Unexpected error linking" in caplog.text
+
+
+async def test_link_vanity_without_leetify_profile() -> None:
+    cog, stats, store, resolver, _ = vanity_cog(error=PlayerNotFoundError())
+    interaction = make_interaction()
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert resolver.calls == [VANITY_NAME]
+    assert stats.profile_calls == [STEAM_ID]
+    assert store.links == {}
+    assert followup_reply(interaction) == (
+        (PlayerNotFoundError.default_message,),
+        {"ephemeral": True},
+    )
+
+
+async def test_link_vanity_store_error_after_defer_is_generic(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cog, stats, store, _, _ = vanity_cog()
+    store.get = AsyncMock(side_effect=RuntimeError("disk"))  # type: ignore[method-assign]
+    interaction = make_interaction()
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert stats.profile_calls == []
+    assert followup_reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {"ephemeral": True})
+    assert "Unexpected error linking" in caplog.text
+
+
+async def test_link_vanity_cooldown_taken_once_and_not_refunded() -> None:
+    cog, _, store, resolver, clock = vanity_cog(resolver=FakeResolver(error=VanityNotFoundError()))
+    await cog.handle_link(make_interaction(), VANITY_NAME)
+    clock.now += LINK_COOLDOWN_SECONDS - 5
+    interaction = make_interaction()
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert resolver.calls == [VANITY_NAME]
+    assert store.links == {}
+    assert reply(interaction) == ((cooldown_message(5),), {"ephemeral": True})
+    interaction.response.defer.assert_not_awaited()
+    # A successful vanity link holds the cooldown too.
+    clock.now += 5
+    resolver.error = None
+    await cog.handle_link(make_interaction(), VANITY_NAME)
+    assert store.links == {USER_ID: STEAM_ID}
+    assert cog.link_cooldown.try_acquire(USER_ID) == LINK_COOLDOWN_SECONDS
+
+
+async def test_link_vanity_already_linked_holds_cooldown() -> None:
+    cog, _, _, _, _ = vanity_cog({USER_ID: STEAM_ID})
+    await cog.handle_link(make_interaction(), VANITY_NAME)
+    assert cog.link_cooldown.try_acquire(USER_ID) == LINK_COOLDOWN_SECONDS
+
+
+async def test_link_vanity_invalid_input_makes_no_resolver_call() -> None:
+    cog, _, _, resolver, _ = vanity_cog()
+    interaction = make_interaction()
+    await cog.handle_link(interaction, "no spaces allowed")
+    assert resolver.calls == []
+    assert reply(interaction) == ((InvalidSteamIdError.default_message,), {"ephemeral": True})
+    assert cog.link_cooldown.try_acquire(USER_ID) == 0.0
+
+
+async def test_link_vanity_defers_before_resolver_call() -> None:
+    calls: list[str] = []
+    resolver = FakeResolver()
+    original = resolver.resolve_vanity
+
+    async def resolve_vanity(name: str) -> str:
+        calls.append("resolve")
+        return await original(name)
+
+    resolver.resolve_vanity = resolve_vanity  # type: ignore[method-assign]
+    cog, _, _, _, _ = vanity_cog(resolver=resolver)
+    interaction = make_interaction()
+    interaction.response.defer = AsyncMock(side_effect=lambda **_: calls.append("defer"))
+    await cog.handle_link(interaction, VANITY_NAME)
+    assert calls == ["defer", "resolve"]
+
+
 async def test_unlink_removes_existing_link() -> None:
     cog, _, store = make_cog(store=MemoryLinkStore({USER_ID: STEAM_ID, 7: STEAM_ID}))
     interaction = make_interaction()
@@ -481,6 +691,7 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     assert cog.cooldown.per_seconds == COOLDOWN_SECONDS == 10.0
     assert cog.link_cooldown.per_seconds == LINK_COOLDOWN_SECONDS == 15
     assert cog.link_cooldown is not cog.cooldown
+    assert isinstance(cog.resolver, SteamCommunityResolver)
 
 
 async def test_cog_unload_closes_client() -> None:
@@ -496,6 +707,21 @@ async def test_cog_unload_closes_any_provider_once() -> None:
     cog = Cs2(stats, MemoryLinkStore())
     await cog.cog_unload()
     assert stats.close_calls == 1
+
+
+async def test_cog_unload_closes_stats_and_resolver() -> None:
+    cog, stats, _, resolver, _ = vanity_cog()
+    await cog.cog_unload()
+    assert stats.close_calls == 1
+    assert resolver.close_calls == 1
+
+
+async def test_cog_unload_closes_resolver_when_stats_close_fails() -> None:
+    cog, stats, _, resolver, _ = vanity_cog()
+    stats.aclose = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await cog.cog_unload()
+    assert resolver.close_calls == 1
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
