@@ -47,7 +47,7 @@ All commands are slash commands, which Discord delivers as interactions, and rep
 
 Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator, no role or member management.
 
-**Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). Check the channel's permission overrides, not just the server role. Without them the bot logs one warning (`Not posting CS2 matches: ...`) and posts nothing.
+**Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel` or `missing View Channel, Send Messages or Embed Links`, and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
 
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
@@ -74,7 +74,7 @@ Invite `Ninja (dev)` only to the test server and `Ninja` only to the real one. T
 
 ## 2. Local development
 
-Requirements: [uv](https://docs.astral.sh/uv/), Python 3.12+ (the repo pins 3.13 in `.python-version`, uv fetches it), ffmpeg and deno (see [system dependencies](#system-dependencies)). Or use the dev container from the README, which has everything.
+Requirements: [uv](https://docs.astral.sh/uv/), Python 3.12+ (the repo pins 3.13 in `.python-version`, uv fetches it), ffmpeg and deno (see [system dependencies](#system-dependencies)). Or use the [dev container](../README.md#dev-container), which has everything.
 
 ```
 cp .env.example .env     # then fill in the dev values below
@@ -192,7 +192,7 @@ systemctl status ninja-bot
 journalctl -u ninja-bot -f       # live logs
 ```
 
-The bot logs to stdout, so journald keeps the logs. The unit's `WorkingDirectory` matters: the bot loads `.env` from there and keeps persistent data in `data/` relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which now contains both the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. If you set `DATA_DIR`, the same applies to that directory.
+The bot logs at INFO level to stderr, which journald keeps along with stdout. The bot finds `.env` through `python-dotenv`'s default search (`load_dotenv()` with no path), which works here because the install is editable and the file sits in the repo root; a variable already set in the unit (for example `Environment=`) wins over `.env`. The unit's `WorkingDirectory` still matters because the default `DATA_DIR` (`data`) is relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which contains the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. If you set `DATA_DIR`, the same applies to that directory. The tables and their meaning are described in the [README](../README.md#data-and-storage).
 
 ### 3.6 Verify
 
@@ -216,7 +216,7 @@ systemctl restart ninja-bot
 journalctl -u ninja-bot -n 50
 ```
 
-If a release adds new settings, add them to the prod `.env` **before** restarting, and check the release notes or README for them.
+If a release adds new settings, add them to the prod `.env` **before** restarting, and check the [CHANGELOG](../CHANGELOG.md) and the README's [configuration](../README.md#configuration) for them.
 
 ### Updating yt-dlp
 
@@ -244,11 +244,11 @@ Return to the branch with `git checkout main` once a fix is merged.
 
 ## 5. Settings reference
 
-Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.py).
+Read from the environment (and `.env`; real environment variables win). See [config.py](../src/ninja_bot/config.py). The [README](../README.md#configuration) has the full reference with defaults; this table is the dev/prod view.
 
 | Variable | Dev | Prod | Meaning |
 |---|---|---|---|
-| `ENVIRONMENT` | `dev` | `prod` | Ralph and `smoke.py` only run when this is `dev` |
+| `ENVIRONMENT` | `dev` | `prod` | Defaults to `dev` when unset, so set `prod` explicitly. Ralph, `smoke.py` and `capture_leetify.py` only run when this is `dev` |
 | `DISCORD_TOKEN` | dev token | prod token | Required. The bot token from step 1 |
 | `GUILD_ID` | test server ID | unset | Required in dev. When set, commands sync to that server only |
 | `MAX_DURATION_SECONDS` | optional | optional | Longest video/clip `/download` accepts. Default `3600` |
@@ -256,14 +256,13 @@ Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.
 | `CS2_CHANNEL_ID` | optional | optional | Channel for automatic CS2 match posts (new matches of linked players). Unset = no auto-posts. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `CS2_POLL_SECONDS` | optional | optional | How often (seconds) to check Leetify for new matches when `CS2_CHANNEL_ID` is set. Default `300`. Each cycle makes one Leetify request per linked player, so don't set it very low |
 | `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log). Default `data` (relative to `WorkingDirectory`) |
-| `TEST_CHANNEL_ID` | optional | unused | In `.env.example` but not read by any code yet |
 
 ## 6. Troubleshooting
 
 | Symptom | Likely cause and fix |
 |---|---|
-| `ConfigError: DISCORD_TOKEN is not set` | `.env` missing, empty, or the service's `WorkingDirectory` is wrong |
-| `ConfigError: GUILD_ID is required when ENVIRONMENT=dev` | Set `GUILD_ID` in dev, or `ENVIRONMENT=prod` for prod |
+| `ConfigError: DISCORD_TOKEN is not set` | `.env` missing or empty (the bot looks for it via `python-dotenv`'s default search, normally the repo root), or the variable is set but empty in the unit |
+| `ConfigError: GUILD_ID is required when ENVIRONMENT=dev` | Set `GUILD_ID` in dev, or `ENVIRONMENT=prod` for prod. `ENVIRONMENT` defaults to `dev` when unset, so a prod box that forgot it fails with this error |
 | Portal error "A private application cannot have a default authorization link" when saving the Bot tab | Installation tab, set **Install Link** to **None**, save, then turn **Public Bot** off again (step 1) |
 | `LoginFailure: Improper token` | Wrong or reset token, or stray spaces or quotes. Reset the token in the portal and paste it again |
 | `Forbidden: 50001 Missing Access` at startup | The bot is not in the server `GUILD_ID` points to, or the ID is wrong. Re-invite or fix the ID |
