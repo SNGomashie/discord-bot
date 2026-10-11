@@ -128,3 +128,10 @@
 - Files: src/ninja_bot/activity/{pokemon_stats,awards,report,embed}.py, src/ninja_bot/cogs/activity.py, src/ninja_bot/help/content.py, tests/test_activity_{pokemon_stats,embed,commands}.py, README.md (/activity, /myactivity, cooldown, Pokémon stats subsection, commands table, layout), docs/manual-checks.md (Toasty), CLAUDE.md (Architecture).
 - Decisions: months with only Pokémon data are not auto-posted (reporter needs voice time) and `/myactivity` still needs voice time; both documented in README.
 - Needs manual check: docs/manual-checks.md "Toasty ;pokemon" Pokémon field items.
+---
+## 2026-10-11 - US-012
+- Final docs pass, checked against the code (constants, messages, loops). Most docs were already current from the per-story updates.
+- README: "reads no messages" now names the Toasty exception; DATA_DIR row lists Toasty events; invite note links the monthly auto-post channel; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post; Known limitations add voice only / no history before the feature / month boundaries in ACTIVITY_TIMEZONE.
+- docs/deployment.md: fixed the activity.sqlite3 backup sentence; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post. docs/manual-checks.md: Toasty startup-without-intent and unseen-command checks. CLAUDE.md: intent rule names the conditional Message Content intent.
+- Relative links/anchors checked with a small script (the only hit was an example `[x](y)` in a code span).
+- Needs manual check: everything in docs/manual-checks.md "Activity tracking", "Monthly auto-post", "Toasty ;pokemon".

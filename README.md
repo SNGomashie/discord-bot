@@ -29,7 +29,7 @@ It does four things:
 
 ## Commands at a glance
 
-All commands are slash commands. There are no prefix commands, and the bot reads no messages. Unless noted, anyone who can see a command can run it.
+All commands are slash commands. There are no prefix commands, and the bot reads no messages except Toasty's replies to `;pokemon` when [Toasty tracking](#toasty-pokemon-catches) is turned on. Unless noted, anyone who can see a command can run it.
 
 | Command | Parameters | Reply | Cooldown (per user) |
 |---|---|---|---|
@@ -71,14 +71,14 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `LEETIFY_API_KEY` | none | no, recommended | Sent to Leetify as a bearer token. Get one at [leetify.com/app/developer](https://leetify.com/app/developer). Without it, requests are sent unauthenticated. |
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
-| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions and posted monthly reports). A relative path is relative to the process's working directory. |
+| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions, Toasty `;pokemon` events and posted monthly reports). A relative path is relative to the process's working directory. |
 | `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report (see [Monthly auto-post](#monthly-auto-post)). Unset means no monthly auto-post. Positive integer. |
 | `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
 | `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
 
 **Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
 
-**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channel needs a few extra things; see [Auto-posted matches](#auto-posted-matches). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
+**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
 **Logging:** INFO level to stderr (journald captures it under systemd). On start the bot logs `Logged in as <name> (env=<ENVIRONMENT>)`.
 
@@ -403,6 +403,8 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 | "Too large" for a video that should fit | The upload limit is the server's (10 MiB by default). Clip it, or use a boosted server. |
 | `/link` by name says "Steam couldn't be reached" | Steam is down or rate limiting. Link with the 17-digit SteamID64 instead. |
 | Auto-posts: nothing is posted | Check `CS2_CHANNEL_ID`, the channel permissions (see the log warning), that the player's Leetify profile is public, and that the match is under 3 hours old. A new link's old matches are deliberately not posted. |
+| `PrivilegedIntentsRequired` at startup | `TOASTY_BOT_ID` is set but **Message Content Intent** is off in the Developer Portal. Enable it, or unset `TOASTY_BOT_ID`. |
+| No monthly activity post | Check `ACTIVITY_CHANNEL_ID` and the channel permissions (see the log warning). The post comes within an hour after the month ends in `ACTIVITY_TIMEZONE`, and only for months with voice time. |
 
 ## Known limitations
 
@@ -414,6 +416,9 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **One download at a time**, bot-wide, with no persistent queue.
+- **Voice only:** activity counts time connected to voice channels. Text messages, reactions, streaming and camera time are not counted (Toasty `;pokemon` replies are the only messages read).
+- **No history before the feature:** Discord keeps no voice history, so tracking starts when the bot first runs with this feature; earlier months are empty.
+- **Month boundaries:** months, days and hours use `ACTIVITY_TIMEZONE` (default `UTC`). Changing it later shifts which sessions fall into which day and month, and a month already auto-posted is not posted again.
 - **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
 - **Toasty catches:** only recorded while the bot is online, and only when Toasty replies to a `;pokemon` message (catches by any other route, or replies to a message the bot missed, are not seen). The reply formats are derived from a few observed replies, so a Toasty wording change can stop the recording without an error.
 - **Monthly post after a crash:** a month is recorded as posted right after the send. If the bot stops between the two, that month's overview is posted again after the restart.

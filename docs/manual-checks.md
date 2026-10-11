@@ -112,6 +112,8 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] `; pokemon` (with a space) is recorded too; `;pokemon list` and someone else's message are not
 - [ ] Note whether Toasty edits its reply or puts the text in an embed, and replace the `assumed` cases in `tests/fixtures/toasty/replies.json` with what you see
 - [ ] Without `TOASTY_BOT_ID` (and the intent off in the portal) the bot starts and records nothing
+- [ ] With `TOASTY_BOT_ID` set but **Message Content Intent** off in the portal, the bot stops at startup with `PrivilegedIntentsRequired`
+- [ ] A Toasty reply to a `;pokemon` the bot didn't see (sent while it was offline) is not recorded
 - [ ] After a few catches (one shiny if you're lucky) and 3 cooldown hits, `/activity` shows a **Pokémon** field: top catchers with medals (no pings), the shiny line, `🏆 Most caught`, `⏳ Impatient: @you (3 cooldown hits)` and the `🎯 Server` line; Impatient is not in the Awards field
 - [ ] `/myactivity` shows `N catches · N shinies · N cooldown hits` and the Impatient award; a member who didn't play shows zeros
 - [ ] A shiny can be faked with `sqlite3 data/activity.sqlite3 "INSERT INTO pokemon_events VALUES (1, <your user id>, strftime('%s','now'), 'catch', 'Pikachu', 1)"` if Toasty doesn't cooperate; delete the row afterwards

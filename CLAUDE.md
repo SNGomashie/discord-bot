@@ -51,7 +51,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - **Keep logic out of Discord handlers.** Put decisions/formatting/parsing in pure functions or small service classes; cogs are thin wrappers. This is how we test, since bots cannot invoke slash commands.
 - Use slash commands (`app_commands`), not prefix commands.
 - Type-annotate everything (mypy strict). Persistent data goes under `data/` (gitignored), not in the repo.
-- Request only the Discord intents a feature needs.
+- Request only the Discord intents a feature needs. The only privileged one is Message Content, requested only when `TOASTY_BOT_ID` is set (`bot.py`); nothing else may depend on it.
 - All `/help` text lives in `help/content.py` (`src/ninja_bot/help/content.py`); other help modules and the cog hold no user-facing help strings.
 
 ## Safety
