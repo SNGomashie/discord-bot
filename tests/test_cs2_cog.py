@@ -1,7 +1,7 @@
 import asyncio
 import dataclasses
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -130,6 +130,14 @@ class MemoryLinkStore:
 
     async def all_links(self) -> dict[int, str]:
         return dict(self.links)
+
+    async def discord_ids_for(self, steam64_ids: Collection[str]) -> dict[str, int]:
+        wanted = set(steam64_ids)
+        result: dict[str, int] = {}
+        for discord_id, steam64_id in sorted(self.links.items()):
+            if steam64_id in wanted:
+                result.setdefault(steam64_id, discord_id)
+        return result
 
 
 class FakeClock:
