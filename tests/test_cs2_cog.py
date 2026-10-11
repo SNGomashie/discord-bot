@@ -796,6 +796,8 @@ async def test_scoreboard_own_latest_match(match: Match, fixture_profile: Profil
     embed = posted_embed(interaction)
     assert BREAKDOWN_FIELD in field_names(embed)
     assert cooldown.try_acquire(USER_ID) > 0  # cooldown kept after posting
+    allowed = interaction.followup.send.call_args.kwargs["allowed_mentions"]
+    assert allowed.to_dict() == discord.AllowedMentions.none().to_dict()
 
 
 async def test_scoreboard_one_player_history_entry_posts_full_match(

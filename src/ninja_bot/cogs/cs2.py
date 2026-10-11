@@ -299,7 +299,10 @@ class Cs2(commands.Cog):
             log.exception("Unexpected error building a CS2 scoreboard")
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
             return False
-        return await _send_safely(interaction.followup.send(embed=embed))
+        # Friends are shown as mentions; render them, but never ping anyone.
+        return await _send_safely(
+            interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        )
 
     async def _profile_deferred(self, interaction: discord.Interaction, steam64_id: str) -> bool:
         """Fetch and post the profile; True only if the embed was posted."""

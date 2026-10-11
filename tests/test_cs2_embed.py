@@ -11,7 +11,9 @@ from ninja_bot.cs2.embed import (
     AWARDS_FIELD,
     BREAKDOWN_FIELD,
     FORM_FIELD,
+    FRIENDS_FIELD,
     MATCHES_FIELD,
+    NO_TEAM,
     OTHER_PLAYERS_FIELD,
     PROFILE_COLOUR,
     RANKS_FIELD,
@@ -21,6 +23,7 @@ from ninja_bot.cs2.embed import (
     build_match_embed,
     build_profile_embed,
     format_breakdown,
+    format_friends,
     format_player_stats,
     format_ranks,
     format_rating_bars,
@@ -543,5 +546,160 @@ def test_identities_name_players_in_every_table() -> None:
     assert "player4" in fields["Team A"]
     assert "Bob" in fields["Team B"]
     assert "Carol" in fields[OTHER_PLAYERS_FIELD]
-    tables = "".join(fields.values())
+    tables = "".join(fields[name] for name in ("Team A", "Team B", OTHER_PLAYERS_FIELD))
     assert not any(f"player{i}" in tables for i in (1, 2, 3))
+
+
+def _friends_match(*players: PlayerMatchStats) -> Match:
+    return Match(
+        id="m",
+        map_name="de_dust2",
+        finished_at=None,
+        team_scores=(TeamScore(2, 13), TeamScore(3, 7)),
+        players=players,
+    )
+
+
+def test_no_friends_has_no_friends_field(match: Match) -> None:
+    fields = _fields(build_match_embed(match, [], match.players[0].steam64_id, identities={}))
+    assert FRIENDS_FIELD not in fields
+
+
+def test_one_friend_line() -> None:
+    players = (_player(1, 2), _player(2, 3))
+    identity = _identity(players[1], "Bob")
+    match = _friends_match(*players)
+
+    embed = build_match_embed(match, [], identities={players[1].steam64_id: identity})
+
+    fields = _fields(embed)
+    assert fields[FRIENDS_FIELD] == f"<@{identity.discord_id}> as player2 (Team B)"
+    names = [f.name for f in embed.fields]
+    assert names == ["Team A", "Team B", FRIENDS_FIELD]
+    assert not any(f.inline for f in embed.fields if f.name == FRIENDS_FIELD)
+
+
+def test_requester_and_friends(profile: Profile) -> None:
+    players = (
+        _player(1, 2, leetify_rating=0.01),
+        _player(2, 2, leetify_rating=0.05),
+        _player(3, 3, leetify_rating=0.09),
+        _player(4, 2, leetify_rating=None),
+        _player(5, None),
+    )
+    identities = {p.steam64_id: _identity(p, f"D{i}") for i, p in enumerate(players)}
+    match = _friends_match(*players)
+    awards = [Award("MVP", players[0].steam64_id, players[0].name or "", "x")]
+
+    embed = build_match_embed(match, awards, players[0].steam64_id, profile, identities)
+
+    names = [f.name for f in embed.fields]
+    assert names.index(AWARDS_FIELD) < names.index(FRIENDS_FIELD) < names.index("player1")
+    fields = _fields(embed)
+    ids = [identities[p.steam64_id].discord_id for p in players]
+    assert fields[FRIENDS_FIELD].splitlines() == [
+        f"<@{ids[1]}> as player2 (Your team)",
+        f"<@{ids[0]}> as player1 (Your team)",
+        f"<@{ids[3]}> as player4 (Your team)",
+        f"<@{ids[2]}> as player3 (Team B)",
+        f"<@{ids[4]}> as player5 ({NO_TEAM})",
+    ]
+    assert fields["player1"].startswith(f"<@{ids[0]}> · player1\n")
+    # Only the requester gets detail fields.
+    assert not any(f"player{i}" in names for i in (2, 3, 4, 5))
+    assert names.count(BREAKDOWN_FIELD) == 1
+    assert names.count(FORM_FIELD) == 1
+
+
+def test_focus_field_unchanged_without_requester_identity(profile: Profile) -> None:
+    players = (_player(1, 2, kills=5), _player(2, 3))
+    match = _friends_match(*players)
+    identities = {players[1].steam64_id: _identity(players[1], "Bob")}
+
+    plain = _fields(build_match_embed(match, [], players[0].steam64_id, profile))
+    fields = _fields(build_match_embed(match, [], players[0].steam64_id, profile, identities))
+
+    assert fields["player1"] == plain["player1"] == "K/D/A: 5/-/-"
+
+
+def test_focus_mention_without_stats() -> None:
+    players = (_player(1, 2), _player(2, 3))
+    match = _friends_match(*players)
+    identity = _identity(players[0], "Al")
+
+    fields = _fields(
+        build_match_embed(
+            match, [], players[0].steam64_id, identities={players[0].steam64_id: identity}
+        )
+    )
+
+    assert fields["player1"] == f"<@{identity.discord_id}> · player1"
+
+
+def test_friend_names_are_escaped() -> None:
+    players = (_player(1, 2, name="*bold* [x](http://e.com) @everyone"), _player(2, 3))
+    match = _friends_match(*players)
+    identity = _identity(players[0], "Al")
+
+    fields = _fields(build_match_embed(match, [], identities={players[0].steam64_id: identity}))
+
+    name = escape_name(players[0].name or "")
+    assert fields[FRIENDS_FIELD] == f"<@{identity.discord_id}> as {name} (Team A)"
+    assert "*bold*" not in fields[FRIENDS_FIELD]
+
+
+def test_ten_friends_with_long_names_fit_the_limits(profile: Profile) -> None:
+    hostile = "*_~`|[]()" * 4  # every character gets escaped
+    players = tuple(
+        _player(i, 2 if i < 5 else 3, name=hostile[:30] + f"{i:02d}", kills=9, leetify_rating=0.1)
+        for i in range(10)
+    )
+    identities = {
+        p.steam64_id: Identity(p.steam64_id, 18446744073709551615 - i, "W" * 32)
+        for i, p in enumerate(players)
+    }
+    match = _friends_match(*players)
+    awards = compute_awards(match, limit=25)
+
+    embed = build_match_embed(match, awards, players[0].steam64_id, profile, identities)
+
+    assert len(embed.fields) <= 25
+    for field in embed.fields:
+        assert len(field.name or "") <= 256
+        assert len(field.value or "") <= 1024
+    assert len(embed) <= 6000
+    _assert_no_empty_fields(embed)
+    lines = _fields(embed)[FRIENDS_FIELD].splitlines()
+    # Whole lines only: every line is a full mention line or the "+N more" tail.
+    assert all(line.startswith("<@") and line.endswith(")") for line in lines[:-1])
+    assert lines[-1].startswith("+") or len(lines) == 10
+    shown = len(lines) - (1 if lines[-1].startswith("+") else 0)
+    if shown < 10:
+        assert lines[-1] == f"+{10 - shown} more"
+    # Only the requester has a detail field.
+    detail_fields = [
+        f for f in embed.fields if f.value and f.value.startswith("<@") and " · " in f.value
+    ]
+    assert len(detail_fields) == 1
+
+
+def test_friends_lines_capped_at_ten() -> None:
+    players = tuple(_player(i, 2 if i % 2 else 3) for i in range(12))
+    identities = {p.steam64_id: _identity(p, "x") for p in players}
+
+    fields = _fields(build_match_embed(_friends_match(*players), [], identities=identities))
+
+    assert len(fields[FRIENDS_FIELD].splitlines()) == 10
+
+
+def test_friends_lines_dropped_whole_over_the_field_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    players = tuple(_player(i, 2) for i in range(4))
+    identities = {p.steam64_id: _identity(p, "x") for p in players}
+    monkeypatch.setattr("ninja_bot.cs2.embed.FIELD_VALUE_LIMIT", 100)
+
+    value = format_friends(_friends_match(*players), identities)
+
+    assert len(value) <= 100
+    lines = value.splitlines()
+    assert lines[-1] == f"+{4 - (len(lines) - 1)} more"
+    assert all(line.endswith("(Team A)") for line in lines[:-1])
