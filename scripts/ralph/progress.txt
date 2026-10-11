@@ -76,3 +76,10 @@
 - Tests: tests/test_help_commands.py.
 - Docs: none user-visible yet; Architecture/README layout updates are in the final docs story (US-008 style), as with US-001.
 - Learnings: notes for parameters missing from `info.params` are ignored; an empty note string adds nothing.
+
+## 2026-10-11 - US-003
+- Added `src/ninja_bot/help/embed.py`: `build_overview_embed(commands)` -> title/intro/footer from content.py, `Getting started` field, one field per `GROUPS` entry (lines `` `usage_line` · summary `` in `COMMANDS` order), trailing `OTHER_GROUP_TITLE` field for registered commands without a `CommandHelp` (Discord description). Unregistered entries skipped, empty groups omitted. Limits: `_fit_lines` (+N more) per field at `FIELD_VALUE_LIMIT` 1024, `_fit_total` drops trailing fields over `EMBED_TOTAL_LIMIT` 6000 (read at call time), max 25 fields. `HELP_COLOUR` blurple.
+- Tests: tests/test_help_embed.py (`info_for(name)` builds a CommandInfo with one param per documented parameter note).
+- Docs: none user-visible yet (final docs story).
+- Learnings: GETTING_STARTED mentions /download etc., so "command not shown" tests must look at group fields only (`fields[1:]`) and match the backticked usage.
+---
