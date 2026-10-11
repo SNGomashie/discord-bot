@@ -44,14 +44,15 @@ All commands are slash commands, which Discord delivers as interactions, and rep
 | Send Messages | Post replies and any non-interaction messages |
 | Embed Links | Show the info embeds |
 | Attach Files | Upload downloaded audio and video |
+| Read Message History | Reply to a session poll message with a vote nudge (Discord requires it for replies) |
 
-Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator, no role or member management.
+Permission integer: **117760** (`1024 + 2048 + 16384 + 32768 + 65536`). A bot invited earlier with `52224` lacks Read Message History; grant it to the bot's role (or in the poll channels) instead of re-inviting. No administrator, no role or member management.
 
 **Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links` or `unavailable (Discord error)` (a temporary Discord failure; retried next cycle), and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
 
 **Activity channel (`ACTIVITY_CHANNEL_ID`):** the monthly activity overview is a normal message too, with the same requirements: **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread) in that channel. Otherwise the bot logs one warning, `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>` (same causes as above), and posts nothing until the channel works. See the [README](../README.md#monthly-auto-post).
 
-**Session poll channels:** `/session_poll` checks the channel it is run in for the same **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread), because later poll updates are posted there as normal messages. Without them the GM gets a private refusal and no poll is created. See the [README](../README.md#session-polls).
+**Session poll channels:** `/session_poll` checks the channel it is run in for the same **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread), because later poll updates are posted there as normal messages. Without them the GM gets a private refusal and no poll is created. Vote nudges are replies to the poll message, so the channel also needs **Read Message History**; it isn't checked up front, and without it each nudge is refused by Discord and logged (`Could not send session poll nudge`). Deadline closes, reminders and nudges check the channel again every minute; a broken channel logs one warning per cause, `Can't post session poll messages in channel <id>: <cause>`, and nothing is posted until it works. Session polls need no new intent. See the [README](../README.md#session-polls).
 
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
@@ -62,7 +63,7 @@ Notes:
 Replace `APP_ID` with the Application ID and open the URL while logged in as the server owner (or someone with *Manage Server*):
 
 ```
-https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot%20applications.commands&permissions=52224
+https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot%20applications.commands&permissions=117760
 ```
 
 Both scopes are required:

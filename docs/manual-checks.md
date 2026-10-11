@@ -122,9 +122,9 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 
 ## Session polls
 
-- [ ] `/session_poll name:Test days:fri,sat times:19:00` posts the poll publicly with Join, Leave and Vote buttons; a second poll within 30 s is throttled privately
+- [ ] `/session_poll name:Test days:fri,sat times:19:00` posts the poll publicly with Join, Leave, Vote and Close round buttons; a second poll within 30 s is throttled privately
 - [ ] In a channel where the bot lacks Embed Links, `/session_poll` replies privately with the channel problem and posts nothing
-- [ ] Join and Leave update the poll message and confirm privately; the buttons still work after a bot restart
+- [ ] Join and Leave update the poll message and confirm privately; the GM can't leave; the buttons still work after a bot restart
 - [ ] Vote without having joined says "Press **Join** first" privately
 - [ ] Vote opens a private form (only you see it) with the two multi-selects, Save and None of these work; option labels read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE`
 - [ ] Pick slots, Save: the form turns into "Your votes are saved." and the poll counts and `Waiting for` update
@@ -139,8 +139,8 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] Reminders: confirm a session, then move its start close to now so the reminders fall due (stop the bot first; `<id>` is the session id, `start`/`end` are Unix seconds):
   `sqlite3 data/sessions.sqlite3 "UPDATE sessions SET start = strftime('%s','now') + 86280, \"end\" = strftime('%s','now') + 100680 WHERE id = <id>;"`
   (SQLite evaluates every `SET` against the old row, so set `"end"` explicitly, not as `start + ...`.) Start the bot: within a minute or two the 24 h reminder pings the roster (once, also after another restart). Then use `+ 3480` / `+ 17880` and check the 1 h reminder. Setting the start to 30 minutes ahead before any reminder was sent posts only one reminder.
-- [ ] Nudges: with a voting poll and a player who hasn't voted, backdate the round (`sqlite3 data/sessions.sqlite3 "UPDATE polls SET round_started_at = round_started_at - 86400 WHERE id = <id>;"`, bot stopped): after a restart the bot replies to the poll message pinging only that player; no second nudge within 24 h
-- [ ] Delete the channel of a poll with a due reminder: the bot logs one warning and keeps running
+- [ ] Nudges: with a voting poll and a player who hasn't voted, backdate the round (`sqlite3 data/sessions.sqlite3 "UPDATE polls SET round_started_at = round_started_at - 86400 WHERE id = <id>;"`, bot stopped): after a restart the bot replies to the poll message pinging only that player; no second nudge within 24 h; after three nudges in one round no more follow; in a channel where the bot lacks Read Message History the nudge is refused and logged (`Could not send session poll nudge`)
+- [ ] Delete the channel of a poll with a due reminder: the bot logs one warning (`Can't post session poll messages in channel <id>: missing`), not one per minute, and keeps running
 - [ ] `/sessions` posts the list publicly: open polls link to their current poll message and show who is pending, upcoming sessions show the start in your own time zone; nobody is pinged; a second call within 10 s is refused privately
 - [ ] `/sessions` in a server without polls or sessions shows the empty-state text
 - [ ] `/session_cancel item:` suggests open polls and upcoming sessions with dates, and narrows as you type
@@ -150,7 +150,7 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 
 ## /help
 
-- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint
+- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity, Session polls and Utility groups, and a footer hint
 - [ ] Typing `/help command:` offers all commands, narrows as you type (`do` -> `download`)
 - [ ] `/help command:download` shows usage `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]`, parameter notes for clips and examples
 - [ ] `/help command:/Link` (capital, leading slash) works the same as `link`
