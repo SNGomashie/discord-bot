@@ -88,23 +88,33 @@ This PRD adds `/help`:
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
-### US-006: The `/help` cog
-**Description:** As a user, I want to type `/help` and get my answer privately, or post it for everyone when I choose.
+### US-006: The `/help` cog (overview and detail replies)
+**Description:** As a user, I want to type `/help` or `/help command:<name>` and get my answer privately.
 
 **Acceptance Criteria:**
 - [ ] New cog `src/ninja_bot/cogs/help.py` with `async def setup(bot)`, registered in `EXTENSIONS` in `bot.py`; the cog is a thin wrapper that only extracts command metadata from the live tree and calls the pure functions from US-002 to US-005
-- [ ] `/help` has description "Show what the bot can do", an optional string `command` ("A command to explain, e.g. download") with an autocomplete callback, and an optional bool `public` ("Post the help in the channel for everyone (default: only you see it)", default `False`)
-- [ ] The cog builds `CommandInfo` objects from `bot.tree.get_commands()` (top-level `app_commands.Command` objects only; their `name`, `description` and `parameters` with name, description, `required`, choice values). The autocomplete returns `app_commands.Choice` objects built from `autocomplete_names` over the registered names
-- [ ] `/help` with no `command` replies with the overview embed. With a `command` it replies with the detail embed, matching through `find_command`. An unknown name gets the unknown-command text (with up to 3 `suggest` names) as a private reply and does not use the cooldown
-- [ ] The reply is ephemeral unless `public` is true. Replies use `allowed_mentions=discord.AllowedMentions.none()`
-- [ ] A cooldown applies **only** to `public:true` requests: reuse `UserCooldown` from `media/cooldown.py` with a module constant `PUBLIC_COOLDOWN_SECONDS = 15.0`; it is taken after the command is resolved, and refunded if the send fails. When throttled the reply is private and uses the content constant (with the seconds left, rounded up like the other cogs)
+- [ ] `/help` has description "Show what the bot can do" and one optional string parameter `command` ("A command to explain, e.g. download"); the `public` flag and autocomplete come in US-007
+- [ ] The cog builds `CommandInfo` objects from `bot.tree.get_commands()` (top-level `app_commands.Command` objects only; their `name`, `description` and `parameters` with name, description, `required`, choice values)
+- [ ] `/help` with no `command` replies with the overview embed. With a `command` it replies with the detail embed, matching through `find_command`. An unknown name gets the unknown-command text (with up to 3 `suggest` names)
+- [ ] Every reply is ephemeral and uses `allowed_mentions=discord.AllowedMentions.none()`
 - [ ] No network, database or file access happens in the command; it works in DMs and in guilds
 - [ ] `cog_app_command_error` replies privately with the generic error constant and logs the exception, like the other cogs
-- [ ] Unit tests (call `Help.help.callback(cog, interaction)` with `AsyncMock`/`MagicMock`, as in `tests/test_cs2_cog.py`): overview reply is ephemeral; detail reply for a known command; `/Download` style input matches; unknown command gives the suggestion reply; `public:true` is not ephemeral; the public cooldown throttles a second public call but not a private one; a failing send refunds the cooldown; autocomplete returns choices for a partial string and for empty input; the embed passed has no mentions allowed
+- [ ] Unit tests (call `Help.help.callback(cog, interaction)` with `AsyncMock`/`MagicMock`, as in `tests/test_cs2_cog.py`): overview reply is ephemeral; detail reply for a known command; `/Download` style input matches; unknown command gives the suggestion reply; the embed passed has no mentions allowed; the error handler replies privately and logs
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
-### US-007: Drift tests
+### US-007: Autocomplete and the public flag
+**Description:** As a user, I want `command` to suggest names as I type, and I want to post the help for everyone when I choose.
+
+**Acceptance Criteria:**
+- [ ] The `command` parameter gets an autocomplete callback returning `app_commands.Choice` objects built from `autocomplete_names` over the registered command names (at most 25; no `defer` needed)
+- [ ] `/help` gains an optional bool `public` ("Post the help in the channel for everyone (default: only you see it)", default `False`); the reply is ephemeral unless `public` is true
+- [ ] A cooldown applies **only** to `public:true` requests: reuse `UserCooldown` from `media/cooldown.py` with a module constant `PUBLIC_COOLDOWN_SECONDS = 15.0`; it is taken after the command is resolved (an unknown name never uses it), and refunded if the send fails. When throttled the reply is private and uses the content constant (with the seconds left, rounded up like the other cogs)
+- [ ] Unit tests: autocomplete returns choices for a partial string and for empty input; `public:true` is not ephemeral; the public cooldown throttles a second public call but not a private one; an unknown name with `public:true` does not take the cooldown; a failing send refunds the cooldown
+- [ ] Typecheck passes
+- [ ] `./scripts/check.sh` passes
+
+### US-008: Drift tests
 **Description:** As the owner, I want the build to fail when help or the README no longer matches the real commands.
 
 **Acceptance Criteria:**
@@ -118,7 +128,7 @@ This PRD adds `/help`:
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
-### US-008: Documentation
+### US-009: Documentation
 **Description:** As a user and as a contributor, I want the README, manual checks and architecture notes to describe `/help`.
 
 **Acceptance Criteria:**
@@ -183,7 +193,7 @@ This PRD adds `/help`:
 
 ## Manual Checks (Discord only, not gates)
 
-These go into `docs/manual-checks.md` in US-008:
+These go into `docs/manual-checks.md` in US-009:
 
 - [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats and Utility groups, and a footer hint
 - [ ] Typing `/help command:` offers all commands, narrows as you type (`do` -> `download`)
