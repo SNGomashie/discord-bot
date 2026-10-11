@@ -245,6 +245,25 @@ async def test_votes_limited_to_round_and_poll(tmp_path: Path) -> None:
     assert await store.votes(other.id, 1) == {(PLAYER, other_slot.id): Vote.YES}
 
 
+async def test_round_state_matches_the_single_reads(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    poll = await _create(store)
+    await store.join(poll.id, PLAYER)
+    [first, _] = await store.poll_slots(poll.id, 1)
+    await store.record_votes(poll.id, PLAYER, {first.id: Vote.YES})
+    await store.advance_round(poll.id, (Slot(20_000.0, 30_000.0),), date(2026, 11, 20), 2000.0)
+    [new] = await store.poll_slots(poll.id, 2)
+    await store.record_votes(poll.id, GM, {new.id: Vote.NO})
+
+    for round_number in (1, 2):
+        assert await store.round_state(poll.id, round_number) == (
+            await store.players(poll.id),
+            await store.poll_slots(poll.id, round_number),
+            await store.votes(poll.id, round_number),
+        )
+    assert await store.round_state(poll.id, 2) == ([GM, PLAYER], [new], {(GM, new.id): Vote.NO})
+
+
 async def test_advance_round_increments_and_resets_nudges(tmp_path: Path) -> None:
     store = _store(tmp_path)
     poll = await _create(store)

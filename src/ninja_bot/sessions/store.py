@@ -232,6 +232,38 @@ def _poll_slot(row: tuple[Any, ...]) -> PollSlot:
     )
 
 
+RoundState = tuple[list[int], list[PollSlot], dict[tuple[int, int], Vote]]
+"""A round's players (join order), slots (oldest start first) and votes."""
+
+
+def _select_players(conn: sqlite3.Connection, poll_id: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT user_id FROM poll_players WHERE poll_id = ? ORDER BY rowid", (poll_id,)
+    ).fetchall()
+    return [int(user_id) for (user_id,) in rows]
+
+
+def _select_slots(conn: sqlite3.Connection, poll_id: int, round_number: int) -> list[PollSlot]:
+    rows = conn.execute(
+        f"SELECT {_SLOT_COLUMNS} FROM poll_slots WHERE poll_id = ? AND round_number = ?"
+        " ORDER BY start, id",
+        (poll_id, round_number),
+    ).fetchall()
+    return [_poll_slot(row) for row in rows]
+
+
+def _select_votes(
+    conn: sqlite3.Connection, poll_id: int, round_number: int
+) -> dict[tuple[int, int], Vote]:
+    rows = conn.execute(
+        "SELECT v.user_id, v.slot_id, v.vote FROM poll_votes v"
+        " JOIN poll_slots s ON s.id = v.slot_id AND s.poll_id = v.poll_id"
+        " WHERE v.poll_id = ? AND s.round_number = ?",
+        (poll_id, round_number),
+    ).fetchall()
+    return {(int(user_id), int(slot_id)): Vote(vote) for user_id, slot_id, vote in rows}
+
+
 class SessionStore(Protocol):
     async def create_poll(
         self,
@@ -311,6 +343,10 @@ class SessionStore(Protocol):
 
     async def votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
         """(user_id, slot_id) -> vote, for the slots of one round only."""
+        ...
+
+    async def round_state(self, poll_id: int, round_number: int) -> RoundState:
+        """`players`, `poll_slots` and `votes` of one round, read over one connection."""
         ...
 
     async def advance_round(
@@ -480,12 +516,7 @@ class SqliteSessionStore:
 
     def _poll_slots(self, poll_id: int, round_number: int) -> list[PollSlot]:
         with closing(self._connect()) as conn:
-            rows = conn.execute(
-                f"SELECT {_SLOT_COLUMNS} FROM poll_slots WHERE poll_id = ? AND round_number = ?"
-                " ORDER BY start, id",
-                (poll_id, round_number),
-            ).fetchall()
-        return [_poll_slot(row) for row in rows]
+            return _select_slots(conn, poll_id, round_number)
 
     def _join(self, poll_id: int, user_id: int) -> bool:
         with closing(self._connect()) as conn, conn:
@@ -511,10 +542,7 @@ class SqliteSessionStore:
 
     def _players(self, poll_id: int) -> list[int]:
         with closing(self._connect()) as conn:
-            rows = conn.execute(
-                "SELECT user_id FROM poll_players WHERE poll_id = ? ORDER BY rowid", (poll_id,)
-            ).fetchall()
-        return [int(user_id) for (user_id,) in rows]
+            return _select_players(conn, poll_id)
 
     def _open_polls(self, guild_id: int) -> list[Poll]:
         with closing(self._connect()) as conn:
@@ -557,13 +585,15 @@ class SqliteSessionStore:
 
     def _votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
         with closing(self._connect()) as conn:
-            rows = conn.execute(
-                "SELECT v.user_id, v.slot_id, v.vote FROM poll_votes v"
-                " JOIN poll_slots s ON s.id = v.slot_id AND s.poll_id = v.poll_id"
-                " WHERE v.poll_id = ? AND s.round_number = ?",
-                (poll_id, round_number),
-            ).fetchall()
-        return {(int(user_id), int(slot_id)): Vote(vote) for user_id, slot_id, vote in rows}
+            return _select_votes(conn, poll_id, round_number)
+
+    def _round_state(self, poll_id: int, round_number: int) -> RoundState:
+        with closing(self._connect()) as conn:
+            return (
+                _select_players(conn, poll_id),
+                _select_slots(conn, poll_id, round_number),
+                _select_votes(conn, poll_id, round_number),
+            )
 
     def _advance_round(
         self,
@@ -779,6 +809,9 @@ class SqliteSessionStore:
 
     async def votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
         return await asyncio.to_thread(self._votes, poll_id, round_number)
+
+    async def round_state(self, poll_id: int, round_number: int) -> RoundState:
+        return await asyncio.to_thread(self._round_state, poll_id, round_number)
 
     async def advance_round(
         self,

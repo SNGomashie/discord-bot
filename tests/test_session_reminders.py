@@ -22,6 +22,7 @@ from ninja_bot.sessions.store import (
     STATUS_AWAITING_CONFIRM,
     STATUS_VOTING,
     Poll,
+    RoundState,
     Session,
     SqliteSessionStore,
 )
@@ -246,6 +247,32 @@ async def test_notifier_nudges_pending_players(tmp_path: Path) -> None:
     assert await restarted.due_nudges() == []
     clock.now = 2 * DAY
     assert await restarted.due_nudges() == [(poll, [GM, OTHER])]
+
+
+class CountingStore(SqliteSessionStore):
+    round_state_calls = 0
+
+    async def round_state(self, poll_id: int, round_number: int) -> RoundState:
+        self.round_state_calls += 1
+        return await super().round_state(poll_id, round_number)
+
+
+async def test_notifier_nudges_from_precomputed_states(tmp_path: Path) -> None:
+    store = CountingStore(tmp_path / "sessions.sqlite3")
+    poll = await _poll_in_store(store, 0.0)
+    gone = await _poll_in_store(store, 0.0)
+    notifier = SessionNotifier(store, FakeClock(DAY))
+    state = await store.round_state(poll.id, poll.round_number)
+    store.round_state_calls = 0
+
+    # `gone` has no entry (closed or advanced this cycle): skipped, not read again.
+    assert await notifier.due_nudges({(poll.id, poll.round_number): state}) == [(poll, [GM])]
+    # An entry for another round doesn't count either.
+    assert await notifier.due_nudges({(poll.id, poll.round_number + 1): state}) == []
+    assert store.round_state_calls == 0
+
+    assert await notifier.due_nudges() == [(poll, [GM]), (gone, [GM])]
+    assert store.round_state_calls == 2
 
 
 async def test_notifier_nudge_cap_and_status(tmp_path: Path) -> None:

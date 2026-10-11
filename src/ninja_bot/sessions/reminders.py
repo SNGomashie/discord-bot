@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 
 from ninja_bot.sessions.scoring import pending_players
 from ninja_bot.sessions.store import (
@@ -12,6 +12,7 @@ from ninja_bot.sessions.store import (
 from ninja_bot.sessions.store import (
     STATUS_VOTING,
     Poll,
+    RoundState,
     Session,
     SessionStore,
 )
@@ -79,14 +80,26 @@ class SessionNotifier:
             due.append((session, offset))
         return due
 
-    async def due_nudges(self) -> list[tuple[Poll, list[int]]]:
-        """(poll, pending player ids) for every voting poll that should be nudged now."""
+    async def due_nudges(
+        self, states: Mapping[tuple[int, int], RoundState] | None = None
+    ) -> list[tuple[Poll, list[int]]]:
+        """(poll, pending player ids) for every voting poll that should be nudged now.
+
+        `states` maps (poll id, round number) to round states already read this cycle;
+        with it, voting polls whose round has no entry (closed or advanced since) are
+        skipped. Without it every voting poll's state is read here.
+        """
         now = self.clock()
         due: list[tuple[Poll, list[int]]] = []
         for poll in await self.store.voting_polls():
-            players = await self.store.players(poll.id)
-            slots = await self.store.poll_slots(poll.id, poll.round_number)
-            votes = await self.store.votes(poll.id, poll.round_number)
+            key = (poll.id, poll.round_number)
+            if states is None:
+                state = await self.store.round_state(*key)
+            elif key in states:
+                state = states[key]
+            else:
+                continue
+            players, slots, votes = state
             pending = pending_players(players, [slot.id for slot in slots], votes)
             if not pending:
                 continue

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -65,6 +65,7 @@ from ninja_bot.sessions.store import (
     STATUS_AWAITING_CONFIRM,
     STATUS_VOTING,
     Poll,
+    RoundState,
     Session,
     SqliteSessionStore,
 )
@@ -158,11 +159,13 @@ class Sessions(commands.Cog):
     async def run_notify_cycle(self) -> None:
         """Repair unposted outcomes, close due rounds, then post reminders and nudges; never
         raises."""
-        steps = (
+        # Each voting poll's round is read once (by the close step) and reused for nudges.
+        states: dict[tuple[int, int], RoundState] = {}
+        steps: tuple[Callable[[], Awaitable[None]], ...] = (
             self.repair_missing_messages,
-            self._close_due_rounds,
+            lambda: self._close_due_rounds(states),
             self._post_reminders,
-            self._post_nudges,
+            lambda: self._post_nudges(states),
         )
         for step in steps:
             try:
@@ -205,15 +208,21 @@ class Sessions(commands.Cog):
             log.info("Posting the missing outcome message of session poll %d", poll_id)
             await self.post_outcome(outcome)
 
-    async def _close_due_rounds(self) -> None:
-        """Close rounds past their deadline (or fully voted) and post the outcome."""
+    async def _close_due_rounds(self, states: dict[tuple[int, int], RoundState]) -> None:
+        """Close rounds past their deadline (or fully voted) and post the outcome.
+
+        Fills `states` with the round state of every poll it leaves open, for the nudges;
+        a round it tries to close is left out, so it isn't nudged this cycle.
+        """
         now = self.service.clock()
         for poll in await self.service.store.voting_polls():
             try:
-                players, slots, votes = await self.service.round_state(poll)
+                state = await self.service.round_state(poll)
+                players, slots, votes = state
                 reason = should_auto_close(poll, players, [slot.id for slot in slots], votes, now)
                 # A broken channel leaves the round open until the outcome can be posted.
                 if reason is None or await self._channel(poll.channel_id) is None:
+                    states[(poll.id, poll.round_number)] = state
                     continue
                 await self.close_and_post(poll.id, reason)
             except Exception:
@@ -242,9 +251,9 @@ class Sessions(commands.Cog):
             finally:
                 await self.notifier.confirm_reminder(session.id, offset)
 
-    async def _post_nudges(self) -> None:
+    async def _post_nudges(self, states: Mapping[tuple[int, int], RoundState]) -> None:
         """Reply to the poll message pinging who hasn't voted; counted after every attempt."""
-        for poll, pending in await self.notifier.due_nudges():
+        for poll, pending in await self.notifier.due_nudges(states):
             # Without a poll message (its post failed and awaits repair) there's nothing to
             # vote on yet.
             if poll.message_id is None:

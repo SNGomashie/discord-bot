@@ -17,10 +17,12 @@ from ninja_bot.cogs.sessions import NOTIFY_CHECK_SECONDS, Sessions
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.sessions import content
 from ninja_bot.sessions.reminders import MAX_NUDGES, NUDGE_INTERVAL_SECONDS
+from ninja_bot.sessions.scoring import Vote
 from ninja_bot.sessions.service import NoPrefill, RoundAdvanced, RoundFits, SessionService
 from ninja_bot.sessions.store import (
     STATUS_AWAITING_CONFIRM,
     STATUS_VOTING,
+    RoundState,
     Session,
     SqliteSessionStore,
 )
@@ -254,6 +256,58 @@ async def test_cancelled_poll_is_never_nudged(
     clock.now += 2 * NUDGE_INTERVAL_SECONDS
     await cog.run_notify_cycle()
     assert sent(channel) == []
+
+
+class CountingStore(SqliteSessionStore):
+    """Records the poll id of every round read (`round_state` or its single-table parts)."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.reads: list[tuple[str, int]] = []
+
+    async def round_state(self, poll_id: int, round_number: int) -> RoundState:
+        self.reads.append(("round_state", poll_id))
+        return await super().round_state(poll_id, round_number)
+
+    async def players(self, poll_id: int) -> list[int]:
+        self.reads.append(("players", poll_id))
+        return await super().players(poll_id)
+
+    async def votes(self, poll_id: int, round_number: int) -> dict[tuple[int, int], Vote]:
+        self.reads.append(("votes", poll_id))
+        return await super().votes(poll_id, round_number)
+
+
+async def test_cycle_reads_each_round_once(
+    tmp_path: Path, clock: FakeClock, channel: MagicMock
+) -> None:
+    store = CountingStore(tmp_path / "sessions.sqlite3")
+    cog = make_cog(store, clock, make_bot(channel))
+    polls = [await open_poll(cog) for _ in range(3)]
+    clock.now += NUDGE_INTERVAL_SECONDS
+    store.reads.clear()
+
+    await cog.run_notify_cycle()
+
+    assert sorted(store.reads) == [("round_state", poll_id) for poll_id in polls]
+    assert len(sent(channel)) == len(polls)  # every poll nudged
+
+
+async def test_poll_closed_by_the_deadline_is_not_nudged(
+    cog: Sessions, clock: FakeClock, channel: MagicMock
+) -> None:
+    # The deadline and the first nudge fall in the same cycle.
+    poll_id = await open_poll(cog, round_hours=24, min_players=2)
+    await cog.service.submit_vote(poll_id, GM, await slot_ids(cog, poll_id), [])
+    clock.now += NUDGE_INTERVAL_SECONDS
+
+    await cog.run_notify_cycle()
+
+    poll = await cog.service.store.get_poll(poll_id)
+    assert poll is not None and poll.round_number == 2
+    # Only the next-round message, no nudge reply to the old poll message.
+    [kwargs] = sent(channel)
+    assert "reference" not in kwargs
 
 
 # Deadlines

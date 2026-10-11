@@ -42,6 +42,7 @@ from ninja_bot.sessions.store import (
     STATUS_VOTING,
     Poll,
     PollSlot,
+    RoundState,
     Session,
     SessionStore,
 )
@@ -360,14 +361,9 @@ class SessionService:
             await self.store.record_votes(poll_id, user_id, votes)
             return VoteResult.RECORDED
 
-    async def round_state(
-        self, poll: Poll
-    ) -> tuple[list[int], list[PollSlot], dict[tuple[int, int], Vote]]:
+    async def round_state(self, poll: Poll) -> RoundState:
         """The players, the current round's slots and its votes."""
-        players = await self.store.players(poll.id)
-        slots = await self.store.poll_slots(poll.id, poll.round_number)
-        votes = await self.store.votes(poll.id, poll.round_number)
-        return players, slots, votes
+        return await self.store.round_state(poll.id, poll.round_number)
 
     async def close_round(
         self, poll_id: int, by_user_id: int, is_manager: bool, reason: CloseReason
