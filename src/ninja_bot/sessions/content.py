@@ -90,6 +90,16 @@ LIST_SESSION_LINE = "**{name}** · {start} ({relative}) · GM {gm}"
 JOIN_BUTTON = "Join"
 LEAVE_BUTTON = "Leave"
 VOTE_BUTTON = "Vote"
+CLOSE_ROUND_BUTTON = "Close round"
+# `{rank}` is the slot's place in the result, `{label}` its `format_slot_label`.
+CONFIRM_BUTTON = "Confirm {rank}: {label}"
+
+# Round close and confirm (cog). Mentions in these only ping who `allowed_mentions` names.
+ROUND_CLOSED_MESSAGE = "**Round {round} is closed.** The buttons below no longer work."
+RESULT_PING = "{gm}, pick the date with a **Confirm** button."
+NEXT_ROUND_PING = "{players}: a new round is open, please vote."
+CONFIRMED_RESULT_MESSAGE = "✅ **Confirmed:** {start}."
+SESSION_ANNOUNCEMENT = "{players}: the session is on!"
 
 # Private vote view. `{tz}` is the SESSIONS_TIMEZONE name the option labels are in.
 VOTE_PROMPT = (

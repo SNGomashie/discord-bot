@@ -21,7 +21,7 @@ from ninja_bot.cogs.sessions import (
 )
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.sessions import content
-from ninja_bot.sessions.scoring import Vote
+from ninja_bot.sessions.scoring import MAX_ROUNDS, Vote
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
     MAX_NAME_LENGTH,
@@ -29,10 +29,20 @@ from ninja_bot.sessions.service import (
     VOTE_MESSAGES,
     JoinResult,
     NoPrefill,
+    RoundAdvanced,
+    RoundFailed,
+    RoundFits,
     SessionService,
     VoteResult,
 )
-from ninja_bot.sessions.store import STATUS_CANCELLED, STATUS_VOTING, SqliteSessionStore
+from ninja_bot.sessions.store import (
+    STATUS_AWAITING_CONFIRM,
+    STATUS_CANCELLED,
+    STATUS_CONFIRMED,
+    STATUS_FAILED,
+    STATUS_VOTING,
+    SqliteSessionStore,
+)
 from ninja_bot.sessions.views import (
     CUSTOM_ID_TEMPLATE,
     PollAction,
@@ -76,7 +86,9 @@ def make_interaction(user_id: int = GM, channel: Any = None) -> MagicMock:
     interaction.channel = make_channel() if channel is None else channel
     interaction.response.send_message = AsyncMock(return_value=MagicMock(message_id=MESSAGE_ID))
     interaction.response.edit_message = AsyncMock()
+    interaction.response.defer = AsyncMock()
     interaction.response.is_done.return_value = False
+    interaction.permissions = discord.Permissions.none()
     interaction.followup.send = AsyncMock()
     return interaction
 
@@ -131,6 +143,7 @@ async def test_valid_poll_is_posted_publicly_and_message_id_stored(
         custom_id(poll.id, PollAction.JOIN),
         custom_id(poll.id, PollAction.LEAVE),
         custom_id(poll.id, PollAction.VOTE),
+        custom_id(poll.id, PollAction.CLOSE),
     ]
     assert poll.message_id == MESSAGE_ID
     assert poll.channel_id == CHANNEL
@@ -575,16 +588,281 @@ async def test_vote_checks_auto_close_after_saving(
     checked.assert_awaited_once_with(poll_id)
 
 
-async def test_advance_if_ready_once_everyone_voted(
+async def test_advance_if_ready_closes_once_everyone_voted(
     cog: Sessions, store: SqliteSessionStore
 ) -> None:
     poll_id = await make_poll(cog, store)
     await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
-    await cog.service.submit_vote(poll_id, GM, [], [])
+    send, _ = channel_mocks(cog)
+    first = (await slot_ids(store, poll_id))[0]
+    await cog.service.submit_vote(poll_id, GM, [first], [])
     assert await cog.advance_if_ready(poll_id) is None
-    await cog.service.submit_vote(poll_id, PLAYER, [], [])
-    assert await cog.advance_if_ready(poll_id) == "all_voted"
+    send.assert_not_awaited()
+    await cog.service.submit_vote(poll_id, PLAYER, [], [first])
+    assert isinstance(await cog.advance_if_ready(poll_id), RoundFits)
+    send.assert_awaited_once()
+    assert (await store.get_poll(poll_id)).status == STATUS_AWAITING_CONFIRM  # type: ignore[union-attr]
+    assert await cog.advance_if_ready(poll_id) is None
     assert await cog.advance_if_ready(9999) is None
+    send.assert_awaited_once()
+
+
+async def test_advance_if_ready_errors_give_none(
+    cog: Sessions, store: SqliteSessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poll_id = await make_poll(cog, store)
+
+    async def broken(*args: Any) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(store, "votes", broken)
+    assert await cog.advance_if_ready(poll_id) is None
+
+
+# Close round and Confirm
+
+NEW_MESSAGE_ID = 777
+
+
+def channel_mocks(cog: Sessions) -> tuple[AsyncMock, AsyncMock]:
+    """(`send` to the poll channel, `edit` of the old poll message)."""
+    bot: Any = cog.bot
+    channel = bot.get_partial_messageable.return_value
+    channel.send = AsyncMock(return_value=MagicMock(id=NEW_MESSAGE_ID))
+    channel.get_partial_message.return_value.edit = AsyncMock()
+    return channel.send, channel.get_partial_message.return_value.edit
+
+
+def pinged(kwargs: dict[str, Any]) -> list[int]:
+    mentions = kwargs["allowed_mentions"]
+    assert mentions.everyone is False
+    assert mentions.roles is False
+    users = mentions.users
+    return [] if users is False else [user.id for user in users]
+
+
+async def two_player_poll(cog: Sessions, store: SqliteSessionStore) -> tuple[int, list[int]]:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    return poll_id, await slot_ids(store, poll_id)
+
+
+async def press_close(cog: Sessions, poll_id: int, user_id: int = GM) -> MagicMock:
+    interaction = make_interaction(user_id=user_id)
+    await cog.handle_poll_action(interaction, poll_id, PollAction.CLOSE, None)
+    return interaction
+
+
+async def press_confirm(
+    cog: Sessions, poll_id: int, slot_id: int | None, user_id: int = GM
+) -> MagicMock:
+    interaction = make_interaction(user_id=user_id)
+    await cog.handle_poll_action(interaction, poll_id, PollAction.CONFIRM, slot_id)
+    return interaction
+
+
+def assert_closed_edit(edit: AsyncMock, round_number: int) -> None:
+    kwargs = edit.await_args.kwargs
+    assert kwargs["content"] == content.ROUND_CLOSED_MESSAGE.format(round=round_number)
+    assert kwargs["view"] is None
+    assert pinged(kwargs) == []
+
+
+async def test_close_fits_posts_the_result_with_confirm_buttons(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id, slots = await two_player_poll(cog, store)
+    send, edit = channel_mocks(cog)
+    await cog.service.submit_vote(poll_id, GM, [slots[1], slots[0]], [])
+    await cog.service.submit_vote(poll_id, PLAYER, [slots[1]], [slots[0]])
+    interaction = await press_close(cog, poll_id)
+    interaction.response.defer.assert_awaited_once()
+    interaction.response.send_message.assert_not_awaited()
+    assert_closed_edit(edit, 1)
+    kwargs = send.await_args.kwargs
+    assert kwargs["content"] == content.RESULT_PING.format(gm=f"<@{GM}>")
+    assert pinged(kwargs) == [GM]
+    assert kwargs["embed"].title
+    buttons = kwargs["view"].children
+    assert [b.custom_id for b in buttons] == [
+        custom_id(poll_id, PollAction.CONFIRM, slots[1]),
+        custom_id(poll_id, PollAction.CONFIRM, slots[0]),
+    ]
+    assert buttons[0].item.label.startswith("Confirm 1: ")
+    assert kwargs["view"].is_persistent()
+    assert (await store.get_poll(poll_id)).status == STATUS_AWAITING_CONFIRM  # type: ignore[union-attr]
+
+
+async def test_close_by_a_player_is_refused(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, _ = await two_player_poll(cog, store)
+    send, edit = channel_mocks(cog)
+    interaction = await press_close(cog, poll_id, user_id=PLAYER)
+    assert reply(interaction) == (content.NOT_ALLOWED_MESSAGE, {"ephemeral": True})
+    send.assert_not_awaited()
+    edit.assert_not_awaited()
+    assert (await store.get_poll(poll_id)).status == STATUS_VOTING  # type: ignore[union-attr]
+
+
+async def test_close_by_a_manager_is_allowed(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, _ = await two_player_poll(cog, store)
+    send, _ = channel_mocks(cog)
+    interaction = make_interaction(user_id=PLAYER)
+    interaction.permissions = discord.Permissions(manage_events=True)
+    await cog.handle_poll_action(interaction, poll_id, PollAction.CLOSE, None)
+    interaction.response.defer.assert_awaited_once()
+    send.assert_awaited_once()
+
+
+async def test_double_close_is_harmless(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, slots = await two_player_poll(cog, store)
+    send, _ = channel_mocks(cog)
+    await cog.service.submit_vote(poll_id, GM, slots, [])
+    await cog.service.submit_vote(poll_id, PLAYER, slots, [])
+    await press_close(cog, poll_id)
+    second = await press_close(cog, poll_id)
+    assert reply(second) == (content.ROUND_ALREADY_CLOSED_MESSAGE, {"ephemeral": True})
+    send.assert_awaited_once()
+
+
+async def test_close_next_round_posts_a_new_poll_and_pings_pending(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id, slots = await two_player_poll(cog, store)
+    send, edit = channel_mocks(cog)
+    await cog.service.submit_vote(poll_id, GM, slots, [])
+    await press_close(cog, poll_id)
+    assert_closed_edit(edit, 1)
+    kwargs = send.await_args.kwargs
+    assert kwargs["content"] == content.NEXT_ROUND_PING.format(players=f"<@{PLAYER}>")
+    assert pinged(kwargs) == [PLAYER]
+    assert len(kwargs["embeds"]) == 2
+    assert [b.custom_id for b in kwargs["view"].children][0] == custom_id(
+        poll_id, PollAction.JOIN, None
+    )
+    poll = await store.get_poll(poll_id)
+    assert poll is not None
+    assert (poll.round_number, poll.status, poll.message_id) == (2, STATUS_VOTING, NEW_MESSAGE_ID)
+
+
+async def test_next_round_without_pending_pings_nobody(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id, slots = await two_player_poll(cog, store)
+    send, _ = channel_mocks(cog)
+    await cog.service.submit_vote(poll_id, GM, slots, [])
+    await cog.service.submit_vote(poll_id, PLAYER, [], [])
+    await press_close(cog, poll_id)
+    kwargs = send.await_args.kwargs
+    assert kwargs["content"] is None
+    assert pinged(kwargs) == []
+
+
+async def test_last_round_posts_no_fit_without_buttons(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id, _ = await two_player_poll(cog, store)
+    send, edit = channel_mocks(cog)
+    for _ in range(MAX_ROUNDS - 1):
+        assert isinstance(await cog.close_and_post(poll_id, "manual", GM), RoundAdvanced)
+    outcome = await cog.close_and_post(poll_id, "manual", GM)
+    assert isinstance(outcome, RoundFailed)
+    assert_closed_edit(edit, MAX_ROUNDS)
+    kwargs = send.await_args.kwargs
+    assert "view" not in kwargs
+    assert kwargs["embed"].description.startswith(
+        content.NO_FIT_DESCRIPTION.format(rounds=MAX_ROUNDS)
+    )
+    assert pinged(kwargs) == []
+    assert (await store.get_poll(poll_id)).status == STATUS_FAILED  # type: ignore[union-attr]
+
+
+async def test_failed_edit_or_send_does_not_abort(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, slots = await two_player_poll(cog, store)
+    send, edit = channel_mocks(cog)
+    edit.side_effect = discord.NotFound(MagicMock(status=404), "Unknown Message")
+    send.side_effect = discord.Forbidden(MagicMock(status=403), "Missing Access")
+    await cog.service.submit_vote(poll_id, GM, slots, [])
+    interaction = await press_close(cog, poll_id)
+    interaction.response.send_message.assert_not_awaited()
+    send.assert_awaited_once()
+    poll = await store.get_poll(poll_id)
+    assert poll is not None
+    # The round still advanced; the old message id is kept when the new post failed.
+    assert (poll.round_number, poll.message_id) == (2, MESSAGE_ID)
+
+
+async def fitted_poll(cog: Sessions, store: SqliteSessionStore) -> tuple[int, list[int]]:
+    poll_id, slots = await two_player_poll(cog, store)
+    await cog.service.submit_vote(poll_id, GM, slots, [])
+    await cog.service.submit_vote(poll_id, PLAYER, [], slots)
+    await press_close(cog, poll_id)
+    return poll_id, slots
+
+
+async def test_confirm_edits_the_result_and_announces_the_roster(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id, slots = await fitted_poll(cog, store)
+    send, _ = channel_mocks(cog)
+    interaction = await press_confirm(cog, poll_id, slots[0])
+    edit = interaction.response.edit_message.await_args.kwargs
+    (slot,) = [s for s in await store.poll_slots(poll_id, 1) if s.id == slots[0]]
+    assert edit["content"] == content.CONFIRMED_RESULT_MESSAGE.format(
+        start=f"<t:{int(slot.start)}:F>"
+    )
+    assert edit["view"] is None
+    kwargs = send.await_args.kwargs
+    assert kwargs["content"] == content.SESSION_ANNOUNCEMENT.format(players=f"<@{GM}>, <@{PLAYER}>")
+    assert pinged(kwargs) == [GM, PLAYER]
+    assert kwargs["embed"].title
+    assert (await store.get_poll(poll_id)).status == STATUS_CONFIRMED  # type: ignore[union-attr]
+
+
+async def test_double_confirm_is_harmless(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, slots = await fitted_poll(cog, store)
+    send, _ = channel_mocks(cog)
+    await press_confirm(cog, poll_id, slots[0])
+    second = await press_confirm(cog, poll_id, slots[1])
+    assert reply(second) == (content.UNKNOWN_POLL_MESSAGE, {"ephemeral": True})
+    second.response.edit_message.assert_not_awaited()
+    send.assert_awaited_once()
+
+
+async def test_confirm_by_a_player_is_refused(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, slots = await fitted_poll(cog, store)
+    send, _ = channel_mocks(cog)
+    interaction = await press_confirm(cog, poll_id, slots[0], user_id=PLAYER)
+    assert reply(interaction) == (content.NOT_ALLOWED_MESSAGE, {"ephemeral": True})
+    send.assert_not_awaited()
+    assert (await store.get_poll(poll_id)).status == STATUS_AWAITING_CONFIRM  # type: ignore[union-attr]
+
+
+async def test_confirm_while_voting_is_refused(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id, slots = await two_player_poll(cog, store)
+    interaction = await press_confirm(cog, poll_id, slots[0])
+    assert reply(interaction) == (content.NOT_AWAITING_CONFIRM_MESSAGE, {"ephemeral": True})
+
+
+@pytest.mark.parametrize(
+    ("action", "arg", "poll_id"),
+    [(PollAction.CONFIRM, None, None), (PollAction.CLOSE, None, 9999)],
+)
+async def test_stale_close_and_confirm_buttons(
+    cog: Sessions,
+    store: SqliteSessionStore,
+    action: PollAction,
+    arg: int | None,
+    poll_id: int | None,
+) -> None:
+    target = poll_id if poll_id is not None else await make_poll(cog, store)
+    interaction = make_interaction()
+    await cog.handle_poll_action(interaction, target, action, arg)
+    assert reply(interaction) == (content.STALE_BUTTON_MESSAGE, {"ephemeral": True})
+
+
+async def test_confirm_unknown_poll_replies_ephemerally(cog: Sessions) -> None:
+    interaction = await press_confirm(cog, 9999, 1)
+    assert reply(interaction) == (content.UNKNOWN_POLL_MESSAGE, {"ephemeral": True})
 
 
 # Dynamic button ids
@@ -608,12 +886,17 @@ def test_template_rejects_foreign_ids(text: str) -> None:
     assert re.fullmatch(CUSTOM_ID_TEMPLATE, text) is None
 
 
-def test_poll_view_is_persistent_with_join_leave_and_vote() -> None:
+def test_poll_view_is_persistent_with_join_leave_vote_and_close() -> None:
     view = poll_view(5)
     assert view.timeout is None
     assert view.is_persistent()
     labels = [item.item.label for item in view.children if isinstance(item, PollButton)]
-    assert labels == [content.JOIN_BUTTON, content.LEAVE_BUTTON, content.VOTE_BUTTON]
+    assert labels == [
+        content.JOIN_BUTTON,
+        content.LEAVE_BUTTON,
+        content.VOTE_BUTTON,
+        content.CLOSE_ROUND_BUTTON,
+    ]
 
 
 async def test_button_callback_hands_the_click_to_the_cog() -> None:

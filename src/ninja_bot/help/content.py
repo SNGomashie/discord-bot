@@ -218,6 +218,9 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "Players press Join to take part and Leave to drop out (their votes go with them). "
             "Vote opens a private form where you pick the slots that work for you "
             "and the ones that only work if needed, then Save. "
+            "Once everyone voted (or the GM presses Close round) the round closes: "
+            "if a date fits, the GM picks it with Confirm and the players are pinged; "
+            "otherwise the next weeks get a new round, up to 6 rounds. "
             "Slot times show in everyone's own time zone."
         ),
         examples=(
@@ -228,6 +231,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
         notes=(
             "A poll offers at most 25 slots; use fewer days, times or weeks if it says more.",
             "A server can have at most 5 open polls at a time.",
+            "Only the GM or someone with Manage Events can close a round or confirm a date.",
             "Errors are only visible to you, and they don't use up your cooldown.",
         ),
         parameter_notes={

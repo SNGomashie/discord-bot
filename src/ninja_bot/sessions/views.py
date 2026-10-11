@@ -19,6 +19,8 @@ from discord.ext import commands
 from ninja_bot.sessions import content
 
 CUSTOM_ID_TEMPLATE = r"ses:(?P<poll>\d+):(?P<action>[a-z]+)(?::(?P<arg>\d+))?"
+# Discord's limit on a button label.
+BUTTON_LABEL_LIMIT = 80
 # The cog that handles clicks (`commands.Cog` names default to the class name).
 HANDLER_COG = "Sessions"
 
@@ -27,6 +29,9 @@ class PollAction(StrEnum):
     JOIN = "join"
     LEAVE = "leave"
     VOTE = "vote"
+    CLOSE = "close"
+    # The argument is the offered slot's id.
+    CONFIRM = "confirm"
 
 
 def custom_id(poll_id: int, action: str, arg: int | None = None) -> str:
@@ -99,6 +104,31 @@ def poll_view(poll_id: int) -> ui.View:
             poll_id, PollAction.VOTE, label=content.VOTE_BUTTON, style=discord.ButtonStyle.primary
         )
     )
+    view.add_item(
+        PollButton(
+            poll_id,
+            PollAction.CLOSE,
+            label=content.CLOSE_ROUND_BUTTON,
+            style=discord.ButtonStyle.danger,
+        )
+    )
+    return view
+
+
+def confirm_view(poll_id: int, options: Sequence[tuple[int, str]]) -> ui.View:
+    """One persistent **Confirm** button per offered slot ((slot id, label) pairs, best first)."""
+    view = ui.View(timeout=None)
+    for rank, (slot_id, label) in enumerate(options, start=1):
+        text = content.CONFIRM_BUTTON.format(rank=rank, label=label)
+        view.add_item(
+            PollButton(
+                poll_id,
+                PollAction.CONFIRM,
+                slot_id,
+                label=text[:BUTTON_LABEL_LIMIT],
+                style=discord.ButtonStyle.success,
+            )
+        )
     return view
 
 

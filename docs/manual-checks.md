@@ -130,6 +130,11 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] Pick slots, Save: the form turns into "Your votes are saved." and the poll counts and `Waiting for` update
 - [ ] Vote again: the selects are pre-selected with your saved votes; None of these work turns all your votes into no
 - [ ] The form and the poll embed fit on the phone app (selects usable, labels not cut off)
+- [ ] Close round pressed by a player without Manage Events is refused privately; pressed by the GM it closes the round
+- [ ] With two players voting ✅ on a slot (and `min_players` unset), the last Save closes the round by itself: the old poll message says "Round 1 is closed." without buttons, and the result message pings only the GM with Confirm buttons
+- [ ] With no fitting slot, Close round posts round 2 as a new poll message (buttons work), pinging only players who didn't vote; the old message has no buttons
+- [ ] Confirm by a player is refused privately; Confirm by the GM edits the result to "Confirmed" and posts the session embed, pinging the roster; a second Confirm click is refused privately
+- [ ] Restart the bot mid-poll (while voting, and again while awaiting Confirm): Vote, Close round and Confirm still work afterwards
 
 ## /help
 

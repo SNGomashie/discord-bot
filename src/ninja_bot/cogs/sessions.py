@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import discord
@@ -16,7 +16,16 @@ from ninja_bot.cs2.channels import channel_problem
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import send_safely
 from ninja_bot.sessions import content
-from ninja_bot.sessions.embed import build_poll_embed, format_slot_label
+from ninja_bot.sessions.embed import (
+    build_next_round_embed,
+    build_no_fit_embed,
+    build_poll_embed,
+    build_result_embed,
+    build_session_embed,
+    format_slot_label,
+    mention,
+    timestamp,
+)
 from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote, pending_players, score_slots
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
@@ -27,6 +36,13 @@ from ninja_bot.sessions.service import (
     CloseReason,
     JoinResult,
     NoPrefill,
+    NotAllowed,
+    NotVoting,
+    RoundAdvanced,
+    RoundFailed,
+    RoundFits,
+    RoundOutcome,
+    SessionRefused,
     SessionService,
     VoteResult,
     should_auto_close,
@@ -39,8 +55,8 @@ from ninja_bot.sessions.slots import (
     MAX_WEEKS,
     InvalidSessionInput,
 )
-from ninja_bot.sessions.store import STATUS_VOTING, Poll, SqliteSessionStore
-from ninja_bot.sessions.views import PollAction, PollButton, VoteView, poll_view
+from ninja_bot.sessions.store import STATUS_VOTING, Poll, Session, SqliteSessionStore
+from ninja_bot.sessions.views import PollAction, PollButton, VoteView, confirm_view, poll_view
 
 if TYPE_CHECKING:
     from ninja_bot.bot import NinjaBot
@@ -61,6 +77,20 @@ def cooldown_message(retry_after: float) -> str:
 
 def _send_safely(send: Awaitable[object]) -> Awaitable[bool]:
     return send_safely(send, "session poll response")
+
+
+def _pinging(user_ids: Sequence[int]) -> discord.AllowedMentions:
+    """Mentions that ping exactly these users (and nobody else)."""
+    return discord.AllowedMentions(
+        everyone=False,
+        roles=False,
+        replied_user=False,
+        users=[discord.Object(id=user_id) for user_id in user_ids],
+    )
+
+
+def _is_manager(interaction: discord.Interaction) -> bool:
+    return bool(interaction.permissions.manage_events)
 
 
 class Sessions(commands.Cog):
@@ -278,6 +308,10 @@ class Sessions(commands.Cog):
                     await self.handle_leave(interaction, poll_id)
                 case PollAction.VOTE:
                     await self.handle_vote(interaction, poll_id)
+                case PollAction.CLOSE:
+                    await self.handle_close(interaction, poll_id)
+                case PollAction.CONFIRM if arg is not None:
+                    await self.handle_confirm(interaction, poll_id, arg)
                 case _:
                     await _send_safely(
                         interaction.response.send_message(
@@ -384,22 +418,18 @@ class Sessions(commands.Cog):
             if poll is None or poll.message_id is None:
                 return
             embed, view = await self.poll_message(poll)
-            message = self.bot.get_partial_messageable(poll.channel_id).get_partial_message(
-                poll.message_id
-            )
-            await send_safely(
-                message.edit(
-                    embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none()
-                ),
-                "session poll refresh",
-            )
         except Exception:
             log.exception("Could not refresh session poll %d", poll_id)
+            return
+        await self._edit_poll_message(
+            poll, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none()
+        )
 
-    async def advance_if_ready(self, poll_id: int) -> CloseReason | None:
-        """Why the poll's round should close after a vote (`"all_voted"`), or None.
+    async def advance_if_ready(self, poll_id: int) -> RoundOutcome | None:
+        """Close the round once everyone voted (`"all_voted"`) and post the outcome.
 
-        Deadlines are left to the background loop; errors are logged and give None.
+        None when the round stays open; deadlines are left to the background loop.
+        Errors are logged and give None.
         """
         try:
             poll = await self.service.store.get_poll(poll_id)
@@ -409,10 +439,161 @@ class Sessions(commands.Cog):
             reason = should_auto_close(
                 poll, players, [slot.id for slot in slots], votes, self.service.clock()
             )
+            if reason != "all_voted":
+                return None
+            return await self.close_and_post(poll_id, reason)
         except Exception:
-            log.exception("Could not check whether session poll %d is ready", poll_id)
+            log.exception("Could not close the round of session poll %d", poll_id)
             return None
-        return reason if reason == "all_voted" else None
+
+    async def close_and_post(
+        self,
+        poll_id: int,
+        reason: CloseReason,
+        by_user_id: int = 0,
+        is_manager: bool = False,
+    ) -> RoundOutcome:
+        """Close the round via the service and post its outcome in the poll's channel.
+
+        `NotVoting` / `NotAllowed` post nothing (a double click or a lost race).
+        """
+        outcome = await self.service.close_round(poll_id, by_user_id, is_manager, reason)
+        if not isinstance(outcome, NotVoting | NotAllowed):
+            await self.post_outcome(outcome)
+        return outcome
+
+    async def post_outcome(self, outcome: RoundFits | RoundAdvanced | RoundFailed) -> None:
+        """Mark the old poll message closed (buttons removed), then post the outcome."""
+        poll = outcome.poll
+        # A next round has already moved the poll on; the old message shows the round before.
+        closed_round = poll.round_number - (1 if isinstance(outcome, RoundAdvanced) else 0)
+        await self._edit_poll_message(
+            poll,
+            content=content.ROUND_CLOSED_MESSAGE.format(round=closed_round),
+            view=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        if isinstance(outcome, RoundFits):
+            await self._post_result(outcome)
+        elif isinstance(outcome, RoundAdvanced):
+            await self._post_next_round(outcome)
+        else:
+            await self._post_no_fit(outcome)
+
+    async def _post_result(self, outcome: RoundFits) -> None:
+        poll = outcome.poll
+        players, _, votes = await self.service.round_state(poll)
+        tz = self.service.tz
+        await self._post(
+            poll.channel_id,
+            "session poll result",
+            content=content.RESULT_PING.format(gm=mention(poll.gm_id)),
+            embed=build_result_embed(poll, outcome.top, outcome.slots, players, votes),
+            view=confirm_view(poll.id, [(s.id, format_slot_label(s, tz)) for s in outcome.slots]),
+            allowed_mentions=_pinging([poll.gm_id]),
+        )
+
+    async def _post_next_round(self, outcome: RoundAdvanced) -> None:
+        poll = outcome.poll
+        embed, view = await self.poll_message(poll)
+        pending = list(outcome.pending)
+        ping = ", ".join(mention(user_id) for user_id in pending)
+        message = await self._post(
+            poll.channel_id,
+            "session poll round",
+            content=content.NEXT_ROUND_PING.format(players=ping) if pending else None,
+            embeds=[build_next_round_embed(poll, outcome.slots, pending), embed],
+            view=view,
+            allowed_mentions=_pinging(pending),
+        )
+        if message is not None:
+            await self.service.store.set_poll_message(poll.id, message.id)
+
+    async def _post_no_fit(self, outcome: RoundFailed) -> None:
+        await self._post(
+            outcome.poll.channel_id,
+            "session poll failure",
+            embed=build_no_fit_embed(outcome.poll, outcome.reason),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def handle_close(self, interaction: discord.Interaction, poll_id: int) -> None:
+        """**Close round**: GM or Manage Events only; the outcome is posted in the channel."""
+        outcome = await self.service.close_round(
+            poll_id, interaction.user.id, _is_manager(interaction), "manual"
+        )
+        if isinstance(outcome, NotAllowed):
+            message = content.NOT_ALLOWED_MESSAGE
+        elif isinstance(outcome, NotVoting):
+            message = (
+                content.STALE_BUTTON_MESSAGE
+                if outcome.poll is None
+                else content.ROUND_ALREADY_CLOSED_MESSAGE
+            )
+        else:
+            await _send_safely(interaction.response.defer())
+            await self.post_outcome(outcome)
+            return
+        await _send_safely(interaction.response.send_message(message, ephemeral=True))
+
+    async def handle_confirm(
+        self, interaction: discord.Interaction, poll_id: int, slot_id: int
+    ) -> None:
+        """**Confirm**: GM or Manage Events only; marks the result and announces the session."""
+        try:
+            session = await self.service.confirm(
+                poll_id, slot_id, interaction.user.id, _is_manager(interaction)
+            )
+        except SessionRefused as exc:
+            await _send_safely(interaction.response.send_message(exc.message, ephemeral=True))
+            return
+        await _send_safely(
+            interaction.response.edit_message(
+                content=content.CONFIRMED_RESULT_MESSAGE.format(
+                    start=timestamp(session.start, "F")
+                ),
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        )
+        await self._announce_session(session)
+
+    async def _announce_session(self, session: Session) -> None:
+        roster = list(session.roster)
+        await self._post(
+            session.channel_id,
+            "session announcement",
+            content=content.SESSION_ANNOUNCEMENT.format(
+                players=", ".join(mention(user_id) for user_id in roster)
+            )
+            if roster
+            else None,
+            embed=build_session_embed(session),
+            allowed_mentions=_pinging(roster),
+        )
+
+    async def _post(self, channel_id: int, what: str, **kwargs: Any) -> discord.Message | None:
+        """Send a message to a channel through `send_safely`; the message, or None."""
+        sent: list[discord.Message] = []
+
+        async def send() -> None:
+            channel = self.bot.get_partial_messageable(channel_id)
+            sent.append(await channel.send(**kwargs))
+
+        await send_safely(send(), what)
+        return sent[0] if sent else None
+
+    async def _edit_poll_message(self, poll: Poll, **kwargs: Any) -> None:
+        """Edit the poll's public message; failures are logged, never raised."""
+        if poll.message_id is None:
+            return
+        try:
+            message = self.bot.get_partial_messageable(poll.channel_id).get_partial_message(
+                poll.message_id
+            )
+            await send_safely(message.edit(**kwargs), "session poll edit")
+        except Exception:
+            log.exception("Could not edit the message of session poll %d", poll.id)
 
     async def _reply_error(self, interaction: discord.Interaction) -> None:
         if interaction.response.is_done():
