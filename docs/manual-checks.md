@@ -80,6 +80,7 @@ Check the `voice_sessions` table in `data/activity.sqlite3` after each step (for
 
 - [ ] `/activity` posts the current month publicly: leaderboard with mentions (nobody is pinged), wall of shame, awards, Together, footer `Times in <ACTIVITY_TIMEZONE>`
 - [ ] The wall of shame names only members seen in voice within the last 90 days of the viewed month (or since) who were already known by its end; `/activity` for an old month does not list members who joined later
+- [ ] A member who left the server no longer appears on the wall of shame (in `/activity` and the monthly post); the next lowest member fills the spot
 - [ ] `/activity month:2020-01` (no data) shows "Nobody was in voice in January 2020." and a second call right after is not throttled
 - [ ] `/activity month:sept` and `/activity month:2099-01` give private errors
 - [ ] `/myactivity` shows your month publicly (title is your server name, day strip, streaks); `/myactivity user:@friend month:<YYYY-MM>` shows theirs

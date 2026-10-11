@@ -1,5 +1,6 @@
 """/activity and /myactivity: wiring, month handling, cooldown and replies."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -7,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from ninja_bot.activity.embed import EMPTY_MONTH_MESSAGE, POKEMON_FIELD
+from ninja_bot.activity.embed import EMPTY_MONTH_MESSAGE, POKEMON_FIELD, SHAME_FIELD
 from ninja_bot.activity.periods import FUTURE_MONTH_MESSAGE, INVALID_MONTH_MESSAGE, Month
 from ninja_bot.activity.store import PokemonEvent, Session
 from ninja_bot.cogs.activity import (
@@ -86,6 +87,7 @@ def make_cog(store: Any, clock: FakeClock | None = None) -> Activity:
 
 def make_interaction(user_id: int = USER_ID) -> MagicMock:
     interaction = MagicMock()
+    interaction.guild = None
     interaction.user.id = user_id
     interaction.user.display_name = "Caller"
     interaction.response.send_message = AsyncMock()
@@ -317,3 +319,67 @@ async def test_month_with_only_pokemon_keeps_the_cooldown() -> None:
     assert embed.description == EMPTY_MONTH_MESSAGE.format(month="October 2026")
     assert POKEMON_FIELD in [f.name for f in embed.fields]
     assert cog.cooldown.try_acquire(USER_ID) > 0
+
+
+class FakeGuild:
+    """Nobody cached; `fetch_member` raises NotFound for `departed`, a 503 for `failing`."""
+
+    def __init__(self, departed: Iterable[int] = (), failing: Iterable[int] = ()) -> None:
+        self.id = 1
+        self.departed = set(departed)
+        self.failing = set(failing)
+        self.fetch_calls: list[int] = []
+
+    def get_member(self, user_id: int) -> discord.Member | None:
+        return None
+
+    async def fetch_member(self, user_id: int) -> MagicMock:
+        self.fetch_calls.append(user_id)
+        if user_id in self.departed:
+            raise discord.NotFound(MagicMock(status=404, reason="Not Found"), "Unknown Member")
+        if user_id in self.failing:
+            raise discord.HTTPException(MagicMock(status=503, reason="Unavailable"), "down")
+        return make_member(user_id, f"Member {user_id}")
+
+
+def shame_store() -> FakeStore:
+    """Five members in October; 1 has the least time, 5 the most."""
+    return FakeStore([session(u, ts(u, 18), u, u) for u in range(1, 6)])
+
+
+def shame_lines(interaction: MagicMock) -> list[str]:
+    embed = assert_public_embed(interaction)
+    return next(f.value for f in embed.fields if f.name == SHAME_FIELD).splitlines()
+
+
+async def test_activity_skips_departed_members_and_refills_the_shame_list() -> None:
+    guild = FakeGuild(departed={2})
+    interaction = make_interaction()
+    interaction.guild = guild
+    await make_cog(shame_store()).handle_activity(interaction, None)
+
+    lines = shame_lines(interaction)
+    assert [line.split()[1] for line in lines] == ["<@1>", "<@3>", "<@4>"]
+    assert guild.fetch_calls == [1, 2, 3, 4]  # stops once the list is full
+
+
+async def test_lookup_error_keeps_the_candidate_and_is_not_cached() -> None:
+    guild = FakeGuild(failing={1})
+    cog = make_cog(shame_store())
+    interaction = make_interaction()
+    interaction.guild = guild
+    await cog.handle_activity(interaction, None)
+
+    assert [line.split()[1] for line in shame_lines(interaction)] == ["<@1>", "<@2>", "<@3>"]
+    report = await cog.monthly_report(Month(2026, 10), guild)  # type: ignore[arg-type]
+    assert [user_id for user_id, _ in report.shame] == [1, 2, 3]
+    assert guild.fetch_calls.count(1) == 2  # the error was retried, not cached
+
+
+async def test_all_shame_candidates_departed_leaves_no_shame_field() -> None:
+    interaction = make_interaction()
+    interaction.guild = FakeGuild(departed={1, 2, 3, 4, 5})
+    await make_cog(shame_store()).handle_activity(interaction, None)
+
+    embed = assert_public_embed(interaction)
+    assert SHAME_FIELD not in [f.name for f in embed.fields]

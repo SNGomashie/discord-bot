@@ -9,6 +9,7 @@
 - DownloadPlan: mp3 plans set `audio_bitrate_kbps`, mp4 plans set `height_ladder`; `format_selector(plan, height)` only accepts mp4 plans. Size filters use `<=?` so formats with unknown size still match — the downloader must check the real file size. Clipped plans get no size filter at all (yt-dlp filesize is for the whole video).
 - Downloader: YtDlpDownloader takes injectable `extract`/`run`/`is_ytdlp_error` callables; tests pass stubs so yt_dlp is never called. Only downloader.py imports yt_dlp (lazily, inside the default callables).
 - ruff ASYNC240 flags pathlib calls (iterdir etc.) inside async functions, including tests — put them in small sync helpers.
+- Activity wall of shame vs departed members: `MonthlyReport.shame_pool` holds every candidate (lowest first); `without_departed(report, departed)` refills `shame`. The cog's `departed_members` reuses cs2 `member_lookup` + `MemberCache` and treats `None` + `cache.not_members` hit as "left" (errors aren't cached, so they keep the candidate). Activity test interactions set `guild = None`; `FakeGuild(departed=, failing=)` is in tests/test_activity_commands.py.
 - Cog tests: call `Cog.command.callback(cog, interaction, ...)` or a plain `handle_*` method with a MagicMock interaction (AsyncMock for response.defer/send_message and followup.send). Command params/choices are inspectable via `Cog.command._params[name]`.
 - /download cooldown is `UserCooldown` (media/cooldown.py, injectable clock) on the cog instance, not an app_commands check: `handle_download` takes it after URL/clip validation and refunds in a `finally` unless `_download_deferred` returns True (file posted). Tests inject `Media(downloader, 3600, UserCooldown(30, FakeClock()))`.
 - ffmpeg is installed in Dockerfile.dev (rebuild the container to get it); prod LXC needs `apt install ffmpeg`.
@@ -147,4 +148,9 @@
 - Sessions after the viewed month count as "last seen" (someone back since is still a candidate).
 - Files: src/ninja_bot/activity/{store,stats,report}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{store,stats,embed,commands}.py, README.md (Wall of shame bullet, Toasty storage note), CLAUDE.md, docs/manual-checks.md.
 - Needs manual check: docs/manual-checks.md wall of shame item (old month with a later-joined member).
+---
+## 2026-10-11 - Review US-002
+- `MonthlyReport.shame_pool`, `drop_departed(pool, departed, limit)`, `without_departed(report, departed)` in activity/report.py; `Activity.monthly_report(month, guild=None)` + `departed_members(guild, report)` (lookups lowest first, stop at SHAME_LIMIT kept; NotFound = departed, HTTP errors keep the candidate and aren't cached). `/activity` passes `interaction.guild`, the monthly post `channel.guild`; `/myactivity` doesn't (no shame list). `Activity(..., members=MemberCache)`.
+- Files: src/ninja_bot/activity/report.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{embed,commands,autopost}.py, README.md (Wall of shame bullet), docs/manual-checks.md, CLAUDE.md.
+- Needs manual check: docs/manual-checks.md departed-member wall of shame item.
 ---

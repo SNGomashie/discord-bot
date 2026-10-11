@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Set
+from dataclasses import dataclass, field, replace
 from zoneinfo import ZoneInfo
 
 from ninja_bot.activity.awards import Award, SocialStats, compute_awards, social_stats
@@ -39,6 +39,9 @@ class MonthlyReport:
     awards: list[Award]  # voice awards, then Impatient
     social: SocialStats
     pokemon: PokemonStats = field(default_factory=PokemonStats)
+    # Every wall of shame candidate, lowest first; `shame` is its head until
+    # `without_departed` drops members who left the server.
+    shame_pool: list[tuple[int, float]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -75,22 +78,33 @@ def build_monthly_report(
     stats = monthly_stats(session_list, month, tz, now)
     previous_stats = monthly_stats(previous_sessions, month.previous(), tz, now)
     totals = {user_id: user.total_seconds for user_id, user in stats.items()}
+    candidates = shame_candidates(voice_user_ranges, month.end(tz).timestamp()) | set(totals)
+    pool = shame_list(totals, candidates, len(candidates))
     return MonthlyReport(
         month=month,
         timezone=tz.key,
         days_in_month=month.days(tz),
         stats=stats,
         leaderboard=rank(list(totals.items())),
-        shame=shame_list(
-            totals,
-            shame_candidates(voice_user_ranges, month.end(tz).timestamp()) | set(totals),
-            SHAME_LIMIT,
-        ),
+        shame=pool[:SHAME_LIMIT],
         awards=compute_awards(stats, previous_stats, session_list, month, tz, now)
         + impatient_awards(pokemon),
         social=social_stats(session_list, month, tz, now),
         pokemon=pokemon,
+        shame_pool=pool,
     )
+
+
+def drop_departed(
+    pool: Iterable[tuple[int, float]], departed: Set[int], limit: int
+) -> list[tuple[int, float]]:
+    """The first `limit` entries of `pool` whose user is not in `departed` (order kept)."""
+    return [entry for entry in pool if entry[0] not in departed][: max(limit, 0)]
+
+
+def without_departed(report: MonthlyReport, departed: Set[int]) -> MonthlyReport:
+    """`report` with members who left the server off the wall of shame (refilled from the pool)."""
+    return replace(report, shame=drop_departed(report.shame_pool, departed, SHAME_LIMIT))
 
 
 def user_profile(report: MonthlyReport, user_id: int, display_name: str) -> UserProfile | None:

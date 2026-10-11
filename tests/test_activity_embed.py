@@ -25,7 +25,9 @@ from ninja_bot.activity.report import (
     MonthlyReport,
     UserProfile,
     build_monthly_report,
+    drop_departed,
     user_profile,
+    without_departed,
 )
 from ninja_bot.activity.store import PokemonEvent, PokemonKind, Session
 from ninja_bot.cs2.embed import FIELD_VALUE_LIMIT, TITLE_LIMIT
@@ -180,6 +182,32 @@ def test_shame_ignores_pokemon_only_members() -> None:
     data = build_monthly_report(sessions, [], seen(1), SEPTEMBER, AMSTERDAM, LATER, events)
 
     assert data.shame == [(1, 3 * HOUR)]
+
+
+def test_drop_departed_keeps_order_and_limit() -> None:
+    pool = [(3, 0.0), (4, 0.0), (2, HOUR), (1, 3 * HOUR)]
+
+    assert drop_departed(pool, {4}, 3) == [(3, 0.0), (2, HOUR), (1, 3 * HOUR)]
+    assert drop_departed(pool, set(), 2) == [(3, 0.0), (4, 0.0)]
+    assert drop_departed(pool, {1, 2, 3, 4}, 3) == []
+
+
+def test_departed_member_is_dropped_and_the_shame_list_refilled() -> None:
+    sessions = [session(1, ts(2, 20), 3), session(2, ts(2, 20), 1, channel_id=11)]
+    data = without_departed(report(sessions, known={1, 2, 3, 4}), {3})
+
+    assert data.shame == [(4, 0.0), (2, HOUR), (1, 3 * HOUR)]
+    assert [row.user_id for row in data.leaderboard] == [1, 2]  # leaderboard untouched
+
+
+def test_all_candidates_departed_gives_no_shame_field() -> None:
+    sessions = [session(1, ts(2, 20), 3)]
+    data = without_departed(report(sessions, known={1, 2}), {1, 2})
+
+    assert data.shame == []
+    names = [f.name for f in build_monthly_embed(data).fields]
+    assert SHAME_FIELD not in names
+    assert LEADERBOARD_FIELD in names
 
 
 def test_shame_includes_members_with_time_this_month_without_ranges() -> None:

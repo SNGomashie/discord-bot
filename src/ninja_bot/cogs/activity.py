@@ -16,10 +16,17 @@ from ninja_bot.activity.embed import build_monthly_embed, build_profile_embed
 from ninja_bot.activity.formatting import month_label
 from ninja_bot.activity.periods import InvalidMonthError, Month, resolve_month
 from ninja_bot.activity.pokemon import Catch, PendingCommands, is_pokemon_command, parse_reply
-from ninja_bot.activity.report import MonthlyReport, build_monthly_report, user_profile
+from ninja_bot.activity.report import (
+    SHAME_LIMIT,
+    MonthlyReport,
+    build_monthly_report,
+    user_profile,
+    without_departed,
+)
 from ninja_bot.activity.reporter import MonthlyReporter
 from ninja_bot.activity.store import ActivityStore, PokemonEvent, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
+from ninja_bot.cogs.cs2 import MemberCache, member_lookup
 from ninja_bot.cs2.channels import (
     CHANNEL_MISSING,
     CHANNEL_NOT_TEXT,
@@ -105,6 +112,7 @@ class Activity(commands.Cog):
         timezone: str = "UTC",
         cooldown: UserCooldown | None = None,
         channel_id: int | None = None,
+        members: MemberCache | None = None,
     ) -> None:
         self.bot = bot
         self.store = store
@@ -120,6 +128,8 @@ class Activity(commands.Cog):
         self.reporter = MonthlyReporter(store, self.tz, clock)
         # Channel problems already logged, so a broken setup warns once instead of every hour.
         self._channel_warnings: set[str] = set()
+        # Guild membership answers for the wall of shame (REST-backed, no members intent).
+        self.members = members if members is not None else MemberCache()
 
     async def cog_load(self) -> None:
         if self.channel_id is None:
@@ -221,7 +231,7 @@ class Activity(commands.Cog):
     async def _post_report(self, channel: PostChannel, month: Month) -> None:
         """Send one overview; the month is confirmed even if the send failed."""
         try:
-            report = await self.monthly_report(month)
+            report = await self.monthly_report(month, channel.guild)
             embed = build_monthly_embed(report)
             # Leaderboard lines are mentions; render them, but never ping anyone.
             sent = await _send_safely(
@@ -331,7 +341,7 @@ class Activity(commands.Cog):
     async def _activity_reply(self, interaction: discord.Interaction, month: Month) -> bool:
         """Post the monthly overview; True only if it listed anyone."""
         try:
-            report = await self.monthly_report(month)
+            report = await self.monthly_report(month, interaction.guild)
             embed = build_monthly_embed(report)
         except Exception:
             log.exception("Unexpected error building the activity overview")
@@ -375,8 +385,13 @@ class Activity(commands.Cog):
             )
         )
 
-    async def monthly_report(self, month: Month) -> MonthlyReport:
-        """Load `month` (sessions and Pokémon events) and the month before; build the report."""
+    async def monthly_report(
+        self, month: Month, guild: discord.Guild | None = None
+    ) -> MonthlyReport:
+        """Load `month` (sessions and Pokémon events) and the month before; build the report.
+
+        With a `guild`, members who left it are dropped from the wall of shame.
+        """
         now = self.clock()
         previous = month.previous()
         sessions = await self.store.sessions_between(
@@ -389,9 +404,31 @@ class Activity(commands.Cog):
             month.start(self.tz).timestamp(), month.end(self.tz).timestamp()
         )
         voice_user_ranges = await self.store.voice_user_ranges()
-        return build_monthly_report(
+        report = build_monthly_report(
             sessions, previous_sessions, voice_user_ranges, month, self.tz, now, pokemon_events
         )
+        if guild is None:
+            return report
+        return without_departed(report, await self.departed_members(guild, report))
+
+    async def departed_members(self, guild: discord.Guild, report: MonthlyReport) -> set[int]:
+        """Shame candidates Discord says are not in `guild`, checked lowest first.
+
+        Stops once SHAME_LIMIT candidates are kept. Lookup errors keep the candidate.
+        """
+        lookup = member_lookup(guild, self.members)
+        departed: set[int] = set()
+        kept = 0
+        for user_id, _ in report.shame_pool:
+            if kept >= SHAME_LIMIT:
+                break
+            name = await lookup(user_id)
+            # member_lookup only caches "not a member" for a definite 404.
+            if name is None and self.members.not_members.get((guild.id, user_id)):
+                departed.add(user_id)
+            else:
+                kept += 1
+        return departed
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError

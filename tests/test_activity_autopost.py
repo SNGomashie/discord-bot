@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
+from ninja_bot.activity.embed import SHAME_FIELD
 from ninja_bot.activity.store import SqliteActivityStore
 from ninja_bot.cogs.activity import REPORT_CHECK_SECONDS, Activity
 from ninja_bot.cs2.channels import CHANNEL_MISSING, CHANNEL_NO_PERMISSIONS, CHANNEL_NOT_TEXT
@@ -34,6 +35,9 @@ def ts(month: int, day: int, hour: int = 12) -> float:
 def make_channel(permissions: discord.Permissions = ALL_PERMISSIONS) -> MagicMock:
     channel = MagicMock(spec=discord.TextChannel)
     channel.guild = MagicMock()
+    channel.guild.id = 1
+    channel.guild.get_member.return_value = None
+    channel.guild.fetch_member = AsyncMock(return_value=MagicMock(display_name="Member"))
     channel.permissions_for.return_value = permissions
     channel.send = AsyncMock()
     return channel
@@ -240,3 +244,20 @@ async def test_loop_not_started_without_channel(
         await cog.cog_load()
     assert not cog.report_loop.is_running()
     assert "monthly activity posts are off" in caplog.text
+
+
+async def test_monthly_post_skips_departed_members(tmp_path: Path) -> None:
+    store = await make_store(tmp_path, 10)
+    other = USER + 1
+    await store.open_session(other, 10, ts(10, 2))
+    await store.close_session(other, ts(10, 2) + 60)
+    channel = make_channel()
+    channel.guild.fetch_member = AsyncMock(
+        side_effect=discord.NotFound(MagicMock(status=404, reason="Not Found"), "Unknown Member")
+    )
+    cog = make_cog(store, make_bot(channel), FakeClock(ts(11, 1, 1)))
+    await cog.run_report_cycle()
+
+    embed = channel.send.await_args.kwargs["embed"]
+    assert SHAME_FIELD not in [f.name for f in embed.fields]
+    assert channel.guild.fetch_member.await_count == 2
