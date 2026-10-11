@@ -4,6 +4,15 @@ What shipped in each merged pull request of [SNGomashie/discord-bot](https://git
 
 ## 2026-10-11
 
+### Activity tracking: voice hours, monthly report and Toasty catches
+- The bot now records voice time per member (the AFK channel is excluded). Open sessions are heartbeated every 60 seconds, so a restart or crash closes them at the last heartbeat and reopens the people still in voice. Data goes to `<DATA_DIR>/activity.sqlite3`.
+- New `/activity [month]`: leaderboard with shared ranks, a wall of shame (members seen in voice within the last 90 days, including 0h, never members who left), awards (night owl, early bird, marathon, most consistent, biggest climber and drop for completed months) and social stats (most time together, busiest hour and weekday). New `/myactivity [user] [month]`: hours with rank, active days, streaks, longest and average session, a day strip and awards. Both reply publicly without pinging, with a 10-second per-user cooldown. A day is active from 5 minutes of voice time, and months follow `ACTIVITY_TIMEZONE`.
+- With `ACTIVITY_CHANNEL_ID` set, the previous month's overview is posted automatically, once per month and restart-safe. A failed report build is retried the next hour; a failed send is not repeated.
+- With `TOASTY_BOT_ID` set, `;pokemon` and Toasty's reply to it are recorded as a catch, a shiny catch or a cooldown hit, adding a Pokémon field (catches, shinies, most caught species) and an Impatient award. Only parsed fields are stored. This is the only feature that needs the privileged Message Content intent, requested only when `TOASTY_BOT_ID` is set.
+- New settings `ACTIVITY_CHANNEL_ID`, `ACTIVITY_TIMEZONE` and `TOASTY_BOT_ID`; README, `.env.example`, `docs/deployment.md`, `docs/manual-checks.md`, `/help` (new Activity group) and CLAUDE.md updated. 1768 tests in total.
+- Review fixes shipped in the same PR: wall of shame limited to recent, current members; the current streak survives a quiet morning; failed report builds are retried; months before 2015 are rejected with the month-format reply; the hourly report check no longer scales with the number of months; the CS2 and activity cogs share one auto-post channel helper (`posting.py`).
+- Follow-ups: the raw form of Toasty's replies (mention format, embed or plain content, edits) is assumed from the Discord UI and still needs the manual check; streaks restart on the 1st; shame candidates could later be limited to a role.
+
 ### `/help` command (`2026.41.9`)
 - New `/help`: with no argument it shows an overview (a "Getting started" block and every command grouped by Media, CS2 stats and Utility, with usage and a one-line summary). `/help command:<name>` shows one command's usage, parameters (required or optional, choices, accepted formats), examples and notes.
 - The `command` option autocompletes from the commands the bot has registered. Names match case-insensitively and with an optional leading `/`; an unknown name gets a private reply with suggestions.
