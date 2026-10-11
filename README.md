@@ -35,9 +35,9 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
 | `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
-| `/help` | `command` (a command name, default: overview of every command) | private | none |
+| `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
-Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private "Slow down!" reply with the seconds left.
+Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
 
 ## Quick start
 

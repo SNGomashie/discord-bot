@@ -102,3 +102,12 @@
 - Docs: minimal now (README commands row + layout, removed "No help command" limitation, CLAUDE.md Architecture line); the full /help section, public flag and manual checks are US-009.
 - Needs manual check: `/help` and `/help command:download` in the test server (private reply, works in DMs).
 ---
+
+## 2026-10-11 - US-007
+- `/help` gets `command` autocomplete (`autocomplete_choices` over `autocomplete_names`, cog method `help_command_autocomplete`) and an optional `public: bool` flag.
+- Public replies use `UserCooldown(PUBLIC_COOLDOWN_SECONDS=15.0)`, taken only after the command resolves to an embed; unknown names are always private and never take it. A failing public send refunds and re-raises (cog error handler logs it). Throttle text: `public_cooldown_message` formats `PUBLIC_COOLDOWN_MESSAGE` (ceil, singular/plural).
+- README commands table row for /help updated (public, cooldown); the full /help section is US-009.
+- Files: src/ninja_bot/cogs/help.py, tests/test_help_cog.py, README.md
+- Learnings: in tests, call `Help.help.callback(cog, interaction, command, public)` positionally; the autocomplete callback is a plain cog method you can await directly.
+- Needs manual check: autocomplete suggestions appear while typing `command`; `public:true` posts visibly in the channel; a second public call within 15 s gets the private cooldown reply.
+---

@@ -8,13 +8,21 @@ from discord import app_commands
 from ninja_bot.bot import EXTENSIONS
 from ninja_bot.cogs.core import Core
 from ninja_bot.cogs.cs2 import Cs2
-from ninja_bot.cogs.help import Help, command_infos, unknown_command_message
+from ninja_bot.cogs.help import (
+    PUBLIC_COOLDOWN_SECONDS,
+    Help,
+    autocomplete_choices,
+    command_infos,
+    public_cooldown_message,
+    unknown_command_message,
+)
 from ninja_bot.cogs.media import Media
 from ninja_bot.help.commands import CommandInfo, ParamInfo
 from ninja_bot.help.content import (
     GENERIC_ERROR_MESSAGE,
     NO_SUGGESTIONS,
     OVERVIEW_TITLE,
+    PUBLIC_COOLDOWN_MESSAGE,
     SUGGESTIONS_TEXT,
     UNKNOWN_COMMAND_MESSAGE,
 )
@@ -36,6 +44,7 @@ def make_cog(commands: list[Any] | None = None) -> Help:
 def make_interaction() -> MagicMock:
     interaction = MagicMock()
     interaction.guild = None
+    interaction.user.id = 42
     interaction.response.send_message = AsyncMock()
     interaction.followup.send = AsyncMock()
     return interaction
@@ -199,3 +208,101 @@ async def test_cog_app_command_error_send_failure_is_swallowed() -> None:
     error = discord.HTTPException(MagicMock(status=500, reason="boom"), "boom")
     interaction.response.send_message = AsyncMock(side_effect=error)
     await cog.cog_app_command_error(interaction, app_commands.AppCommandError("x"))
+
+
+def test_public_parameter_metadata() -> None:
+    param = Help.help._params["public"]
+    assert param.required is False
+    assert param.default is False
+    assert param.type is discord.AppCommandOptionType.boolean
+    assert str(param.description)
+
+
+async def test_autocomplete_partial_string() -> None:
+    cog = make_cog()
+    choices = await cog.help_command_autocomplete(make_interaction(), "pro")
+    assert choices == [app_commands.Choice(name="profile", value="profile")]
+
+
+async def test_autocomplete_empty_input_lists_every_command() -> None:
+    cog = make_cog()
+    choices = await cog.help_command_autocomplete(make_interaction(), "")
+    names = {choice.value for choice in choices}
+    assert names == {info.name for info in command_infos(tree_commands())}
+
+
+def test_autocomplete_choices_capped_at_25() -> None:
+    names = [f"cmd{i:02d}" for i in range(40)]
+    choices = autocomplete_choices("", names)
+    assert len(choices) == 25
+    assert all(choice.name == choice.value for choice in choices)
+
+
+def test_command_param_has_autocomplete() -> None:
+    assert Help.help._params["command"].autocomplete is not None
+
+
+async def test_public_reply_is_not_ephemeral() -> None:
+    cog = make_cog()
+    interaction = make_interaction()
+    await Help.help.callback(cog, interaction, "download", True)
+    _, kwargs = reply(interaction)
+    assert kwargs["embed"].title == "/download"
+    assert kwargs["ephemeral"] is False
+    assert kwargs["allowed_mentions"].everyone is False
+
+
+async def test_public_cooldown_throttles_second_public_call() -> None:
+    cog = make_cog()
+    await Help.help.callback(cog, make_interaction(), None, True)
+    second = make_interaction()
+    await Help.help.callback(cog, second, None, True)
+    args, kwargs = reply(second)
+    assert "embed" not in kwargs
+    assert args == (public_cooldown_message(PUBLIC_COOLDOWN_SECONDS),)
+    assert_private(kwargs)
+
+
+async def test_public_cooldown_does_not_block_private_call() -> None:
+    cog = make_cog()
+    await Help.help.callback(cog, make_interaction(), None, True)
+    private = make_interaction()
+    await Help.help.callback(cog, private, None, False)
+    _, kwargs = reply(private)
+    assert kwargs["embed"].title == OVERVIEW_TITLE
+    assert_private(kwargs)
+
+
+async def test_private_calls_do_not_take_public_cooldown() -> None:
+    cog = make_cog()
+    await Help.help.callback(cog, make_interaction(), None, False)
+    assert cog.public_cooldown.try_acquire(42) == 0.0
+
+
+async def test_unknown_command_public_does_not_take_cooldown() -> None:
+    cog = make_cog()
+    interaction = make_interaction()
+    await Help.help.callback(cog, interaction, "zzz", True)
+    args, kwargs = reply(interaction)
+    assert args == (UNKNOWN_COMMAND_MESSAGE.format(suggestions=NO_SUGGESTIONS),)
+    assert_private(kwargs)
+    assert cog.public_cooldown.try_acquire(42) == 0.0
+
+
+async def test_failing_public_send_refunds_cooldown() -> None:
+    cog = make_cog()
+    interaction = make_interaction()
+    error = discord.HTTPException(MagicMock(status=500, reason="boom"), "boom")
+    interaction.response.send_message = AsyncMock(side_effect=error)
+    with pytest.raises(discord.HTTPException):
+        await Help.help.callback(cog, interaction, None, True)
+    assert cog.public_cooldown.try_acquire(42) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "seconds", "unit"),
+    [(14.2, 15, "seconds"), (0.3, 1, "second"), (1.0, 1, "second")],
+)
+def test_public_cooldown_message_rounds_up(retry_after: float, seconds: int, unit: str) -> None:
+    expected = PUBLIC_COOLDOWN_MESSAGE.format(seconds=seconds, unit=unit)
+    assert public_cooldown_message(retry_after) == expected

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Awaitable, Iterable, Sequence
 
 import discord
@@ -12,15 +13,18 @@ from ninja_bot.help.content import (
     COMMANDS,
     GENERIC_ERROR_MESSAGE,
     NO_SUGGESTIONS,
+    PUBLIC_COOLDOWN_MESSAGE,
     SUGGESTIONS_TEXT,
     UNKNOWN_COMMAND_MESSAGE,
 )
 from ninja_bot.help.embed import build_command_embed, build_overview_embed
-from ninja_bot.help.lookup import find_command, suggest
+from ninja_bot.help.lookup import autocomplete_names, find_command, suggest
+from ninja_bot.media.cooldown import UserCooldown
 
 log = logging.getLogger(__name__)
 
 MAX_SUGGESTIONS = 3
+PUBLIC_COOLDOWN_SECONDS = 15.0
 
 
 def command_infos(tree_commands: Iterable[object]) -> list[CommandInfo]:
@@ -64,6 +68,19 @@ def help_reply(infos: Sequence[CommandInfo], command: str | None) -> discord.Emb
     return build_command_embed(by_name[name], entries.get(name))
 
 
+def autocomplete_choices(current: str, names: Sequence[str]) -> list[app_commands.Choice[str]]:
+    """Autocomplete choices for the `command` parameter (at most 25)."""
+    return [
+        app_commands.Choice(name=name, value=name) for name in autocomplete_names(current, names)
+    ]
+
+
+def public_cooldown_message(retry_after: float) -> str:
+    seconds = max(1, math.ceil(retry_after))
+    unit = "second" if seconds == 1 else "seconds"
+    return PUBLIC_COOLDOWN_MESSAGE.format(seconds=seconds, unit=unit)
+
+
 async def _send_safely(send: Awaitable[object]) -> None:
     try:
         await send
@@ -74,18 +91,50 @@ async def _send_safely(send: Awaitable[object]) -> None:
 class Help(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        # Only public replies use it; taken once the command is resolved, refunded if not sent.
+        self.public_cooldown = UserCooldown(PUBLIC_COOLDOWN_SECONDS)
 
     @app_commands.command(name="help", description="Show what the bot can do")
-    @app_commands.describe(command="A command to explain, e.g. download")
-    async def help(self, interaction: discord.Interaction, command: str | None = None) -> None:
+    @app_commands.describe(
+        command="A command to explain, e.g. download",
+        public="Post the help in the channel for everyone (default: only you see it)",
+    )
+    async def help(
+        self, interaction: discord.Interaction, command: str | None = None, public: bool = False
+    ) -> None:
         reply = help_reply(command_infos(self.bot.tree.get_commands()), command)
         none = discord.AllowedMentions.none()
-        if isinstance(reply, discord.Embed):
+        if not isinstance(reply, discord.Embed):
+            # Unknown command: always private and never uses the public cooldown.
+            await interaction.response.send_message(reply, ephemeral=True, allowed_mentions=none)
+            return
+        if not public:
             await interaction.response.send_message(
                 embed=reply, ephemeral=True, allowed_mentions=none
             )
-        else:
-            await interaction.response.send_message(reply, ephemeral=True, allowed_mentions=none)
+            return
+
+        user_id = interaction.user.id
+        retry_after = self.public_cooldown.try_acquire(user_id)
+        if retry_after > 0:
+            await interaction.response.send_message(
+                public_cooldown_message(retry_after), ephemeral=True, allowed_mentions=none
+            )
+            return
+        try:
+            await interaction.response.send_message(
+                embed=reply, ephemeral=False, allowed_mentions=none
+            )
+        except BaseException:
+            self.public_cooldown.refund(user_id)
+            raise
+
+    @help.autocomplete("command")
+    async def help_command_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        names = [info.name for info in command_infos(self.bot.tree.get_commands())]
+        return autocomplete_choices(current, names)
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
