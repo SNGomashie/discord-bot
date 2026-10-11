@@ -35,6 +35,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/activity/`: activity tracking logic:
   - `tracker.py`: `plan_transition(before, after, afk) -> Open | Close | Move | Nothing` (AFK channel = not in voice; no discord import).
   - `periods.py`: `Month` (the one month definition), `month_of`, `parse_month`, `InvalidMonthError`.
+  - `stats.py`: `clip`, `monthly_stats` -> `UserStats` per user (totals, active days with `ACTIVE_DAY_MIN_SECONDS`, streaks, session counts; local days via the tz, real seconds across DST), `rank` (shared ranks), `shame_list` (lowest totals among known users, 0 included).
   - `formatting.py`: `format_hours`, `day_strip`.
   - `store.py`: `ActivityStore` Protocol, `Session` dataclass, `SqliteActivityStore` (`<DATA_DIR>/activity.sqlite3`: `voice_sessions` with `last_seen` heartbeats, `reports_posted`; same lazy-schema/`asyncio.to_thread` pattern as `cs2/store.py`; `open_session` closes the user's open session first).
 - `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.
