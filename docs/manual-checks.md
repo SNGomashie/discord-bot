@@ -64,6 +64,17 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] Wrong channel ID or missing Embed Links: one warning in the log, no crash
 - [ ] Leetify rate limit: one skipped cycle (see the log), then posting resumes. If it can't be triggered, note it as unverifiable (covered by unit tests)
 
+## /help
+
+- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats and Utility groups, and a footer hint
+- [ ] Typing `/help command:` offers all commands, narrows as you type (`do` -> `download`)
+- [ ] `/help command:download` shows usage `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]`, parameter notes for clips and examples
+- [ ] `/help command:/Link` (capital, leading slash) works the same as `link`
+- [ ] `/help command:nonsense` gives a private "no command with that name" reply; `/help command:down` suggests `/download`
+- [ ] `/help public:true` posts in the channel; a second public call within 15 s is throttled privately, a private call is not
+- [ ] The embeds render cleanly on the phone app (no cut-off code blocks)
+- [ ] `/help` works in a DM with the bot (global sync) and in the test server
+
 ## Leetify data
 
 - [ ] Run `uv run python scripts/capture_leetify.py <steam64_id>` with a real key, read the `Result:` line, and compare field names and units in `data/leetify-capture/` with `tests/fixtures/leetify/` (the fixtures are hand-written from the API spec)

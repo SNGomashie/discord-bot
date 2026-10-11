@@ -119,3 +119,11 @@
 - No docs change (tests only); full /help docs are US-009.
 - Learnings: `NinjaBot(config)` + `await bot.load_extension(ext)` works offline in tests (setup_hook/sync are never called); unload the extensions afterwards so Cs2.cog_unload closes its clients.
 ---
+
+## 2026-10-11 - US-009
+- README: intro mentions /help and /ping, contents entry, new `## /help` section (overview/detail views, autocomplete, unknown names + suggestions, `public` with the 15 s cooldown, text lives in `help/content.py`), new Development `### Adding a command` (CommandHelp entry + README row, enforced by tests/test_help_drift.py). Commands table row, layout block and the removed "No help command" limitation were already done in US-006/US-007.
+- docs/manual-checks.md: `/help` section (from the PRD; the "nonsense" item corrected: no prefix/substring match gives the pointer to /help, not suggestions, so `down` is used for the suggestion check).
+- CLAUDE.md: Documentation table row "A new/changed/removed slash command -> also help/content.py"; convention "All /help text lives in help/content.py". Architecture line already existed.
+- Checked relative links/anchors in README, CLAUDE.md and docs/ with a small script (the only hit, `[x](y)` in manual-checks.md, is example text).
+- Needs manual check: the /help list in docs/manual-checks.md.
+---

@@ -8,6 +8,8 @@ It does three things:
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 
+`/help` explains every command inside Discord, and `/ping` checks that the bot is online.
+
 ## Contents
 
 - [Commands at a glance](#commands-at-a-glance)
@@ -16,6 +18,7 @@ It does three things:
 - [/download](#download)
 - [CS2 stats](#cs2-stats)
 - [Auto-posted matches](#auto-posted-matches)
+- [/help](#help)
 - [Data and storage](#data-and-storage)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
@@ -278,6 +281,18 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 
 where the cause is `missing` (not found), `not a text channel`, or `missing View Channel, Send Messages or Embed Links`. The warning repeats only after the channel has worked again.
 
+## /help
+
+`/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
+
+- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
+- **Detail** (`command` set): the command's summary and explanation, then Usage, Parameters (required or optional, choices, accepted formats), Examples and Notes.
+- **Command names:** `command` has autocomplete (names that start with what you typed first, then names that contain it, up to 25). Case and a leading `/` are ignored, so `/Link` works like `link`.
+- **Unknown names** get a private reply, "There is no command with that name.", with up to 3 similar names ("Did you mean: /download?") or a pointer to `/help`.
+- **`public`:** `public:true` posts the help in the channel for everyone. Public replies have a 15 s cooldown per user, taken only when the help is actually posted (a failed send refunds it). A throttled request gets a private reply with the seconds left that suggests leaving out `public`. Private replies and unknown names never use the cooldown.
+- Mentions in the reply never ping.
+- **Where the text lives:** every help string is in `src/ninja_bot/help/content.py`. Usage lines, parameters and choices are read from the registered commands, so they can't go stale; `content.py` only adds explanations, examples and notes. Rewording or restyling `/help` means editing that one file.
+
 ## Data and storage
 
 The only persistent data is the CS2 database at `<DATA_DIR>/cs2.sqlite3`. It is created on first use (the directory too) and holds three tables:
@@ -337,6 +352,10 @@ tasks/            the PRD of every feature, written before it was built
 ```
 
 The architecture rules, module-by-module notes and conventions for contributors and coding agents are in [CLAUDE.md](CLAUDE.md). The short version: keep logic out of Discord handlers (cogs are thin wrappers around pure functions and small service classes, because bots can't invoke slash commands in tests), use `app_commands`, annotate everything (mypy strict), keep persistent data under `data/`, and request only the intents a feature needs.
+
+### Adding a command
+
+A new slash command needs a `CommandHelp` entry in `src/ninja_bot/help/content.py` (in the right group, with `parameter_notes` only for real parameters) and a row in the [Commands at a glance](#commands-at-a-glance) table, plus its own README section. `tests/test_help_drift.py` loads the real extensions and fails when a registered command has no help entry or README row (or the other way round), when a command or parameter has an empty Discord description, or when a help embed exceeds Discord's limits. Removing or renaming a command means updating both places too.
 
 ### Quality gate
 
