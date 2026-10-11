@@ -369,7 +369,7 @@ src/ninja_bot/
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
-  activity/       activity logic: periods (months), formatting, stats (monthly totals/streaks/ranks), store (SQLite voice sessions), tracker (voice transitions)
+  activity/       activity logic: periods (months), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), store (SQLite voice sessions), tracker (voice transitions)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/ and tests/fixtures/steam/
 docs/             deployment.md, manual-checks.md
