@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from ninja_bot.activity.embed import SHAME_FIELD
+from ninja_bot.activity.embed import SHAME_FIELD, build_monthly_embed
 from ninja_bot.activity.store import SqliteActivityStore
 from ninja_bot.cogs.activity import REPORT_CHECK_SECONDS, Activity
 from ninja_bot.cs2.channels import CHANNEL_MISSING, CHANNEL_NO_PERMISSIONS, CHANNEL_NOT_TEXT
@@ -120,20 +120,58 @@ async def test_failing_send_is_confirmed_and_not_repeated(
     assert "Could not send activity response" in caplog.text
 
 
-async def test_embed_error_is_confirmed_and_logged(
+async def test_build_error_is_retried_next_cycle(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def broken(*args: object, **kwargs: object) -> discord.Embed:
-        raise RuntimeError("bug")
+    real = build_monthly_embed
+    calls = 0
 
-    monkeypatch.setattr("ninja_bot.cogs.activity.build_monthly_embed", broken)
+    def flaky(*args: Any, **kwargs: Any) -> discord.Embed:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("bug")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("ninja_bot.cogs.activity.build_monthly_embed", flaky)
     store = await make_store(tmp_path, 10)
     channel = make_channel()
     cog = make_cog(store, make_bot(channel), FakeClock(ts(11, 2)))
     await cog.run_report_cycle()
     channel.send.assert_not_awaited()
+    assert await store.report_posted("2026-10") is False
+    assert "Could not build the activity overview for 2026-10" in caplog.text
+    await cog.run_report_cycle()
+    await cog.run_report_cycle()
+    assert channel.send.await_count == 1
     assert await store.report_posted("2026-10") is True
-    assert "Unexpected error in a monthly activity post cycle" in caplog.text
+
+
+async def test_build_error_every_cycle_is_logged_and_never_confirmed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = await make_store(tmp_path, 10)
+    channel = make_channel()
+    cog = make_cog(store, make_bot(channel), FakeClock(ts(11, 2)))
+    cog.monthly_report = AsyncMock(side_effect=RuntimeError("locked"))  # type: ignore[method-assign]
+    for _ in range(3):
+        await cog.run_report_cycle()
+    channel.send.assert_not_awaited()
+    assert await store.report_posted("2026-10") is False
+    failures = [r for r in caplog.records if "Could not build the activity overview" in r.message]
+    assert len(failures) == 3
+    assert all(r.exc_info is not None for r in failures)
+
+
+async def test_unexpected_send_error_is_confirmed(tmp_path: Path) -> None:
+    store = await make_store(tmp_path, 10)
+    channel = make_channel()
+    channel.send = AsyncMock(side_effect=RuntimeError("bug"))
+    cog = make_cog(store, make_bot(channel), FakeClock(ts(11, 2)))
+    await cog.run_report_cycle()
+    await cog.run_report_cycle()
+    assert channel.send.await_count == 1
+    assert await store.report_posted("2026-10") is True
 
 
 async def test_store_error_is_logged_not_raised(

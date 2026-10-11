@@ -166,3 +166,9 @@
 - README activity Awards bullet says completed months only.
 - Files: src/ninja_bot/activity/awards.py, tests/test_activity_awards.py, README.md
 ---
+
+## 2026-10-11 - US-005
+- `_post_report` (cogs/activity.py) builds the report + embed first; a build error is logged with `log.exception("Could not build the activity overview for %s; retrying")` and the month is not confirmed (next hourly cycle retries). `confirm` stays in a `finally` around the send only, so every send attempt (HTTP or unexpected error) is confirmed.
+- Tests (tests/test_activity_autopost.py): build fails once then posts once; build fails every cycle (logged with traceback each time, never confirmed); unexpected send error confirmed, not retried. Existing tests cover send fails / succeeds.
+- Docs: README Monthly auto-post "One post per month" bullet, docs/deployment.md "No monthly activity post" troubleshooting row.
+---

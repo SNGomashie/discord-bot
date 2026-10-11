@@ -229,10 +229,14 @@ class Activity(commands.Cog):
             log.exception("Unexpected error in a monthly activity post cycle")
 
     async def _post_report(self, channel: PostChannel, month: Month) -> None:
-        """Send one overview; the month is confirmed even if the send failed."""
+        """Send one overview; confirmed after any send attempt, retried if building fails."""
         try:
             report = await self.monthly_report(month, channel.guild)
             embed = build_monthly_embed(report)
+        except Exception:
+            log.exception("Could not build the activity overview for %s; retrying", month.key)
+            return
+        try:
             # Leaderboard lines are mentions; render them, but never ping anyone.
             sent = await _send_safely(
                 channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
