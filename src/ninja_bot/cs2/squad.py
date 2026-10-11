@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import logging
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Literal
 
+from ninja_bot.cs2.client import StatsProvider
 from ninja_bot.cs2.formatting import MISSING, format_rating
-from ninja_bot.cs2.models import Profile, RecentMatch
+from ninja_bot.cs2.models import Cs2Error, Profile, RateLimitedError, RecentMatch
+
+log = logging.getLogger(__name__)
 
 TrendDirection = Literal["up", "down", "flat"]
 StreakKind = Literal["win", "loss"]
@@ -18,6 +22,8 @@ TREND_THRESHOLD = 0.01
 # Absorbs float noise so a delta of exactly 0.01 counts as a change.
 _TREND_EPSILON = 1e-9
 MIN_SHOWN_STREAK = 3
+# Profiles are fetched one by one, so this bounds the requests per /leaderboard.
+MAX_LEADERBOARD_LINKS = 25
 
 _ARROWS: dict[TrendDirection, str] = {"up": "↑", "down": "↓", "flat": "→"}
 _STREAK_EMOJI: dict[StreakKind, str] = {"win": "🔥", "loss": "🧊"}
@@ -193,6 +199,52 @@ def rank_squad(entries: Sequence[SquadEntry], metric: Metric) -> list[Leaderboar
             rank = position
         ranked.append(replace(row, rank=rank))
     return ranked + missing
+
+
+@dataclass(frozen=True)
+class SquadFetch:
+    entries: list[SquadEntry]
+    # Profiles that failed with a CS2 error (private, unknown, API error).
+    skipped: int
+    # Links never fetched because Leetify rate limited us (0 if not rate limited).
+    not_loaded: int
+    rate_limited: bool
+
+
+async def fetch_squad(
+    provider: StatsProvider, links: Mapping[int, str], limit: int = MAX_LEADERBOARD_LINKS
+) -> SquadFetch:
+    """Fetch linked profiles one by one (lowest Discord ID first, at most `limit`).
+
+    CS2 errors skip the player; a rate limit stops fetching and keeps what was collected.
+    """
+    wanted = sorted(links.items())[:limit]
+    entries: list[SquadEntry] = []
+    skipped = 0
+    for index, (discord_id, steam64_id) in enumerate(wanted):
+        try:
+            profile = await provider.get_profile(steam64_id)
+        except RateLimitedError:
+            log.info("Leaderboard stopped early: Leetify rate limit")
+            return SquadFetch(entries, skipped, len(wanted) - index, rate_limited=True)
+        except Cs2Error as exc:
+            log.info("Leaderboard skipped a player: %s", type(exc).__name__)
+            skipped += 1
+            continue
+        entries.append(SquadEntry(discord_id, profile))
+    return SquadFetch(entries, skipped, 0, rate_limited=False)
+
+
+def leaderboard_notes(fetch: SquadFetch, total_links: int) -> list[str]:
+    """Footer notes for players missing from the leaderboard."""
+    notes: list[str] = []
+    if fetch.skipped:
+        notes.append(f"Skipped: {fetch.skipped} (private or unavailable)")
+    if fetch.rate_limited:
+        notes.append(f"Stopped early, Leetify is rate limiting us: {fetch.not_loaded} not loaded")
+    if total_links > MAX_LEADERBOARD_LINKS:
+        notes.append(f"Only the first {MAX_LEADERBOARD_LINKS} linked players are checked")
+    return notes
 
 
 def metric_label(metric: Metric) -> str:
