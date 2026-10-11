@@ -70,3 +70,9 @@
 - No docs changed: nothing user-visible until the cog lands (docs are US-009).
 - Learnings: `ruff format` keeps long string literals, so split them by hand (E501).
 ---
+
+## 2026-10-11 - US-002
+- Added `src/ninja_bot/help/commands.py`: frozen `ParamInfo`/`CommandInfo` (choices/params default to `()`), `usage_line` (`/name url:<url> [format:mp3|mp4]`), `parameter_lines` (`name (required|optional): description` + ` Choices: a, b` + ` <note>` on the same line, cut to `MAX_PARAMETER_LINE` = 300 with `…`). No discord import.
+- Tests: tests/test_help_commands.py.
+- Docs: none user-visible yet; Architecture/README layout updates are in the final docs story (US-008 style), as with US-001.
+- Learnings: notes for parameters missing from `info.params` are ignored; an empty note string adds nothing.
