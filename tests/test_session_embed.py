@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import re
-from datetime import date, time
+from datetime import UTC, date, datetime, time
+from zoneinfo import ZoneInfo
 
 import discord
+import pytest
 
 from ninja_bot.cs2.embed import FIELD_VALUE_LIMIT
 from ninja_bot.sessions import content
+from ninja_bot.sessions import embed as embed_module
 from ninja_bot.sessions.embed import (
     MAX_LIST_SESSIONS,
+    SELECT_LABEL_LIMIT,
     build_list_embed,
     build_next_round_embed,
     build_no_fit_embed,
@@ -16,6 +20,7 @@ from ninja_bot.sessions.embed import (
     build_result_embed,
     build_session_embed,
     fit_with_more,
+    format_slot_label,
 )
 from ninja_bot.sessions.scoring import MAX_PLAYERS, SlotScore, Vote
 from ninja_bot.sessions.service import MAX_NAME_LENGTH, FailReason
@@ -354,3 +359,32 @@ def test_list_embed_caps_sessions() -> None:
 def test_embed_module_reuses_the_one_escape() -> None:
     poll = make_poll(name="a_b")
     assert build_poll_embed(poll, [], [], [GM], []).title == "a\\_b"
+
+
+# Vote select labels
+
+
+def slot_at(when: datetime) -> PollSlot:
+    return PollSlot(id=1, poll_id=7, round_number=1, start=when.timestamp(), end=0)
+
+
+def test_slot_label_is_local_time_in_english() -> None:
+    slot = slot_at(datetime(2026, 10, 16, 17, 0, tzinfo=UTC))
+    assert format_slot_label(slot, ZoneInfo("Europe/Amsterdam")) == "Fri 16 Oct 19:00"
+    assert format_slot_label(slot, ZoneInfo("UTC")) == "Fri 16 Oct 17:00"
+
+
+def test_slot_label_crosses_the_date_line_and_dst() -> None:
+    slot = slot_at(datetime(2026, 11, 1, 23, 30, tzinfo=UTC))
+    # Amsterdam is back on CET (+1), so the slot is past midnight there.
+    assert format_slot_label(slot, ZoneInfo("Europe/Amsterdam")) == "Mon 2 Nov 00:30"
+    assert format_slot_label(slot, ZoneInfo("America/New_York")) == "Sun 1 Nov 18:30"
+
+
+def test_slot_label_fits_the_select_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    slot = slot_at(datetime(2026, 12, 31, 9, 5, tzinfo=UTC))
+    label = format_slot_label(slot, ZoneInfo("UTC"))
+    assert label == "Thu 31 Dec 09:05"
+    assert len(label) <= SELECT_LABEL_LIMIT == 100
+    monkeypatch.setattr(embed_module, "SELECT_LABEL_LIMIT", 6)
+    assert format_slot_label(slot, ZoneInfo("UTC")) == "Thu 31"

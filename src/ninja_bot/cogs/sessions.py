@@ -16,16 +16,20 @@ from ninja_bot.cs2.channels import channel_problem
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import send_safely
 from ninja_bot.sessions import content
-from ninja_bot.sessions.embed import build_poll_embed
-from ninja_bot.sessions.scoring import MAX_PLAYERS, pending_players, score_slots
+from ninja_bot.sessions.embed import build_poll_embed, format_slot_label
+from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote, pending_players, score_slots
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
     MAX_DURATION_HOURS,
     MAX_NAME_LENGTH,
     MAX_ROUND_HOURS,
+    VOTE_MESSAGES,
+    CloseReason,
     JoinResult,
     NoPrefill,
     SessionService,
+    VoteResult,
+    should_auto_close,
 )
 from ninja_bot.sessions.slots import (
     DEFAULT_DURATION_HOURS,
@@ -35,8 +39,8 @@ from ninja_bot.sessions.slots import (
     MAX_WEEKS,
     InvalidSessionInput,
 )
-from ninja_bot.sessions.store import Poll, SqliteSessionStore
-from ninja_bot.sessions.views import PollAction, PollButton, poll_view
+from ninja_bot.sessions.store import STATUS_VOTING, Poll, SqliteSessionStore
+from ninja_bot.sessions.views import PollAction, PollButton, VoteView, poll_view
 
 if TYPE_CHECKING:
     from ninja_bot.bot import NinjaBot
@@ -251,10 +255,7 @@ class Sessions(commands.Cog):
 
     async def poll_message(self, poll: Poll) -> tuple[discord.Embed, discord.ui.View]:
         """The poll embed for the current round and its buttons."""
-        store = self.service.store
-        players = await store.players(poll.id)
-        slots = await store.poll_slots(poll.id, poll.round_number)
-        votes = await store.votes(poll.id, poll.round_number)
+        players, slots, votes = await self.service.round_state(poll)
         slot_ids = [slot.id for slot in slots]
         embed = build_poll_embed(
             poll,
@@ -275,6 +276,8 @@ class Sessions(commands.Cog):
                     await self.handle_join(interaction, poll_id)
                 case PollAction.LEAVE:
                     await self.handle_leave(interaction, poll_id)
+                case PollAction.VOTE:
+                    await self.handle_vote(interaction, poll_id)
                 case _:
                     await _send_safely(
                         interaction.response.send_message(
@@ -313,6 +316,103 @@ class Sessions(commands.Cog):
             )
         )
         await _send_safely(interaction.followup.send(message, ephemeral=True))
+
+    async def handle_vote(self, interaction: discord.Interaction, poll_id: int) -> None:
+        """Open the private vote view, pre-selected with the user's votes this round."""
+        user_id = interaction.user.id
+        store = self.service.store
+        poll = await store.get_poll(poll_id)
+        if poll is None or poll.status != STATUS_VOTING:
+            await _send_safely(
+                interaction.response.send_message(content.POLL_CLOSED_MESSAGE, ephemeral=True)
+            )
+            return
+        if user_id not in await store.players(poll_id):
+            await _send_safely(
+                interaction.response.send_message(content.NOT_JOINED_MESSAGE, ephemeral=True)
+            )
+            return
+        slots = await store.poll_slots(poll_id, poll.round_number)
+        votes = await store.votes(poll_id, poll.round_number)
+        mine = {slot_id: vote for (voter, slot_id), vote in votes.items() if voter == user_id}
+
+        async def save(
+            save_interaction: discord.Interaction, yes_ids: list[int], maybe_ids: list[int]
+        ) -> None:
+            await self.handle_vote_save(save_interaction, poll_id, yes_ids, maybe_ids)
+
+        view = VoteView(
+            [(slot.id, format_slot_label(slot, self.service.tz)) for slot in slots],
+            [slot_id for slot_id, vote in mine.items() if vote is Vote.YES],
+            [slot_id for slot_id, vote in mine.items() if vote is Vote.IF_NEEDED],
+            save,
+        )
+        await _send_safely(
+            interaction.response.send_message(
+                content.VOTE_PROMPT.format(tz=self.service.tz.key), view=view, ephemeral=True
+            )
+        )
+
+    async def handle_vote_save(
+        self,
+        interaction: discord.Interaction,
+        poll_id: int,
+        yes_ids: list[int],
+        maybe_ids: list[int],
+    ) -> None:
+        """Save from the vote view: store the votes, confirm privately, refresh the poll."""
+        try:
+            result = await self.service.submit_vote(
+                poll_id, interaction.user.id, yes_ids, maybe_ids
+            )
+        except Exception:
+            log.exception("Unexpected error saving a session poll vote")
+            await self._reply_error(interaction)
+            return
+        await _send_safely(
+            interaction.response.edit_message(content=VOTE_MESSAGES[result], view=None)
+        )
+        if result is not VoteResult.RECORDED:
+            return
+        await self.refresh_poll_message(poll_id)
+        await self.advance_if_ready(poll_id)
+
+    async def refresh_poll_message(self, poll_id: int) -> None:
+        """Re-render the public poll message; failures are logged, never raised."""
+        try:
+            poll = await self.service.store.get_poll(poll_id)
+            if poll is None or poll.message_id is None:
+                return
+            embed, view = await self.poll_message(poll)
+            message = self.bot.get_partial_messageable(poll.channel_id).get_partial_message(
+                poll.message_id
+            )
+            await send_safely(
+                message.edit(
+                    embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none()
+                ),
+                "session poll refresh",
+            )
+        except Exception:
+            log.exception("Could not refresh session poll %d", poll_id)
+
+    async def advance_if_ready(self, poll_id: int) -> CloseReason | None:
+        """Why the poll's round should close after a vote (`"all_voted"`), or None.
+
+        Deadlines are left to the background loop; errors are logged and give None.
+        """
+        try:
+            poll = await self.service.store.get_poll(poll_id)
+            if poll is None:
+                return None
+            players, slots, votes = await self.service.round_state(poll)
+            reason = should_auto_close(
+                poll, players, [slot.id for slot in slots], votes, self.service.clock()
+            )
+        except Exception:
+            log.exception("Could not check whether session poll %d is ready", poll_id)
+            return None
+        return reason if reason == "all_voted" else None
 
     async def _reply_error(self, interaction: discord.Interaction) -> None:
         if interaction.response.is_done():

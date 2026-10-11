@@ -335,9 +335,10 @@ class SessionService:
         await self.store.record_votes(poll_id, user_id, votes)
         return VoteResult.RECORDED
 
-    async def _round(
+    async def round_state(
         self, poll: Poll
     ) -> tuple[list[int], list[PollSlot], dict[tuple[int, int], Vote]]:
+        """The players, the current round's slots and its votes."""
         players = await self.store.players(poll.id)
         slots = await self.store.poll_slots(poll.id, poll.round_number)
         votes = await self.store.votes(poll.id, poll.round_number)
@@ -356,7 +357,7 @@ class SessionService:
                 return NotVoting(await self.store.get_poll(poll_id))
             if reason == "manual" and not _may_manage(poll.gm_id, by_user_id, is_manager):
                 return NotAllowed(poll)
-            players, slots, votes = await self._round(poll)
+            players, slots, votes = await self.round_state(poll)
             slot_ids = [slot.id for slot in slots]
             pending = tuple(pending_players(players, slot_ids, votes))
             result = _evaluate(poll, players, slot_ids, votes)
@@ -413,7 +414,7 @@ class SessionService:
                 raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
             if poll.status != STATUS_AWAITING_CONFIRM:
                 raise SessionRefused(content.NOT_AWAITING_CONFIRM_MESSAGE)
-            players, slots, votes = await self._round(poll)
+            players, slots, votes = await self.round_state(poll)
             slot_ids = [slot.id for slot in slots]
             # Votes are frozen outside `voting`, so this is the round's original result.
             result = _evaluate(poll, players, slot_ids, votes)

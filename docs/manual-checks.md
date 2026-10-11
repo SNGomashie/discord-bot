@@ -120,6 +120,17 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] `/myactivity` shows `N catches · N shinies · N cooldown hits` and the Impatient award; a member who didn't play shows zeros
 - [ ] A shiny can be faked with `sqlite3 data/activity.sqlite3 "INSERT INTO pokemon_events VALUES (1, <your user id>, strftime('%s','now'), 'catch', 'Pikachu', 1)"` if Toasty doesn't cooperate; delete the row afterwards
 
+## Session polls
+
+- [ ] `/session_poll name:Test days:fri,sat times:19:00` posts the poll publicly with Join, Leave and Vote buttons; a second poll within 30 s is throttled privately
+- [ ] In a channel where the bot lacks Embed Links, `/session_poll` replies privately with the channel problem and posts nothing
+- [ ] Join and Leave update the poll message and confirm privately; the buttons still work after a bot restart
+- [ ] Vote without having joined says "Press **Join** first" privately
+- [ ] Vote opens a private form (only you see it) with the two multi-selects, Save and None of these work; option labels read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE`
+- [ ] Pick slots, Save: the form turns into "Your votes are saved." and the poll counts and `Waiting for` update
+- [ ] Vote again: the selects are pre-selected with your saved votes; None of these work turns all your votes into no
+- [ ] The form and the poll embed fit on the phone app (selects usable, labels not cut off)
+
 ## /help
 
 - [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint

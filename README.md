@@ -8,7 +8,7 @@ It does five things:
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 - **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
-- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join with a button.
+- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons.
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -44,7 +44,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
-| `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336) | public poll (errors are private); Join/Leave replies are private | 30 s; refunded unless the poll was posted |
+| `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336) | public poll (errors are private); Join/Leave/Vote replies are private | 30 s; refunded unless the poll was posted |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -361,7 +361,7 @@ Pokémon names are shown as plain text (markdown escaped) and cut at 32 characte
 
 ## Session polls
 
-A GM (whoever runs the command) starts a poll to find a date for a game session. The bot offers candidate slots, players join with a button, and the poll message keeps itself up to date.
+A GM (whoever runs the command) starts a poll to find a date for a game session. The bot offers candidate slots, players join and vote with buttons, and the poll message keeps itself up to date.
 
 ### /session_poll
 
@@ -381,6 +381,7 @@ A GM (whoever runs the command) starts a poll to find a date for a game session.
 - **Slots:** every chosen weekday at every chosen time from `start` for `weeks` weeks (start date included, the day `weeks` weeks later excluded), in `SESSIONS_TIMEZONE` (falls back to `ACTIVITY_TIMEZONE`, see [Configuration](#configuration)). Slots that already started are dropped. A time that doesn't exist on a daylight-saving change day is skipped; a time that happens twice uses the first one. A poll offers at most 25 slots (Discord select menus hold 25 options).
 - **The poll message:** the name, `Round 1 of 6`, the GM, the session length and `min_players` (when set), one line per slot with its time (shown in everyone's own time zone) and ✅ / 🤔 counts, the round deadline (when `round_hours` is set), `Joined` (every player as a mention) and `Waiting for` (players without a vote this round, `+N more` when it doesn't fit). Mentions never ping.
 - **Join / Leave buttons:** the GM is joined automatically. **Join** adds you (at most 25 players), **Leave** removes you and your votes; both update the poll message and confirm privately. The GM can't leave their own poll. Pressing Join twice, Leave without having joined, or either button on a poll that no longer takes votes gives a private reply and changes nothing. Buttons keep working after the bot restarts.
+- **Vote button:** opens a private form (it works for 10 minutes) with two multi-selects over the current round's slots, **✅ Works for me** and **🤔 Only if needed**, already filled in with your saved votes. The options read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE` (select menus can't show times in your own zone; the prompt names the zone). **Save** replaces all your votes for the round: a slot picked in both lists counts as works, a slot in neither as a no. **None of these work** saves a no for every slot. Either way the form closes with "Your votes are saved." and the poll message updates its counts and `Waiting for`. If the poll message can't be edited (deleted, missing permissions), your vote still counts. You must press **Join** first ("You haven't joined this poll. Press **Join** first."); on a poll that no longer takes votes you get "This poll isn't taking votes any more.", also when you press Save after the poll closed.
 - **Limits:** at most 5 open polls per server.
 - **Cooldown:** 30 s per user, refunded unless the poll was posted (input errors, a channel problem and a failed send cost nothing). Like the other cooldowns it resets when the bot restarts.
 - **Channel:** the bot needs View Channel, Send Messages and Embed Links in the channel (Send Messages in Threads for a thread); otherwise you get "I can't post a poll here: I need View Channel, Send Messages and Embed Links in this channel."

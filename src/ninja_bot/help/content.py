@@ -216,6 +216,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "Posts a poll in this channel with one slot per chosen day and start time "
             "in the coming weeks. You run it as the GM and are joined automatically. "
             "Players press Join to take part and Leave to drop out (their votes go with them). "
+            "Vote opens a private form where you pick the slots that work for you "
+            "and the ones that only work if needed, then Save. "
             "Slot times show in everyone's own time zone."
         ),
         examples=(

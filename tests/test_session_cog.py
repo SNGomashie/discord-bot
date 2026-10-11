@@ -21,19 +21,23 @@ from ninja_bot.cogs.sessions import (
 )
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.sessions import content
+from ninja_bot.sessions.scoring import Vote
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
     MAX_NAME_LENGTH,
     MAX_OPEN_POLLS,
+    VOTE_MESSAGES,
     JoinResult,
     NoPrefill,
     SessionService,
+    VoteResult,
 )
 from ninja_bot.sessions.store import STATUS_CANCELLED, STATUS_VOTING, SqliteSessionStore
 from ninja_bot.sessions.views import (
     CUSTOM_ID_TEMPLATE,
     PollAction,
     PollButton,
+    VoteView,
     custom_id,
     poll_view,
 )
@@ -123,7 +127,11 @@ async def test_valid_poll_is_posted_publicly_and_message_id_stored(
     polls = await store.open_polls(GUILD)
     assert len(polls) == 1
     poll = polls[0]
-    assert ids == [custom_id(poll.id, PollAction.JOIN), custom_id(poll.id, PollAction.LEAVE)]
+    assert ids == [
+        custom_id(poll.id, PollAction.JOIN),
+        custom_id(poll.id, PollAction.LEAVE),
+        custom_id(poll.id, PollAction.VOTE),
+    ]
     assert poll.message_id == MESSAGE_ID
     assert poll.channel_id == CHANNEL
     assert poll.gm_id == GM
@@ -392,6 +400,193 @@ async def test_button_errors_reply_generic(
     assert (await store.get_poll(poll_id)).status == STATUS_VOTING  # type: ignore[union-attr]
 
 
+# Vote view
+
+
+def poll_message_edit(cog: Sessions) -> AsyncMock:
+    """The `edit` of the public poll message, reached via `get_partial_messageable`."""
+    edit = AsyncMock()
+    bot: Any = cog.bot
+    bot.get_partial_messageable.return_value.get_partial_message.return_value.edit = edit
+    return edit
+
+
+async def open_vote(cog: Sessions, poll_id: int, user_id: int) -> VoteView:
+    interaction = make_interaction(user_id=user_id)
+    await cog.handle_poll_action(interaction, poll_id, PollAction.VOTE, None)
+    text, kwargs = reply(interaction)
+    assert kwargs["ephemeral"] is True
+    assert text == content.VOTE_PROMPT.format(tz=TZ.key)
+    view = kwargs["view"]
+    assert isinstance(view, VoteView)
+    return view
+
+
+async def save(view: VoteView, user_id: int, *, none: bool = False) -> MagicMock:
+    interaction = make_interaction(user_id=user_id)
+    button = view.none_of_these if none else view.save
+    await button.callback(interaction)
+    return interaction
+
+
+async def slot_ids(store: SqliteSessionStore, poll_id: int) -> list[int]:
+    return [slot.id for slot in await store.poll_slots(poll_id, 1)]
+
+
+def default_ids(select: Any) -> list[int]:
+    return [int(option.value) for option in select.options if option.default]
+
+
+async def test_vote_view_lists_slots_and_preselects_stored_votes(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    first, second, *rest = await slot_ids(store, poll_id)
+    await cog.service.submit_vote(poll_id, GM, [first], [second])
+    view = await open_vote(cog, poll_id, GM)
+    assert view.timeout == 600
+    assert default_ids(view.yes_select) == [first]
+    assert default_ids(view.maybe_select) == [second]
+    assert view.yes_select.min_values == 0
+    assert view.yes_select.max_values == len(rest) + 2
+    # Friday 2026-11-06 19:00 in Amsterdam is the first slot.
+    assert view.yes_select.options[0].label == "Fri 6 Nov 19:00"
+    assert (view.yes_ids, view.maybe_ids) == ([first], [second])
+
+
+async def test_select_callback_keeps_the_choice_and_defers(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    first, second, *_ = await slot_ids(store, poll_id)
+    view = await open_vote(cog, poll_id, GM)
+    view.yes_select._values = [str(second), str(first)]
+    interaction = make_interaction()
+    interaction.response.defer = AsyncMock()
+    await view.yes_select.callback(interaction)
+    interaction.response.defer.assert_awaited_once_with()
+    assert view.yes_ids == [first, second]
+
+
+async def test_save_records_votes_refreshes_and_confirms_privately(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    first, second, *_ = await slot_ids(store, poll_id)
+    edit = poll_message_edit(cog)
+    view = await open_vote(cog, poll_id, GM)
+    # A slot picked in both lists counts as YES.
+    view.pick("yes", [first])
+    view.pick("maybe", [first, second])
+    interaction = await save(view, GM)
+    interaction.response.edit_message.assert_awaited_once_with(
+        content=VOTE_MESSAGES[VoteResult.RECORDED], view=None
+    )
+    votes = await store.votes(poll_id, 1)
+    assert votes[(GM, first)] is Vote.YES
+    assert votes[(GM, second)] is Vote.IF_NEEDED
+    assert {vote for (user, _), vote in votes.items() if user == GM} >= {Vote.NO}
+    assert view.is_finished()
+    cog.bot.get_partial_messageable.assert_called_with(CHANNEL)  # type: ignore[attr-defined]
+    edit.assert_awaited_once()
+    kwargs = edit.await_args.kwargs
+    assert kwargs["allowed_mentions"].to_dict()["parse"] == []
+    lines = str(kwargs["embed"].description)
+    assert "✅ 1 · 🤔 0" in lines and "✅ 0 · 🤔 1" in lines
+
+
+async def test_none_of_these_records_all_no(cog: Sessions, store: SqliteSessionStore) -> None:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    poll_message_edit(cog)
+    await cog.service.submit_vote(poll_id, PLAYER, await slot_ids(store, poll_id), [])
+    view = await open_vote(cog, poll_id, PLAYER)
+    await save(view, PLAYER, none=True)
+    votes = await store.votes(poll_id, 1)
+    mine = [vote for (user, _), vote in votes.items() if user == PLAYER]
+    assert mine and set(mine) == {Vote.NO}
+
+
+async def test_vote_refused_for_non_members_and_closed_polls(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    interaction = make_interaction(user_id=PLAYER)
+    await cog.handle_poll_action(interaction, poll_id, PollAction.VOTE, None)
+    assert reply(interaction) == (content.NOT_JOINED_MESSAGE, {"ephemeral": True})
+    await store.cancel_poll(poll_id)
+    for target in (poll_id, 9999):
+        interaction = make_interaction(user_id=GM)
+        await cog.handle_vote(interaction, target)
+        assert reply(interaction) == (content.POLL_CLOSED_MESSAGE, {"ephemeral": True})
+
+
+async def test_save_after_the_poll_closed_is_refused_without_refresh(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    edit = poll_message_edit(cog)
+    view = await open_vote(cog, poll_id, GM)
+    await store.cancel_poll(poll_id)
+    interaction = await save(view, GM)
+    interaction.response.edit_message.assert_awaited_once_with(
+        content=VOTE_MESSAGES[VoteResult.POLL_CLOSED], view=None
+    )
+    edit.assert_not_awaited()
+
+
+async def test_failed_refresh_does_not_break_the_vote(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    edit = poll_message_edit(cog)
+    edit.side_effect = discord.HTTPException(MagicMock(status=404), "Unknown Message")
+    view = await open_vote(cog, poll_id, GM)
+    interaction = await save(view, GM, none=True)
+    interaction.response.edit_message.assert_awaited_once()
+    assert await store.votes(poll_id, 1)
+
+
+async def test_unexpected_save_error_replies_generic(
+    cog: Sessions, store: SqliteSessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poll_id = await make_poll(cog, store)
+
+    async def broken(*args: Any) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(store, "record_votes", broken)
+    interaction = make_interaction()
+    await cog.handle_vote_save(interaction, poll_id, [], [])
+    assert reply(interaction) == (content.GENERIC_ERROR_MESSAGE, {"ephemeral": True})
+
+
+async def test_vote_checks_auto_close_after_saving(
+    cog: Sessions, store: SqliteSessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    poll_message_edit(cog)
+    checked = AsyncMock()
+    monkeypatch.setattr(cog, "advance_if_ready", checked)
+    await cog.handle_vote_save(make_interaction(), poll_id, [], [])
+    checked.assert_awaited_once_with(poll_id)
+
+
+async def test_advance_if_ready_once_everyone_voted(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    await cog.service.submit_vote(poll_id, GM, [], [])
+    assert await cog.advance_if_ready(poll_id) is None
+    await cog.service.submit_vote(poll_id, PLAYER, [], [])
+    assert await cog.advance_if_ready(poll_id) == "all_voted"
+    assert await cog.advance_if_ready(9999) is None
+
+
 # Dynamic button ids
 
 
@@ -413,12 +608,12 @@ def test_template_rejects_foreign_ids(text: str) -> None:
     assert re.fullmatch(CUSTOM_ID_TEMPLATE, text) is None
 
 
-def test_poll_view_is_persistent_with_join_and_leave() -> None:
+def test_poll_view_is_persistent_with_join_leave_and_vote() -> None:
     view = poll_view(5)
     assert view.timeout is None
     assert view.is_persistent()
     labels = [item.item.label for item in view.children if isinstance(item, PollButton)]
-    assert labels == [content.JOIN_BUTTON, content.LEAVE_BUTTON]
+    assert labels == [content.JOIN_BUTTON, content.LEAVE_BUTTON, content.VOTE_BUTTON]
 
 
 async def test_button_callback_hands_the_click_to_the_cog() -> None:

@@ -89,6 +89,17 @@ LIST_SESSION_LINE = "**{name}** · {start} ({relative}) · GM {gm}"
 # Poll buttons.
 JOIN_BUTTON = "Join"
 LEAVE_BUTTON = "Leave"
+VOTE_BUTTON = "Vote"
+
+# Private vote view. `{tz}` is the SESSIONS_TIMEZONE name the option labels are in.
+VOTE_PROMPT = (
+    "Pick the slots that work for you, then press **Save**. Times are in {tz}."
+    " A slot in neither list counts as a no."
+)
+VOTE_YES_PLACEHOLDER = "✅ Works for me"
+VOTE_MAYBE_PLACEHOLDER = "🤔 Only if needed"
+VOTE_SAVE_BUTTON = "Save"
+VOTE_NONE_BUTTON = "None of these work"
 
 # /session_poll and button replies (cog).
 GUILD_ONLY_MESSAGE = "Session polls only work in a server channel."

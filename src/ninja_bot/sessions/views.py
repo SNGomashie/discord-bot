@@ -7,9 +7,10 @@ keep working after a restart. Every click is handed to the Sessions cog
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from enum import StrEnum
 from re import Match
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import discord
 from discord import ui
@@ -25,6 +26,7 @@ HANDLER_COG = "Sessions"
 class PollAction(StrEnum):
     JOIN = "join"
     LEAVE = "leave"
+    VOTE = "vote"
 
 
 def custom_id(poll_id: int, action: str, arg: int | None = None) -> str:
@@ -92,4 +94,92 @@ def poll_view(poll_id: int) -> ui.View:
         )
     )
     view.add_item(PollButton(poll_id, PollAction.LEAVE, label=content.LEAVE_BUTTON))
+    view.add_item(
+        PollButton(
+            poll_id, PollAction.VOTE, label=content.VOTE_BUTTON, style=discord.ButtonStyle.primary
+        )
+    )
     return view
+
+
+# The private vote view: how long its selects and buttons stay usable.
+VOTE_VIEW_TIMEOUT_SECONDS = 600.0
+# (interaction, yes slot ids, if-needed slot ids); `([], [])` is "none of these".
+SaveVote = Callable[[discord.Interaction, list[int], list[int]], Awaitable[None]]
+VoteKind = Literal["yes", "maybe"]
+
+
+class _SlotSelect(ui.Select["VoteView"]):
+    """A multi-select over the round's slots; the picked ids are kept on the view."""
+
+    def __init__(
+        self,
+        kind: VoteKind,
+        placeholder: str,
+        options: Sequence[tuple[int, str]],
+        selected: Collection[int],
+        row: int,
+    ) -> None:
+        super().__init__(
+            placeholder=placeholder,
+            min_values=0,
+            max_values=len(options),
+            options=[
+                discord.SelectOption(label=label, value=str(slot_id), default=slot_id in selected)
+                for slot_id, label in options
+            ],
+            row=row,
+        )
+        self.kind = kind
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.view is not None:
+            self.view.pick(self.kind, [int(value) for value in self.values])
+        # Nothing to show yet; the choice is saved with Save.
+        await interaction.response.defer()
+
+
+class VoteView(ui.View):
+    """Private vote form: **Works for me** / **Only if needed** selects, Save, None of these.
+
+    `options` are (slot id, label) pairs; the selects start with the user's stored votes.
+    Both buttons hand the choice to `on_save` and stop the view.
+    """
+
+    def __init__(
+        self,
+        options: Sequence[tuple[int, str]],
+        yes_ids: Collection[int],
+        maybe_ids: Collection[int],
+        on_save: SaveVote,
+        *,
+        timeout: float = VOTE_VIEW_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.on_save = on_save
+        self.yes_ids = sorted(yes_ids)
+        self.maybe_ids = sorted(maybe_ids)
+        self.yes_select = _SlotSelect("yes", content.VOTE_YES_PLACEHOLDER, options, yes_ids, 0)
+        self.maybe_select = _SlotSelect(
+            "maybe", content.VOTE_MAYBE_PLACEHOLDER, options, maybe_ids, 1
+        )
+        self.add_item(self.yes_select)
+        self.add_item(self.maybe_select)
+
+    def pick(self, kind: VoteKind, slot_ids: list[int]) -> None:
+        if kind == "yes":
+            self.yes_ids = sorted(slot_ids)
+        else:
+            self.maybe_ids = sorted(slot_ids)
+
+    @ui.button(label=content.VOTE_SAVE_BUTTON, style=discord.ButtonStyle.success, row=2)
+    async def save(self, interaction: discord.Interaction, button: ui.Button[VoteView]) -> None:
+        self.stop()
+        await self.on_save(interaction, self.yes_ids, self.maybe_ids)
+
+    @ui.button(label=content.VOTE_NONE_BUTTON, style=discord.ButtonStyle.danger, row=2)
+    async def none_of_these(
+        self, interaction: discord.Interaction, button: ui.Button[VoteView]
+    ) -> None:
+        self.stop()
+        await self.on_save(interaction, [], [])

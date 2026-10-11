@@ -8,6 +8,8 @@ viewer sees their own time zone.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import discord
 
@@ -30,6 +32,22 @@ MAX_LIST_SESSIONS = 10
 def timestamp(unix: float, style: str) -> str:
     """A Discord timestamp (`F` full date and time, `R` relative, `d` short date)."""
     return f"<t:{int(unix)}:{style}>"
+
+
+# Discord's limit for a select option label.
+SELECT_LABEL_LIMIT = 100
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def format_slot_label(slot: PollSlot, tz: ZoneInfo) -> str:
+    """`Fri 17 Oct 19:00` in `tz`, for vote select options (they can't hold `<t:...>`).
+
+    English names regardless of the locale; cut to `SELECT_LABEL_LIMIT`.
+    """
+    local = datetime.fromtimestamp(slot.start, tz)
+    label = f"{_WEEKDAYS[local.weekday()]} {local.day} {_MONTHS[local.month - 1]} {local:%H:%M}"
+    return label[:SELECT_LABEL_LIMIT]
 
 
 def mention(user_id: int) -> str:
