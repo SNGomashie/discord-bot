@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from ninja_bot.activity.periods import (
+    InvalidMonthError,
+    Month,
+    month_of,
+    parse_month,
+)
+
+UTC_TZ = ZoneInfo("UTC")
+AMSTERDAM = ZoneInfo("Europe/Amsterdam")
+
+
+def test_key_is_zero_padded() -> None:
+    assert Month(2026, 9).key == "2026-09"
+    assert Month(2026, 12).key == "2026-12"
+
+
+def test_start_and_end_in_utc() -> None:
+    month = Month(2026, 9)
+    assert month.start(UTC_TZ) == datetime(2026, 9, 1, tzinfo=UTC)
+    assert month.end(UTC_TZ) == datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def test_year_rollover() -> None:
+    december = Month(2026, 12)
+    assert december.next() == Month(2027, 1)
+    assert Month(2027, 1).previous() == december
+    assert december.end(UTC_TZ) == datetime(2027, 1, 1, tzinfo=UTC)
+
+
+def test_previous_and_next_within_year() -> None:
+    assert Month(2026, 5).previous() == Month(2026, 4)
+    assert Month(2026, 5).next() == Month(2026, 6)
+
+
+@pytest.mark.parametrize(
+    ("month", "days"),
+    [
+        (Month(2024, 2), 29),
+        (Month(2026, 2), 28),
+        (Month(2000, 2), 29),
+        (Month(1900, 2), 28),
+        (Month(2026, 4), 30),
+        (Month(2026, 12), 31),
+    ],
+)
+def test_days(month: Month, days: int) -> None:
+    assert month.days(AMSTERDAM) == days
+
+
+def test_march_in_amsterdam_crosses_dst_start() -> None:
+    month = Month(2026, 3)
+    # CET (UTC+1) at the start, CEST (UTC+2) at the end (DST starts 29 March).
+    assert month.start(AMSTERDAM) == datetime(2026, 2, 28, 23, tzinfo=UTC)
+    assert month.end(AMSTERDAM) == datetime(2026, 3, 31, 22, tzinfo=UTC)
+    length = month.end(AMSTERDAM).timestamp() - month.start(AMSTERDAM).timestamp()
+    assert length == timedelta(days=31, hours=-1).total_seconds()
+
+
+def test_october_in_amsterdam_crosses_dst_end() -> None:
+    month = Month(2026, 10)
+    # CEST at the start, CET at the end (DST ends 25 October).
+    assert month.start(AMSTERDAM) == datetime(2026, 9, 30, 22, tzinfo=UTC)
+    assert month.end(AMSTERDAM) == datetime(2026, 10, 31, 23, tzinfo=UTC)
+    length = month.end(AMSTERDAM).timestamp() - month.start(AMSTERDAM).timestamp()
+    assert length == timedelta(days=31, hours=1).total_seconds()
+
+
+def test_month_of_uses_local_time() -> None:
+    instant = datetime(2026, 9, 30, 22, 30, tzinfo=UTC).timestamp()
+    assert month_of(instant, UTC_TZ) == Month(2026, 9)
+    assert month_of(instant, AMSTERDAM) == Month(2026, 10)
+
+
+def test_month_of_boundaries_are_start_inclusive() -> None:
+    month = Month(2026, 3)
+    assert month_of(month.start(AMSTERDAM).timestamp(), AMSTERDAM) == month
+    assert month_of(month.end(AMSTERDAM).timestamp(), AMSTERDAM) == month.next()
+    last = month.end(AMSTERDAM).timestamp() - 0.001
+    assert month_of(last, AMSTERDAM) == month
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("2026-09", Month(2026, 9)),
+        ("2026-01", Month(2026, 1)),
+        ("2026-12", Month(2026, 12)),
+        (" 2025-02 ", Month(2025, 2)),
+    ],
+)
+def test_parse_month(text: str, expected: Month) -> None:
+    assert parse_month(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "2026",
+        "2026-9",
+        "2026/09",
+        "09-2026",
+        "2026-00",
+        "2026-13",
+        "2026-09-01",
+        "september",
+        "２０２６-０９",
+        "0000-01",
+    ],
+)
+def test_parse_month_rejects_invalid_text(text: str) -> None:
+    with pytest.raises(InvalidMonthError) as excinfo:
+        parse_month(text)
+    assert isinstance(excinfo.value, ValueError)
+    assert excinfo.value.message
+    assert str(excinfo.value) == excinfo.value.message
+
+
+@pytest.mark.parametrize("month", [0, 13])
+def test_month_constructor_rejects_out_of_range(month: int) -> None:
+    with pytest.raises(InvalidMonthError):
+        Month(2026, month)

@@ -65,9 +65,14 @@
 - CS2 member names (cogs/cs2.py): `member_lookup(guild, cache)` with `MemberCache(clock, max_size)` on the cog (`Cs2(..., members=)`): `names` TtlCache 300 s, `not_members` 60 s (value True), keyed `(guild.id, user_id)`, plus `pending` tasks so concurrent lookups share one `fetch_member` (awaited via `asyncio.shield`). Fake guilds need an `id` (`FakeGuild(members, guild_id=1)` in tests/test_cs2_cog.py; `make_guild` in tests/test_cs2_identities.py).
 - Help cog (cogs/help.py): `command_infos(tree_commands)` keeps only `app_commands.Command` (str() on locale_str descriptions, choice values as str); `help_reply(infos, command)` returns an Embed or the unknown-command str. Tests build the tree from `Cog.__cog_app_commands__` of the real cog classes (`tree_commands()` in tests/test_help_cog.py) and a MagicMock bot whose `tree.get_commands` returns them.
 - Activity config: `ACTIVITY_TIMEZONE` is validated by `_parse_timezone` in config.py (ZoneInfo; catches `ZoneInfoNotFoundError` and `ValueError` for path-like names) and kept as a str on `Config`; build the `ZoneInfo` where it's used. `NinjaBot(config)` can be constructed in sync tests (no event loop needed) to inspect `bot.intents`.
+- Activity months (activity/periods.py): `Month(year, month)` is the one month definition (`key`, `start/end(tz)` aware local datetimes, end exclusive, `days`, `previous/next`); `month_of(ts, tz)`, `parse_month` -> `InvalidMonthError` (ValueError, user-facing `.message`; the constructor also rejects month 0/13 and years outside 1..9998). Aware datetimes sharing one tzinfo subtract as wall-clock time (DST ignored): compare `.timestamp()`s for real durations. `format_hours`/`day_strip` in activity/formatting.py.
 
 ## 2026-10-11 - US-001
 - Config gains `activity_channel_id`, `activity_timezone` ("UTC"), `toasty_bot_id`; `_parse_timezone` raises ConfigError naming the variable. NinjaBot sets `intents.message_content = config.toasty_bot_id is not None`.
 - Files: src/ninja_bot/config.py, src/ninja_bot/bot.py, tests/test_config.py, README.md (Configuration rows + Intents), .env.example, docs/deployment.md (portal step, Intents, prod .env example, settings reference, checklist).
 - Needs manual check: with TOASTY_BOT_ID set and Message Content Intent off in the portal, the bot fails at startup with PrivilegedIntentsRequired; with it on, it connects.
+---
+## 2026-10-11 - US-002
+- New package `ninja_bot.activity`: periods.py (`Month`, `month_of`, `parse_month`, `InvalidMonthError`) and formatting.py (`format_hours` truncates, NaN/inf/negative -> `0m`; `day_strip` 🟩/⬜ with a space every 7 days, days outside the month ignored).
+- Files: src/ninja_bot/activity/{__init__,periods,formatting}.py, tests/test_activity_periods.py, tests/test_activity_formatting.py. No docs (internal helpers).
 ---
