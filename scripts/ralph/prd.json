@@ -143,7 +143,7 @@
         "`./scripts/check.sh` passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

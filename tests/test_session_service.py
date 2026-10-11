@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,21 +11,32 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from ninja_bot.sessions import service
-from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote
+from ninja_bot.sessions.scoring import MAX_PLAYERS, MAX_ROUNDS, Vote
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
     MAX_NAME_LENGTH,
     MAX_OPEN_POLLS,
     VOTE_MESSAGES,
+    FailReason,
     JoinResult,
     NoPrefill,
+    NotAllowed,
+    NotVoting,
     Prefiller,
+    RoundAdvanced,
+    RoundFailed,
+    RoundFits,
+    SessionRefused,
     SessionService,
     VoteResult,
+    should_auto_close,
 )
 from ninja_bot.sessions.slots import InvalidSessionInput
 from ninja_bot.sessions.store import (
     STATUS_AWAITING_CONFIRM,
+    STATUS_CANCELLED,
+    STATUS_CONFIRMED,
+    STATUS_FAILED,
     STATUS_VOTING,
     Poll,
     PollSlot,
@@ -294,3 +307,217 @@ def test_modules_do_not_import_discord(module: str) -> None:
     assert not any(name.split(".")[0] == "discord" for name in modules)
     if module == "content":
         assert not any(name.split(".")[0] == "ninja_bot" for name in modules)
+
+
+async def _three_players(svc: SessionService) -> tuple[Poll, list[int]]:
+    poll = await _create(svc)
+    await svc.join(poll.id, PLAYER)
+    await svc.join(poll.id, OTHER)
+    return poll, await _slot_ids(svc, poll)
+
+
+async def test_close_round_fits(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll, (a, b, c, _d) = await _three_players(svc)
+    await svc.submit_vote(poll.id, GM, [a, b, c], ())
+    await svc.submit_vote(poll.id, PLAYER, [b, c], [a])
+    await svc.submit_vote(poll.id, OTHER, [c], [a, b])
+    outcome = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(outcome, RoundFits)
+    assert outcome.poll.status == STATUS_AWAITING_CONFIRM
+    assert [score.slot_id for score in outcome.top] == [c, b, a]
+    assert [slot.id for slot in outcome.slots] == [c, b, a]
+    assert outcome.pending == ()
+
+
+async def test_close_round_advances_to_next_window(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll, slot_ids = await _three_players(svc)
+    await svc.submit_vote(poll.id, GM, slot_ids, ())
+    await svc.submit_vote(poll.id, PLAYER, (), ())
+    outcome = await svc.close_round(poll.id, 0, False, "deadline")
+    assert isinstance(outcome, RoundAdvanced)
+    assert outcome.poll.status == STATUS_VOTING
+    assert outcome.poll.round_number == 2
+    assert outcome.poll.window_start == date(2026, 11, 17)
+    assert outcome.poll.round_started_at == svc.clock()
+    assert outcome.pending == (OTHER,)
+    assert len(outcome.slots) == 4
+    assert outcome.slots == tuple(await svc.store.poll_slots(poll.id, 2))
+    first = datetime.fromtimestamp(outcome.slots[0].start, TZ)
+    assert (first.date(), first.hour) == (date(2026, 11, 20), 19)
+
+
+async def test_last_round_without_fit_fails(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    for round_number in range(1, MAX_ROUNDS):
+        outcome = await svc.close_round(poll.id, GM, False, "manual")
+        assert isinstance(outcome, RoundAdvanced)
+        assert outcome.poll.round_number == round_number + 1
+    outcome = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(outcome, RoundFailed)
+    assert outcome.reason is FailReason.LAST_ROUND
+    assert outcome.poll.status == STATUS_FAILED
+    assert outcome.pending == (GM,)
+
+
+async def test_next_window_without_slots_fails(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    svc.clock.now = datetime(2027, 3, 1, 12, tzinfo=UTC).timestamp()  # type: ignore[attr-defined]
+    # The next window's only Sunday 02:30 is in the 2027-03-28 spring-forward gap.
+    poll = await _create(svc, days_text="sun", times_text="02:30", weeks=1, start_text="2027-03-21")
+    outcome = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(outcome, RoundFailed)
+    assert outcome.reason is FailReason.NO_SLOTS
+    assert outcome.poll.status == STATUS_FAILED
+    assert outcome.poll.round_number == 1
+
+
+async def test_double_close_is_harmless(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll, slot_ids = await _three_players(svc)
+    for user in (GM, PLAYER, OTHER):
+        await svc.submit_vote(poll.id, user, slot_ids, ())
+    first, second = await asyncio.gather(
+        svc.close_round(poll.id, GM, False, "manual"),
+        svc.close_round(poll.id, 0, False, "all_voted"),
+    )
+    assert isinstance(first, RoundFits)
+    assert isinstance(second, NotVoting)
+    assert second.poll is not None and second.poll.status == STATUS_AWAITING_CONFIRM
+    assert isinstance(await svc.close_round(999, GM, True, "manual"), NotVoting)
+
+
+async def test_manual_close_permissions(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll, _ = await _three_players(svc)
+    refused = await svc.close_round(poll.id, PLAYER, False, "manual")
+    assert isinstance(refused, NotAllowed)
+    assert (await svc.store.get_poll(poll.id)).status == STATUS_VOTING  # type: ignore[union-attr]
+    assert isinstance(await svc.close_round(poll.id, PLAYER, True, "manual"), RoundAdvanced)
+    # Automatic closes skip the check.
+    assert isinstance(await svc.close_round(poll.id, PLAYER, False, "deadline"), RoundAdvanced)
+
+
+async def test_confirm_builds_roster_from_yes_and_if_needed(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, min_players=2)
+    await svc.join(poll.id, PLAYER)
+    await svc.join(poll.id, OTHER)
+    a, b, _c, _d = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], [b])
+    await svc.submit_vote(poll.id, PLAYER, (), [b])
+    await svc.submit_vote(poll.id, OTHER, [a, b], ())
+    outcome = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(outcome, RoundFits)
+    session = await svc.confirm(poll.id, b, GM, False)
+    assert session.roster == (GM, PLAYER, OTHER)
+    assert session.start == outcome.slots[[s.slot_id for s in outcome.top].index(b)].start
+    assert await svc.store.get_session(session.id) == session
+    assert (await svc.store.get_poll(poll.id)).status == STATUS_CONFIRMED  # type: ignore[union-attr]
+
+
+async def test_confirm_roster_skips_no_votes(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, min_players=2)
+    await svc.join(poll.id, PLAYER)
+    await svc.join(poll.id, OTHER)
+    a, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], ())
+    await svc.submit_vote(poll.id, PLAYER, (), [a])
+    await svc.submit_vote(poll.id, OTHER, (), ())
+    assert isinstance(await svc.close_round(poll.id, GM, False, "manual"), RoundFits)
+    session = await svc.confirm(poll.id, a, OTHER, True)
+    assert session.roster == (GM, PLAYER)
+
+
+async def test_confirm_refusals(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll, (a, b, _c, _d) = await _three_players(svc)
+    with pytest.raises(SessionRefused) as voting:
+        await svc.confirm(poll.id, a, GM, False)
+    assert voting.value.message == service.content.NOT_AWAITING_CONFIRM_MESSAGE
+    for user in (GM, PLAYER, OTHER):
+        await svc.submit_vote(poll.id, user, [a], [b] if user != OTHER else ())
+    assert isinstance(await svc.close_round(poll.id, GM, False, "manual"), RoundFits)
+    with pytest.raises(SessionRefused) as not_offered:
+        await svc.confirm(poll.id, b, GM, False)
+    assert not_offered.value.message == service.content.SLOT_NOT_OFFERED_MESSAGE
+    with pytest.raises(SessionRefused) as not_gm:
+        await svc.confirm(poll.id, a, PLAYER, False)
+    assert not_gm.value.message == service.content.NOT_ALLOWED_MESSAGE
+    with pytest.raises(SessionRefused) as unknown:
+        await svc.confirm(999, a, GM, True)
+    assert unknown.value.message == service.content.UNKNOWN_POLL_MESSAGE
+    await svc.confirm(poll.id, a, GM, False)
+    # A second click finds the poll confirmed.
+    with pytest.raises(SessionRefused):
+        await svc.confirm(poll.id, a, GM, False)
+    assert len(await svc.store.upcoming_sessions(GUILD, svc.clock())) == 1
+
+
+async def test_cancel_poll_permissions(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    with pytest.raises(SessionRefused) as not_gm:
+        await svc.cancel_poll(poll.id, PLAYER, False)
+    assert not_gm.value.message == service.content.NOT_ALLOWED_MESSAGE
+    cancelled = await svc.cancel_poll(poll.id, PLAYER, True)
+    assert cancelled.status == STATUS_CANCELLED
+    for poll_id in (poll.id, 999):
+        with pytest.raises(SessionRefused) as gone:
+            await svc.cancel_poll(poll_id, GM, False)
+        assert gone.value.message == service.content.UNKNOWN_POLL_MESSAGE
+    other = await _create(svc)
+    assert (await svc.cancel_poll(other.id, GM, False)).status == STATUS_CANCELLED
+
+
+async def test_cancel_session_permissions(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    a, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], ())
+    assert isinstance(await svc.close_round(poll.id, GM, False, "all_voted"), RoundFits)
+    session = await svc.confirm(poll.id, a, GM, False)
+    with pytest.raises(SessionRefused) as not_gm:
+        await svc.cancel_session(session.id, PLAYER, False)
+    assert not_gm.value.message == service.content.NOT_ALLOWED_MESSAGE
+    cancelled = await svc.cancel_session(session.id, PLAYER, True)
+    assert cancelled.cancelled
+    assert (await svc.store.get_session(session.id)).cancelled  # type: ignore[union-attr]
+    for session_id in (session.id, 999):
+        with pytest.raises(SessionRefused) as gone:
+            await svc.cancel_session(session_id, GM, False)
+        assert gone.value.message == service.content.UNKNOWN_SESSION_MESSAGE
+
+
+async def test_cancel_started_session_is_refused(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    a, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], ())
+    await svc.close_round(poll.id, GM, False, "all_voted")
+    session = await svc.confirm(poll.id, a, GM, False)
+    svc.clock.now = session.start  # type: ignore[attr-defined]
+    with pytest.raises(SessionRefused):
+        await svc.cancel_session(session.id, GM, False)
+
+
+async def test_should_auto_close_reasons(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, round_hours=24)
+    await svc.join(poll.id, PLAYER)
+    slot_ids = await _slot_ids(svc, poll)
+    players = await svc.store.players(poll.id)
+    start = poll.round_started_at
+    assert should_auto_close(poll, players, slot_ids, {}, start) is None
+    assert should_auto_close(poll, players, slot_ids, {}, start + 86_399) is None
+    assert should_auto_close(poll, players, slot_ids, {}, start + 86_400) == "deadline"
+    votes = {(GM, slot_ids[0]): Vote.YES, (PLAYER, slot_ids[1]): Vote.NO}
+    assert should_auto_close(poll, players, slot_ids, votes, start) == "all_voted"
+    assert should_auto_close(poll, players, slot_ids, votes, start + 86_400) == "all_voted"
+    no_deadline = await _create(svc)
+    assert should_auto_close(no_deadline, [GM], slot_ids, {}, start + 10**7) is None
+    closed = replace(poll, status=STATUS_AWAITING_CONFIRM)
+    assert should_auto_close(closed, players, slot_ids, votes, start + 86_400) is None

@@ -25,3 +25,13 @@ GM_CANNOT_LEAVE_MESSAGE = "You run this poll, so you can't leave it. Cancel it i
 # Votes.
 VOTE_RECORDED_MESSAGE = "Your votes are saved."
 UNKNOWN_SLOT_MESSAGE = "Those slots aren't part of the current round; open the vote again."
+
+# Close round / confirm / cancel.
+NOT_ALLOWED_MESSAGE = "Only the GM or someone with **Manage Events** can do that."
+ROUND_ALREADY_CLOSED_MESSAGE = "This round is already closed."
+NOT_AWAITING_CONFIRM_MESSAGE = "This poll isn't waiting for a date to be confirmed."
+SLOT_NOT_OFFERED_MESSAGE = "That slot isn't one of the offered dates."
+UNKNOWN_POLL_MESSAGE = "There's no open poll with that id; it may be finished or cancelled."
+UNKNOWN_SESSION_MESSAGE = (
+    "There's no upcoming session with that id; it may have started or been cancelled."
+)

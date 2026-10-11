@@ -1,25 +1,50 @@
-"""Session poll rules: create, join/leave and vote (no discord import)."""
+"""Session poll rules: create, join, vote, close a round, confirm, cancel (no discord import)."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Collection, Sequence
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from ninja_bot.sessions import content
-from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote
+from ninja_bot.sessions.scoring import (
+    MAX_PLAYERS,
+    MAX_ROUNDS,
+    Fits,
+    NextRound,
+    RoundResult,
+    SlotScore,
+    Vote,
+    Votes,
+    all_voted,
+    evaluate_round,
+    pending_players,
+    score_slots,
+)
 from ninja_bot.sessions.slots import (
     DEFAULT_DURATION_HOURS,
     DEFAULT_WEEKS,
     MAX_WEEKS,
     InvalidSessionInput,
     generate_slots,
+    next_window_start,
     parse_days,
     parse_start_date,
     parse_times,
 )
-from ninja_bot.sessions.store import STATUS_VOTING, Poll, PollSlot, SessionStore
+from ninja_bot.sessions.store import (
+    OPEN_STATUSES,
+    STATUS_AWAITING_CONFIRM,
+    STATUS_FAILED,
+    STATUS_VOTING,
+    Poll,
+    PollSlot,
+    Session,
+    SessionStore,
+)
 
 MAX_NAME_LENGTH = 60
 MAX_OPEN_POLLS = 5
@@ -62,6 +87,99 @@ VOTE_MESSAGES: dict[VoteResult, str] = {
 }
 
 
+# Why a round is closed: by the GM/a manager, or automatically.
+CloseReason = Literal["manual", "all_voted", "deadline"]
+
+
+class SessionRefused(Exception):
+    """A refused confirm/cancel; `.message` is the user-facing reason."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+@dataclass(frozen=True)
+class RoundFits:
+    """Slots fit; the poll is `awaiting_confirm`. `slots` matches `top` (best first)."""
+
+    poll: Poll
+    top: tuple[SlotScore, ...]
+    slots: tuple[PollSlot, ...]
+    pending: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class RoundAdvanced:
+    """Nothing fit; `poll` is in its next round with the new `slots`.
+
+    `pending` are the players who didn't vote in the closed round.
+    """
+
+    poll: Poll
+    slots: tuple[PollSlot, ...]
+    pending: tuple[int, ...]
+
+
+class FailReason(Enum):
+    # Nothing fit in round `MAX_ROUNDS`.
+    LAST_ROUND = "last_round"
+    # Nothing fit and the next window has no usable slots.
+    NO_SLOTS = "no_slots"
+
+
+@dataclass(frozen=True)
+class RoundFailed:
+    """No date was found; the poll is `failed`."""
+
+    poll: Poll
+    reason: FailReason
+    pending: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class NotVoting:
+    """The poll is unknown or its round was already closed; nothing changed."""
+
+    poll: Poll | None
+
+
+@dataclass(frozen=True)
+class NotAllowed:
+    """A manual close by someone who is neither the GM nor a manager."""
+
+    poll: Poll
+
+
+RoundOutcome = RoundFits | RoundAdvanced | RoundFailed | NotVoting | NotAllowed
+
+
+def should_auto_close(
+    poll: Poll, players: Sequence[int], slot_ids: Sequence[int], votes: Votes, now: float
+) -> CloseReason | None:
+    """Why the round should close on its own now, or None (only while `voting`)."""
+    if poll.status != STATUS_VOTING:
+        return None
+    if all_voted(players, slot_ids, votes):
+        return "all_voted"
+    if poll.round_hours and poll.round_started_at + poll.round_hours * 3600 <= now:
+        return "deadline"
+    return None
+
+
+def _may_manage(poll_gm_id: int, user_id: int, is_manager: bool) -> bool:
+    return is_manager or user_id == poll_gm_id
+
+
+def _evaluate(
+    poll: Poll, players: Sequence[int], slot_ids: Sequence[int], votes: Votes
+) -> RoundResult:
+    scores = score_slots(slot_ids, players, votes)
+    return evaluate_round(
+        scores, players, poll.gm_id, votes, poll.min_players, poll.round_number, MAX_ROUNDS
+    )
+
+
 class Prefiller(Protocol):
     async def prefill(self, user_id: int, slots: Sequence[PollSlot]) -> dict[int, Vote]:
         """Suggested votes (slot id -> vote) for a player who just joined."""
@@ -92,6 +210,8 @@ class SessionService:
         self.tz = tz
         self.clock = clock
         self.prefiller = prefiller
+        # Serialises closing and confirming, so double clicks and the loop can't race.
+        self._lock = asyncio.Lock()
 
     async def create_poll(
         self,
@@ -214,3 +334,115 @@ class SessionService:
         }
         await self.store.record_votes(poll_id, user_id, votes)
         return VoteResult.RECORDED
+
+    async def _round(
+        self, poll: Poll
+    ) -> tuple[list[int], list[PollSlot], dict[tuple[int, int], Vote]]:
+        players = await self.store.players(poll.id)
+        slots = await self.store.poll_slots(poll.id, poll.round_number)
+        votes = await self.store.votes(poll.id, poll.round_number)
+        return players, slots, votes
+
+    async def close_round(
+        self, poll_id: int, by_user_id: int, is_manager: bool, reason: CloseReason
+    ) -> RoundOutcome:
+        """Evaluate the current round once: confirm candidates, a next round or a failure.
+
+        Only a manual close checks permissions (GM or manager).
+        """
+        async with self._lock:
+            poll = await self._voting_poll(poll_id)
+            if poll is None:
+                return NotVoting(await self.store.get_poll(poll_id))
+            if reason == "manual" and not _may_manage(poll.gm_id, by_user_id, is_manager):
+                return NotAllowed(poll)
+            players, slots, votes = await self._round(poll)
+            slot_ids = [slot.id for slot in slots]
+            pending = tuple(pending_players(players, slot_ids, votes))
+            result = _evaluate(poll, players, slot_ids, votes)
+            if isinstance(result, Fits):
+                await self.store.set_status(poll.id, STATUS_AWAITING_CONFIRM)
+                by_id = {slot.id: slot for slot in slots}
+                return RoundFits(
+                    await self._reload(poll),
+                    result.top,
+                    tuple(by_id[score.slot_id] for score in result.top),
+                    pending,
+                )
+            if isinstance(result, NextRound):
+                return await self._advance(poll, pending)
+            await self.store.set_status(poll.id, STATUS_FAILED)
+            return RoundFailed(await self._reload(poll), FailReason.LAST_ROUND, pending)
+
+    async def _reload(self, poll: Poll) -> Poll:
+        reloaded = await self.store.get_poll(poll.id)
+        assert reloaded is not None
+        return reloaded
+
+    async def _advance(self, poll: Poll, pending: tuple[int, ...]) -> RoundOutcome:
+        window_start = next_window_start(poll.window_start, poll.weeks)
+        try:
+            new_slots = generate_slots(
+                window_start,
+                poll.weeks,
+                poll.days,
+                poll.times,
+                self.tz,
+                poll.duration_hours,
+                self.clock(),
+            )
+        except InvalidSessionInput:
+            await self.store.set_status(poll.id, STATUS_FAILED)
+            return RoundFailed(await self._reload(poll), FailReason.NO_SLOTS, pending)
+        advanced = await self.store.advance_round(poll.id, new_slots, window_start, self.clock())
+        slots = await self.store.poll_slots(poll.id, advanced.round_number)
+        return RoundAdvanced(advanced, tuple(slots), pending)
+
+    async def confirm(
+        self, poll_id: int, slot_id: int, by_user_id: int, is_manager: bool
+    ) -> Session:
+        """Turn an offered slot into a session; raises `SessionRefused`.
+
+        The roster is the joined players (join order) who voted Yes or If needed on it.
+        """
+        async with self._lock:
+            poll = await self.store.get_poll(poll_id)
+            if poll is None or poll.status not in OPEN_STATUSES:
+                raise SessionRefused(content.UNKNOWN_POLL_MESSAGE)
+            if not _may_manage(poll.gm_id, by_user_id, is_manager):
+                raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
+            if poll.status != STATUS_AWAITING_CONFIRM:
+                raise SessionRefused(content.NOT_AWAITING_CONFIRM_MESSAGE)
+            players, slots, votes = await self._round(poll)
+            slot_ids = [slot.id for slot in slots]
+            # Votes are frozen outside `voting`, so this is the round's original result.
+            result = _evaluate(poll, players, slot_ids, votes)
+            if not isinstance(result, Fits) or slot_id not in {s.slot_id for s in result.top}:
+                raise SessionRefused(content.SLOT_NOT_OFFERED_MESSAGE)
+            roster = [
+                player
+                for player in players
+                if votes.get((player, slot_id)) in (Vote.YES, Vote.IF_NEEDED)
+            ]
+            return await self.store.confirm(poll.id, slot_id, roster)
+
+    async def cancel_poll(self, poll_id: int, by_user_id: int, is_manager: bool) -> Poll:
+        """Cancel an open poll (GM or manager); raises `SessionRefused`."""
+        async with self._lock:
+            poll = await self.store.get_poll(poll_id)
+            if poll is None or poll.status not in OPEN_STATUSES:
+                raise SessionRefused(content.UNKNOWN_POLL_MESSAGE)
+            if not _may_manage(poll.gm_id, by_user_id, is_manager):
+                raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
+            await self.store.cancel_poll(poll.id)
+            return await self._reload(poll)
+
+    async def cancel_session(self, session_id: int, by_user_id: int, is_manager: bool) -> Session:
+        """Cancel a session that hasn't started (GM or manager); raises `SessionRefused`."""
+        session = await self.store.get_session(session_id)
+        if session is None or session.cancelled or session.start <= self.clock():
+            raise SessionRefused(content.UNKNOWN_SESSION_MESSAGE)
+        if not _may_manage(session.gm_id, by_user_id, is_manager):
+            raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
+        await self.store.cancel_session(session.id)
+        return replace(session, cancelled=True)
