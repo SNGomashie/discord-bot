@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import math
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Literal
 
-from ninja_bot.cs2.formatting import format_rating
-from ninja_bot.cs2.models import RecentMatch
+from ninja_bot.cs2.formatting import MISSING, format_rating
+from ninja_bot.cs2.models import Profile, RecentMatch
 
 TrendDirection = Literal["up", "down", "flat"]
 StreakKind = Literal["win", "loss"]
@@ -84,3 +86,117 @@ def format_trend(trend: Trend | None) -> str:
     if trend.streak_kind is not None and trend.streak_length >= MIN_SHOWN_STREAK:
         text += f" {_STREAK_EMOJI[trend.streak_kind]}{trend.streak_length}"
     return text
+
+
+class Metric(StrEnum):
+    RATING = "rating"
+    AIM = "aim"
+    POSITIONING = "positioning"
+    UTILITY = "utility"
+    CLUTCH = "clutch"
+    OPENING = "opening"
+    WINRATE = "winrate"
+
+
+_METRIC_LABELS: dict[Metric, str] = {
+    Metric.RATING: "Leetify rating",
+    Metric.AIM: "Aim",
+    Metric.POSITIONING: "Positioning",
+    Metric.UTILITY: "Utility",
+    Metric.CLUTCH: "Clutch",
+    Metric.OPENING: "Opening duels",
+    Metric.WINRATE: "Winrate",
+}
+
+# 0-100 skill scores; the other metrics are signed ratings except winrate.
+_SCORE_METRICS = frozenset({Metric.AIM, Metric.POSITIONING, Metric.UTILITY})
+
+
+@dataclass(frozen=True)
+class SquadEntry:
+    discord_id: int
+    profile: Profile
+
+
+@dataclass(frozen=True)
+class LeaderboardRow:
+    # None for players without a value (listed last, unranked).
+    rank: int | None
+    discord_id: int
+    name: str
+    value: float | None
+    trend: Trend | None
+
+
+def _average_rating(profile: Profile) -> float | None:
+    ratings = [m.leetify_rating for m in profile.recent_matches if m.leetify_rating is not None]
+    if not ratings:
+        return None
+    return sum(ratings) / len(ratings)
+
+
+_METRIC_VALUES: dict[Metric, Callable[[Profile], float | None]] = {
+    Metric.RATING: _average_rating,
+    Metric.AIM: lambda p: p.aim,
+    Metric.POSITIONING: lambda p: p.positioning,
+    Metric.UTILITY: lambda p: p.utility,
+    Metric.CLUTCH: lambda p: p.clutch,
+    Metric.OPENING: lambda p: p.opening,
+    Metric.WINRATE: lambda p: p.winrate,
+}
+
+
+def metric_value(profile: Profile, metric: Metric) -> float | None:
+    """The profile's value for `metric`; None when missing or not a finite number."""
+    value = _METRIC_VALUES[metric](profile)
+    if value is None or not math.isfinite(value):
+        return None
+    return value
+
+
+def rank_squad(entries: Sequence[SquadEntry], metric: Metric) -> list[LeaderboardRow]:
+    """Rank players by `metric`, best first.
+
+    Ties share a rank (1, 1, 3) and are ordered by name; players without a value
+    come last with `rank=None`.
+    """
+    rows = [
+        LeaderboardRow(
+            rank=None,
+            discord_id=entry.discord_id,
+            name=entry.profile.name or entry.profile.steam64_id,
+            value=metric_value(entry.profile, metric),
+            trend=compute_trend(entry.profile.recent_matches),
+        )
+        for entry in entries
+    ]
+    rows.sort(key=lambda row: (row.name.casefold(), row.name, row.discord_id))
+    valued = sorted(
+        (row for row in rows if row.value is not None),
+        key=lambda row: -(row.value or 0.0),
+    )
+    missing = [row for row in rows if row.value is None]
+    ranked: list[LeaderboardRow] = []
+    for position, row in enumerate(valued, start=1):
+        previous = ranked[-1] if ranked else None
+        if previous is not None and previous.value == row.value:
+            rank = previous.rank
+        else:
+            rank = position
+        ranked.append(replace(row, rank=rank))
+    return ranked + missing
+
+
+def metric_label(metric: Metric) -> str:
+    return _METRIC_LABELS[metric]
+
+
+def format_metric_value(metric: Metric, value: float | None) -> str:
+    """`+0.05` for ratings, `72` for 0-100 skill scores, `62%` for winrate, `-` if unknown."""
+    if value is None or not math.isfinite(value):
+        return MISSING
+    if metric is Metric.WINRATE:
+        return f"{value * 100:.0f}%"
+    if metric in _SCORE_METRICS:
+        return f"{value:.0f}"
+    return format_rating(value)
