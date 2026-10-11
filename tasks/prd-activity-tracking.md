@@ -10,7 +10,7 @@ This PRD adds:
 - `/activity [month]`: server overview for a month (leaderboard, shame, awards, social stats, Pokémon stats). Public reply.
 - `/myactivity [user] [month]`: personal view (hours, active days, streaks, day strip, awards, catches). Public reply.
 - An automatic monthly post of the previous month's overview to `ACTIVITY_CHANNEL_ID`, once per month, restart-safe.
-- Toasty tracking (only when `TOASTY_BOT_ID` is set): a human `;pokemon` message followed by a Toasty reply to it is recorded as a catch for the human. This needs the privileged **Message Content** intent, which is requested only when `TOASTY_BOT_ID` is set.
+- Toasty tracking (only when `TOASTY_BOT_ID` is set): a human `;pokemon` message followed by a Toasty reply to it is recorded for the human as a catch (shiny or not) or a cooldown hit. This needs the privileged **Message Content** intent, which is requested only when `TOASTY_BOT_ID` is set.
 
 "Hours" means voice time. Text messages are not counted. No LLM calls.
 
@@ -151,18 +151,25 @@ This PRD adds:
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
-### US-010: Toasty message capture and parser (gated on fixtures)
-**Description:** As a member, I want my `;pokemon` commands with Toasty recorded as catches.
+### US-010: Toasty message capture and parser
+**Description:** As a member, I want my `;pokemon` commands with Toasty recorded so that catches show up in the stats.
 
-**Blocked until:** the owner has supplied 5–10 real Toasty replies (a catch, a shiny, a rare, a failure/cooldown, an edited reply if Toasty edits) as files under `tests/fixtures/toasty/`. Do not invent reply formats. If the fixtures are missing, the story is skipped and noted in `progress.txt`.
+**Observed Toasty behaviour** (from real replies in `tests/fixtures/toasty/replies.md`, copied from the Discord UI; the raw form is assumed, see the fixtures):
+- The command is `;pokemon`, sometimes typed `; pokemon` (with a space). Toasty answers as a reply to that message.
+- Catch: `@Name, you've caught a Frillish!` (the article can be `a` or `an`). Text after the `!` can be extra junk (an emoji or icon).
+- Shiny catch: `@Name, you've caught a Shiny Herdier!` plus an image and the line `Shiny Herdier has been registered to your Pokédex`; it is not known whether these are message content, an embed or an attachment.
+- Cooldown: ` You need to wait 1h 50m 16s before catching another Pokemon!` followed by an upvote hint. This is not a catch.
+- Rarity is not shown, so it is not tracked.
 
 **Acceptance Criteria:**
-- [ ] `activity/pokemon.py` (no `discord` import): `parse_reply(content: str, embeds: Sequence[Mapping[str, Any]]) -> Catch | None` returns `Catch(pokemon, rarity, shiny)` for a successful catch and `None` for anything else, based only on the fixtures
-- [ ] A new `catches` table `(message_id PRIMARY KEY, user_id, ts, pokemon, rarity, shiny)` (final columns follow the fixtures); store methods `record_catch`, `catches_between(start_ts, end_ts)`; duplicates by `message_id` are ignored
-- [ ] Cog `on_message`: a message from a human whose content starts with `;pokemon` (case-insensitive) is remembered in a small TTL dict keyed by message id (capped size); a message authored by `TOASTY_BOT_ID` whose `reference.message_id` is in the dict is parsed and recorded for the original author; `on_message_edit` re-parses if the fixtures show Toasty edits replies
-- [ ] Nothing is registered or recorded when `TOASTY_BOT_ID` is unset; no message content is stored beyond the parsed fields
-- [ ] Tests: parser against every fixture, pairing logic (reply to remembered message, reply to unknown message, other bot, TTL expiry, duplicate), cog with fakes
-- [ ] Docs: `README.md` (Toasty section, Message Content intent requirement, known limitation: tracking only works while the bot is online), `docs/deployment.md` (enable the intent in the Developer Portal), `docs/manual-checks.md` (`;pokemon` end to end)
+- [ ] `tests/fixtures/toasty/replies.json` holds the cases from `replies.md` as structured fixtures (`name`, `invoker_content`, `reply_content`, `reply_embeds`, `expected`) and keeps `replies.md` as the original source; there are separate fixtures for a plain catch, an `an` article, a trailing-junk catch, a shiny catch with everything in `content`, the same shiny catch with the text in an embed `description`, a cooldown, and a non-Toasty reply. Every fixture marked `"assumed": true` is a variation of a real reply, not an observed one
+- [ ] `activity/pokemon.py` (no `discord` import): `is_pokemon_command(content: str) -> bool` (case-insensitive `;pokemon`, an optional space after `;`, nothing else on the line; `;pokemon list` is not a command) and `parse_reply(content: str, embeds: Sequence[Mapping[str, Any]]) -> Catch | Cooldown | None`
+- [ ] `parse_reply` searches the content plus every embed's `title`, `description` and field values; `Catch(pokemon: str, shiny: bool)` for `you've caught an? (Shiny )?<Name>!` (the name may contain spaces, `-`, `.`, `'`, `:`, `♀`, `♂`; the leading `Shiny ` is stripped from `pokemon` and sets `shiny`); `Cooldown(wait_seconds: int | None)` for `You need to wait ... before catching another Pokemon` (parse `1h 50m 16s` style durations, `None` when unparseable); `None` for anything else. The mention in the text is ignored (the user is the author of the replied-to message)
+- [ ] New table `pokemon_events(message_id INTEGER PRIMARY KEY, user_id, ts REAL, kind TEXT, pokemon TEXT NULL, shiny INTEGER)` where `kind` is `catch` or `cooldown`; store methods `record_pokemon_event` (duplicates by `message_id` ignored) and `pokemon_events_between(start_ts, end_ts)`; known users from events are added to `known_users()` so the shame list includes them
+- [ ] Cog `on_message` (only registered when `TOASTY_BOT_ID` is set): a message from a human that satisfies `is_pokemon_command` is remembered in a small TTL dict (id -> author id; capped size, entries expire after 5 minutes). A message authored by `TOASTY_BOT_ID` whose `reference.message_id` is in the dict is parsed and recorded for the original author. `on_message_edit` re-parses an edited Toasty reply the same way (recording stays idempotent)
+- [ ] Nothing is recorded when `TOASTY_BOT_ID` is unset, for bot-authored commands, for unrelated Toasty messages, or for replies whose referenced message is unknown; raw message text is never stored, only the parsed fields
+- [ ] Tests: `is_pokemon_command` table (valid, `; pokemon`, upper case, with extra text, other prefix), parser against every fixture, pairing logic (reply to remembered message, reply to unknown message, other bot, TTL expiry, duplicate delivery, edit), the cog with fakes
+- [ ] Docs: `README.md` (Toasty section: what is tracked, Message Content intent requirement, known limitation: only works while the bot is online and only sees catches replied to `;pokemon`), `docs/deployment.md` (enable the intent in the Developer Portal when `TOASTY_BOT_ID` is set), `docs/manual-checks.md` (`;pokemon` end to end: catch, shiny, cooldown), `CLAUDE.md` Architecture if a module was added
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
@@ -170,11 +177,12 @@ This PRD adds:
 **Description:** As a member, I want catches in the monthly overview and my profile.
 
 **Acceptance Criteria:**
-- [ ] `activity/stats.py`: `catch_stats(catches, month, tz)` returns catches per user, shiny count, and the rarest catch of the month, using pure functions only
-- [ ] `build_monthly_embed` shows a **Pokémon** field (top catchers with shared ranks, shinies, rarest catch) and `build_profile_embed` shows the user's catches, only when the month has catch data; `/activity` and the monthly post include it
-- [ ] Field and embed limits from US-007 still hold with catch data
-- [ ] Tests: ranking with ties, no catches, shiny and rarest, a long Pokémon name
-- [ ] Docs: `README.md` activity section (catch stats), `help/content.py` details for `/activity` and `/myactivity` updated to mention Pokémon, `docs/manual-checks.md`
+- [ ] `activity/stats.py` (or `activity/pokemon_stats.py`): pure `pokemon_stats(events, month, tz)` returning, per user, `catches`, `shinies` and `cooldown_hits`, plus server-wide `top_species` (most caught Pokémon, ties all named) and the list of shiny catches
+- [ ] New award **Impatient** (most `;pokemon` attempts that hit the cooldown), named in the awards list only when the winner has at least 3 hits
+- [ ] `build_monthly_embed` shows a **Pokémon** field (top catchers with shared ranks, shinies with the catcher, most caught species, Impatient award) and `build_profile_embed` shows the user's catches, shinies and cooldown hits, only when the month has Pokémon data; `/activity` and the monthly post include it
+- [ ] Field and embed limits from US-007 still hold with Pokémon data (40 users, long Pokémon names)
+- [ ] Tests: ranking with ties, no events, shiny list, top species tie, Impatient threshold, a month with only cooldowns
+- [ ] Docs: `README.md` activity section (Pokémon stats and the Impatient award), `help/content.py` details for `/activity` and `/myactivity` mention Pokémon, `docs/manual-checks.md`
 - [ ] Typecheck passes
 - [ ] `./scripts/check.sh` passes
 
@@ -201,7 +209,7 @@ This PRD adds:
 - FR-7: `/activity [month]` and `/myactivity [user] [month]` reply publicly with `AllowedMentions.none()`, are rate-limited per user, and report invalid input clearly.
 - FR-8: When `ACTIVITY_CHANNEL_ID` is set, the previous month's overview is posted once per month, survives restarts, and does not retry endlessly when the channel is broken.
 - FR-9: Toasty tracking runs only when `TOASTY_BOT_ID` is set, and the Message Content intent is requested only then.
-- FR-10: A Toasty reply to a remembered `;pokemon` message is parsed and recorded as a catch for the original author. Only parsed fields are stored, never message text.
+- FR-10: A Toasty reply to a remembered `;pokemon` message is parsed and recorded for the original author as a catch (shiny or not) or a cooldown hit. Only parsed fields are stored, never message text.
 - FR-11: Embeds respect Discord limits (field values 1024, title 256, total 6000, 25 fields) with `+N more` truncation.
 - FR-12: Docs listed per story are updated in the same story as the code.
 
@@ -211,7 +219,7 @@ This PRD adds:
 - No history before the feature is enabled (Discord offers no voice history).
 - No opt-out/privacy commands in v1 (private server of friends).
 - No per-channel breakdowns or charts/images; text embeds only.
-- No Toasty API calls and no Pokémon data source other than parsing Toasty's replies.
+- No Toasty API calls and no Pokémon data source other than parsing Toasty's replies; no rarity tracking (Toasty's replies don't show it).
 - No role assignment, rewards or punishments based on hours.
 - No change to deployment/prod configuration beyond documenting new settings.
 
@@ -232,7 +240,7 @@ This PRD adds:
 
 ## Open Questions
 
-- What do Toasty's replies look like (embed vs plain text, does it edit its replies, how are shiny/rare shown)? US-010 and US-011 depend on real samples.
+- Is a Toasty reply plain message content or an embed, and does Toasty edit its replies? Unknown (fixtures come from the Discord UI); the parser reads content and embeds, and edits are handled, so either works. Confirm on the dev bot with `docs/manual-checks.md`.
 - Is 5 minutes the right threshold for an "active day"?
 - Should the monthly post mention (ping) the shame-list members? Current design: no pings, `AllowedMentions.none()`.
 - Which timezone should production use (default `UTC`)?
