@@ -96,3 +96,11 @@
 - Files: src/ninja_bot/sessions/__init__.py, src/ninja_bot/sessions/slots.py, tests/test_session_slots.py, README.md, CLAUDE.md
 - **Learnings:** empty comma parts are rejected rather than skipped, so `fri,` is an error.
 ---
+
+## 2026-10-11 - US-003
+- slots.py: `MAX_SLOTS`/`MAX_WEEKS`/`DEFAULT_WEEKS`/`DEFAULT_DURATION_HOURS`, frozen `Slot(start, end)` (UTC seconds), `parse_start_date` (blank = tomorrow in tz, ASCII `YYYY-MM-DD`, before today rejected), `generate_slots` (half-open window, slots not after `now` dropped, DST gap skipped / fold=0 first occurrence, empty -> `NO_SLOTS_MESSAGE`, > 25 -> `TOO_MANY_SLOTS_MESSAGE` with count), `next_window_start`.
+- Tests: tests/test_session_slots.py (Amsterdam 2026-03-29 gap and 2026-10-25 fold, month boundary, now partway through the day, 25 ok / 26 rejected, weeks not capped here, start-date rules).
+- Docs: CLAUDE.md Architecture, README layout block (no user-visible behaviour yet).
+- Files: src/ninja_bot/sessions/slots.py, tests/test_session_slots.py, CLAUDE.md, README.md
+- **Learnings:** detect a nonexistent local time by round-tripping `datetime.fromtimestamp(local.timestamp(), tz)` and comparing naive wall clocks; zoneinfo's default fold=0 already gives the first occurrence of a repeated time.
+---
