@@ -6,14 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from ninja_bot.cogs.cs2 import (
-    CHANNEL_MISSING,
-    CHANNEL_NO_PERMISSIONS,
-    CHANNEL_NOT_TEXT,
-    AutoPost,
-    Cs2,
-)
+from ninja_bot.cogs.cs2 import AutoPost, Cs2
 from ninja_bot.cs2.awards import compute_awards
+from ninja_bot.cs2.channels import CHANNEL_MISSING, CHANNEL_NO_PERMISSIONS, CHANNEL_NOT_TEXT
 from ninja_bot.cs2.embed import build_announcement_embed
 from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import Match, PlayerMatchStats, TeamScore

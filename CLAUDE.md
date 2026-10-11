@@ -27,6 +27,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
   - `identities.py`: `Identity`, `resolve_identities` (match players -> linked server members via an injected `lookup`; never imports discord). The cog's `member_lookup(guild)` provides it (cache, then REST `fetch_member`).
   - `squad.py`: `/leaderboard` and squad logic: `Metric`, `compute_trend`/`format_trend` (newest 5 vs previous 5 ratings, streaks), `rank_squad` (`SquadEntry` -> `LeaderboardRow`, shared ranks), `fetch_squad`/`leaderboard_notes` (the /leaderboard fetch and skip policy), `SquadMember` (linked member in an announced match).
   - `embed.py`: `build_match_embed` (/scoreboard), `build_announcement_embed` (auto-posts: squad highlights, `Squad` field, `squad_outcome` colour), `build_profile_embed`, `build_leaderboard_embed`.
+  - `channels.py`: `channel_problem(channel, me)` (can the bot auto-post there? cause strings `CHANNEL_*`, `PostChannel`, `is_post_channel`; no network).
   - `poller.py`: `MatchPoller` (new matches of linked players for auto-posts: seeds new players silently, age filter, max per cycle, `full_match` + squad; `confirm` marks a match posted after each send attempt).
 - `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.
 - `tests/`: pytest (asyncio_mode=auto).

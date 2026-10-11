@@ -15,6 +15,13 @@ from discord.ext import commands, tasks
 
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.cache import CachedStatsProvider, TtlCache
+from ninja_bot.cs2.channels import (
+    CHANNEL_MISSING,
+    CHANNEL_NOT_TEXT,
+    PostChannel,
+    channel_problem,
+    is_post_channel,
+)
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     build_announcement_embed,
@@ -67,13 +74,6 @@ LEADERBOARD_COOLDOWN_SECONDS = 30.0
 ALL_PROFILES_FAILED_MESSAGE = (
     "Couldn't load any linked player's Leetify profile. Please try again later."
 )
-# Channel types auto-posts can go to (all have guild permissions and `send`).
-POST_CHANNEL_TYPES = (discord.TextChannel, discord.Thread, discord.VoiceChannel)
-type PostChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
-# Causes for a skipped auto-post cycle; each is logged once until the channel works again.
-CHANNEL_MISSING = "missing"
-CHANNEL_NOT_TEXT = "not a text channel"
-CHANNEL_NO_PERMISSIONS = "missing View Channel, Send Messages or Embed Links"
 # Discord display names are cached briefly to save REST calls; a 404 for a shorter time.
 MEMBER_NAME_TTL_SECONDS = 300.0
 MEMBER_MISSING_TTL_SECONDS = 60.0
@@ -296,17 +296,12 @@ class Cs2(commands.Cog):
             except (discord.NotFound, discord.Forbidden):
                 self._warn_channel(CHANNEL_MISSING)
                 return None
-        if not isinstance(channel, POST_CHANNEL_TYPES):
+        if not is_post_channel(channel):
             self._warn_channel(CHANNEL_NOT_TEXT)
             return None
-        permissions = channel.permissions_for(channel.guild.me)
-        can_send = (
-            permissions.send_messages_in_threads
-            if isinstance(channel, discord.Thread)
-            else permissions.send_messages
-        )
-        if not (permissions.view_channel and can_send and permissions.embed_links):
-            self._warn_channel(CHANNEL_NO_PERMISSIONS)
+        problem = channel_problem(channel, channel.guild.me)
+        if problem is not None:
+            self._warn_channel(problem)
             return None
         self._channel_warnings.clear()
         return channel
