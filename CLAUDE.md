@@ -49,17 +49,37 @@ Dev work and Ralph run in the container from `Dockerfile.dev` (Debian 13, Python
 ## Feature workflow
 Features are built with the Ralph loop. Repo: https://github.com/SNGomashie/discord-bot (`origin`); `main` is only changed through PRs (docs/workflow tweaks may go straight to main).
 1. **Plan** the feature with the user (plan mode / clarifying questions); settle design decisions before writing stories.
-2. **PRD**: `ralph-skills:prd` writes `tasks/prd-<feature>.md`. Stories must be small (one Ralph iteration), ordered by dependency, with criteria verifiable by `./scripts/check.sh`. Anything only checkable inside Discord is a manual check, not a gate.
+2. **PRD**: `ralph-skills:prd` writes `tasks/prd-<feature>.md`. Stories must be small (one Ralph iteration), ordered by dependency, with criteria verifiable by `./scripts/check.sh`. Anything only checkable inside Discord is a manual check, not a gate. Every story that changes user-visible behaviour, settings, permissions, dependencies or storage must list the docs it updates (see Documentation) in its acceptance criteria; add a final docs story when a feature spans several stories (README feature section, `docs/manual-checks.md`).
 3. **Convert**: `ralph-skills:ralph` writes `scripts/ralph/prd.json` (branch `ralph/<feature>`; Ralph files live in `scripts/ralph/`, not the repo root). First archive the previous run's `prd.json` and `progress.txt` to `scripts/ralph/archive/YYYY-MM-DD-<feature>/` (gitignored) and start a fresh `progress.txt` that keeps the "Codebase Patterns" section. Create the branch from up-to-date `main` and commit the PRD + `prd.json` there.
 4. **Run** in the dev container (`docker compose run --rm dev`; podman: `PODMAN_USERNS=keep-id podman compose run --rm dev`; log in once with `claude`): `scripts/ralph/ralph.sh <stories + 2-3>`. It refuses unless `.env` has `ENVIRONMENT=dev`. Ralph commits as "ralph", one commit per story. Rebuild the image if `Dockerfile.dev` changed.
-5. **Review and test**: run `/code-review`, then do the "needs manual check" items from `progress.txt` against the dev bot in the test server (`uv run python scripts/smoke.py`, then `/command`).
-6. **PR** from `ralph/<feature>` to `main` on GitHub (summary, what changed, manual checks, known follow-ups). Keep the per-story commits (no squash). Delete the branch after merge.
+5. **Review and test**: run `/code-review`, check that the README (and the other docs in the Documentation table) match the final code, then do the "needs manual check" items from `progress.txt` against the dev bot in the test server (`uv run python scripts/smoke.py`, then `/command`).
+6. **PR** from `ralph/<feature>` to `main` on GitHub (summary, what changed, manual checks, known follow-ups), including the `CHANGELOG.md` entry. Keep the per-story commits (no squash). Delete the branch after merge.
 Review follow-ups get their own PRD/branch (e.g. `ralph/download-hardening`).
 
 ## Documentation
-- `README.md` is the complete user and contributor reference: commands, every env var, behaviour, limits, storage, known limitations. Update it in the same change as any user-visible behaviour, setting or limit.
-- `docs/deployment.md`: Discord app, prod LXC, updates, troubleshooting (ops only; don't duplicate README behaviour). `docs/manual-checks.md`: the Discord-only checks per feature; add new ones there, not in the README.
-- `CHANGELOG.md`: one entry per merged PR (newest first); add it when writing the PR.
+Docs are part of the change, not a follow-up. **A change is not done until the docs that describe it are updated in the same branch** (for Ralph: in the same story/commit as the code, never "later"). `README.md` is the single source of truth for what the bot does; it is deliberately long and complete, so don't move behaviour into `docs/` to shorten it.
+
+| If the change touches... | Update |
+|---|---|
+| A command, parameter, choice, cooldown, limit, constant (e.g. `MAX_PER_CYCLE`, `TREND_WINDOW`), user-visible message, embed field, or error reply | `README.md`: the commands table **and** the feature section |
+| An env var / `config.py` | `README.md` Configuration table, `.env.example`, `docs/deployment.md` settings reference |
+| An intent, bot permission or channel requirement | `README.md` Configuration (and auto-post section if relevant), `docs/deployment.md` Permissions |
+| A system dependency or pinned version (ffmpeg, deno, Python, uv) | `README.md` system dependencies, `Dockerfile.dev`, `docs/deployment.md`, and this file's yt-dlp gotchas (deno is pinned in several places: grep for the old version) |
+| Persisted data (new table/column/file) | `README.md` Data and storage, backup notes in `docs/deployment.md` |
+| A new or removed known gap / workaround | `README.md` Known limitations |
+| Module layout (new file, moved responsibility) | this file's Architecture list and the layout block in `README.md` |
+| A new script or workflow step | `README.md` Development |
+| Something only checkable in Discord | `docs/manual-checks.md` (not the README, not only `progress.txt`) |
+| Ops / deployment / troubleshooting only | `docs/deployment.md`; link to the README rather than repeating behaviour |
+
+Rules:
+- **Verify before writing.** Take numbers, formats and messages from the code (read the constant or string), not from memory, a PRD or an old PR description. If code and docs disagree, the code wins: fix the docs and say so in the commit.
+- **Remove what's gone.** When behaviour is removed or changed, delete or rewrite the old text; grep the docs for the old command name, constant or value.
+- **New command = new docs.** Add the command to the README commands table and a section covering parameters, accepted formats, cooldown/refund rules, reply visibility, errors and caveats. Also give it a clear Discord-side `description=` and parameter descriptions (the in-bot docs).
+- `CHANGELOG.md`: add one entry per feature/fix PR (newest first, under the merge date) when you write the PR, summarising what shipped and known follow-ups.
+- `docs/deployment.md` is ops only (Discord app, LXC, systemd, updates, troubleshooting). `docs/manual-checks.md` holds the Discord-only checklists per feature.
+- Keep README links and anchors working (headings are linked from `docs/` and the contents list); after editing, check that relative links resolve.
+- Docs-only changes may go straight to `main` (see Feature workflow); they still need `./scripts/check.sh` to pass when they touch `.env.example` or code.
 
 ## Commits
 Conventional Commits (`type: subject`), small and focused. Story ID goes in the body. Commits are authored as Sena Gomashie <40298891+SNGomashie@users.noreply.github.com> (repo-local git config; set it if missing). Commits made by Claude end with the `Co-Authored-By: Claude ...` trailer; PR descriptions end with the "Generated with Claude Code" line.
