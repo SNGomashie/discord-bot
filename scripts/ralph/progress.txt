@@ -104,3 +104,11 @@
 - Files: src/ninja_bot/sessions/slots.py, tests/test_session_slots.py, CLAUDE.md, README.md
 - **Learnings:** detect a nonexistent local time by round-tripping `datetime.fromtimestamp(local.timestamp(), tz)` and comparing naive wall clocks; zoneinfo's default fold=0 already gives the first occurrence of a repeated time.
 ---
+
+## 2026-10-11 - US-004
+- New sessions/scoring.py: `Vote` (StrEnum `yes`/`if_needed`/`no`, ready for storage), `SlotScore`, `score_slots`, `evaluate_round` -> `Fits(top)` | `NextRound` | `NoFit`, `pending_players`, `all_voted`; `MAX_ROUNDS` 6, `MAX_PLAYERS` 25, `MAX_TOP_SLOTS` 3. Slot ids are ints; "earliest" = lowest id (store must insert a round's slots in time order).
+- Tests: tests/test_session_scoring.py (unanimous, ranking/tie-break, min_players, GM No on best slot, GM missing vote, no fit with rounds left / at last round, strangers ignored, no players, "none of these" not pending, no discord import).
+- Docs: CLAUDE.md Architecture, README layout block (no user-visible behaviour yet).
+- Files: src/ninja_bot/sessions/scoring.py, tests/test_session_scoring.py, CLAUDE.md, README.md
+- **Learnings:** a GM with no vote on a slot makes it not fit (only Yes/If needed count).
+---
