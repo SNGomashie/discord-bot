@@ -29,7 +29,7 @@ class LinkStore(Protocol):
 
     async def remove(self, discord_id: int) -> bool: ...
 
-    # Used by the upcoming leaderboard and match poller.
+    # Used by /leaderboard and the match poller.
     async def all_links(self) -> dict[int, str]: ...
 
     async def discord_ids_for(self, steam64_ids: Collection[str]) -> dict[str, int]:
@@ -155,7 +155,6 @@ class SqliteLinkStore:
     async def remove(self, discord_id: int) -> bool:
         return await asyncio.to_thread(self._remove, discord_id)
 
-    # Used by the upcoming leaderboard and match poller.
     async def all_links(self) -> dict[int, str]:
         return await asyncio.to_thread(self._all_links)
 

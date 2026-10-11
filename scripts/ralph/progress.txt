@@ -115,3 +115,10 @@
 - Tests: tests/test_cs2_channels.py (all permissions, each missing one, thread with/without Send in Threads, text channel with only Send in Threads, voice, CategoryChannel, `me` != `channel.guild.me`).
 - Files: src/ninja_bot/cs2/channels.py, src/ninja_bot/cogs/cs2.py, tests/test_cs2_channels.py, tests/test_cs2_autopost.py, CLAUDE.md
 ---
+
+## 2026-10-11 - US-009
+- Removed stale "upcoming leaderboard and match poller" comments in cs2/store.py (one-line "Used by /leaderboard and the match poller." kept on the LinkStore protocol only).
+- config.py: replaced the "reserved / not built yet" comment on CS2_CHANNEL_ID/CS2_POLL_SECONDS with a short accurate one.
+- .env.example: CS2_CHANNEL_ID / CS2_POLL_SECONDS now describe the real auto-post behaviour (matches README/deployment.md wording).
+- Search left one hit (steam.py "17-digit numbers are reserved for SteamID64s"), which is still true and stays.
+- No behaviour change. Files: src/ninja_bot/cs2/store.py, src/ninja_bot/config.py, .env.example
