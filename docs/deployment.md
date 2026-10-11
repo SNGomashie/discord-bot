@@ -248,8 +248,8 @@ Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.
 | `GUILD_ID` | test server ID | unset | Required in dev. When set, commands sync to that server only |
 | `MAX_DURATION_SECONDS` | optional | optional | Longest video/clip `/download` accepts. Default `3600` |
 | `LEETIFY_API_KEY` | optional | recommended | Leetify public API key for `/link`, `/scoreboard`, `/profile` ([leetify.com/app/developer](https://leetify.com/app/developer)). Empty = requests go unauthenticated |
-| `CS2_CHANNEL_ID` | optional | optional | Reserved for automatic CS2 match posts; validated but not used yet |
-| `CS2_POLL_SECONDS` | optional | optional | Reserved for automatic CS2 match posts (poll interval). Default `300`; not used yet |
+| `CS2_CHANNEL_ID` | optional | optional | Channel for automatic CS2 match posts (new matches of linked players). Unset = no auto-posts. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
+| `CS2_POLL_SECONDS` | optional | optional | How often (seconds) to check Leetify for new matches when `CS2_CHANNEL_ID` is set. Default `300` |
 | `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`). Default `data` (relative to `WorkingDirectory`) |
 | `TEST_CHANNEL_ID` | optional | unused | In `.env.example` but not read by any code yet |
 

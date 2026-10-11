@@ -14,7 +14,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/cogs/`: one cog per feature, each with `async def setup(bot)`; register it in `EXTENSIONS` in bot.py.
 - `src/ninja_bot/cogs/media.py`: `/download` cog (thin wrapper; semaphore + `UserCooldown` from `media/cooldown.py`).
 - `src/ninja_bot/media/`: download feature logic — `models.py` (VideoInfo, parse_info, MediaError types), `planning.py` (validate_url, plan_download, format_selector), `clip.py` (Clip, parse_timestamp, parse_clip, resolve_clip, format_timestamp), `embed.py` (build_embed), `downloader.py` (Downloader Protocol, YtDlpDownloader — the only module importing yt_dlp).
-- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile` cog (thin wrapper; shared `UserCooldown`, `CachedStatsProvider(LeetifyClient)` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`).
+- `src/ninja_bot/cogs/cs2.py`: `/link`, `/unlink`, `/scoreboard`, `/profile`, `/leaderboard` cog (thin wrapper; shared `UserCooldown`, `CachedStatsProvider(LeetifyClient)` + `SqliteLinkStore` + `SteamCommunityResolver` built in `setup`) plus the auto-post `tasks.loop` (only with `CS2_CHANNEL_ID`; logic in `run_poll_cycle`, driven by `AutoPost(bot, MatchPoller, channel_id, poll_seconds)`).
 - `src/ninja_bot/cs2/`: CS2 feature logic (Leetify API):
   - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`, `newest_first` (the one newest-first sort).
   - `steam.py`: `parse_steam_target` (`SteamId` | `VanityName` from a SteamID64, `/profiles/` or `/id/` URL, or bare custom URL name; `is_vanity_name` is the one vanity check), `parse_steam_id` (ID-only wrapper for scripts).

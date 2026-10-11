@@ -10,12 +10,17 @@ from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.cache import CachedStatsProvider
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
-from ninja_bot.cs2.embed import build_leaderboard_embed, build_match_embed, build_profile_embed
+from ninja_bot.cs2.embed import (
+    build_announcement_embed,
+    build_leaderboard_embed,
+    build_match_embed,
+    build_profile_embed,
+)
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.identities import Identity, MemberLookup, resolve_identities
 from ninja_bot.cs2.models import (
@@ -26,6 +31,7 @@ from ninja_bot.cs2.models import (
     Profile,
     RateLimitedError,
 )
+from ninja_bot.cs2.poller import MatchPoller, NewMatch
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
 from ninja_bot.cs2.squad import Metric, SquadEntry, metric_label, rank_squad
 from ninja_bot.cs2.steam import (
@@ -56,6 +62,23 @@ MAX_LEADERBOARD_LINKS = 25
 ALL_PROFILES_FAILED_MESSAGE = (
     "Couldn't load any linked player's Leetify profile. Please try again later."
 )
+# Channel types auto-posts can go to (all have guild permissions and `send`).
+POST_CHANNEL_TYPES = (discord.TextChannel, discord.Thread, discord.VoiceChannel)
+type PostChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
+# Causes for a skipped auto-post cycle; each is logged once until the channel works again.
+CHANNEL_MISSING = "missing"
+CHANNEL_NOT_TEXT = "not a text channel"
+CHANNEL_NO_PERMISSIONS = "missing View Channel, Send Messages or Embed Links"
+
+
+@dataclass(frozen=True)
+class AutoPost:
+    """What the background auto-post loop needs; it only runs when `channel_id` is set."""
+
+    bot: commands.Bot
+    poller: MatchPoller
+    channel_id: int | None
+    poll_seconds: float
 
 
 @dataclass(frozen=True)
@@ -147,6 +170,7 @@ class Cs2(commands.Cog):
         link_cooldown: UserCooldown | None = None,
         resolver: SteamResolver | None = None,
         leaderboard_cooldown: UserCooldown | None = None,
+        auto_post: AutoPost | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -164,12 +188,101 @@ class Cs2(commands.Cog):
             if leaderboard_cooldown is not None
             else UserCooldown(LEADERBOARD_COOLDOWN_SECONDS)
         )
+        self.auto_post = auto_post
+        # Set after a Leetify rate limit so the next poll cycle is skipped once.
+        self._skip_next_poll = False
+        # Channel problems already logged, so a broken setup warns once instead of every cycle.
+        self._channel_warnings: set[str] = set()
+
+    async def cog_load(self) -> None:
+        if self.auto_post is None or self.auto_post.channel_id is None:
+            log.debug("CS2_CHANNEL_ID is not set; CS2 auto-posts are off")
+            return
+        self.poll_loop.change_interval(seconds=self.auto_post.poll_seconds)
+        self.poll_loop.start()
 
     async def cog_unload(self) -> None:
+        self.poll_loop.cancel()
         try:
             await self.stats.aclose()
         finally:
             await self.resolver.aclose()
+
+    @tasks.loop(seconds=300)
+    async def poll_loop(self) -> None:
+        await self.run_poll_cycle()
+
+    @poll_loop.before_loop
+    async def _before_poll_loop(self) -> None:
+        if self.auto_post is not None:
+            await self.auto_post.bot.wait_until_ready()
+
+    async def run_poll_cycle(self) -> None:
+        """Post new matches of linked players; never raises, so the loop keeps running."""
+        if self.auto_post is None or self.auto_post.channel_id is None:
+            return
+        if self._skip_next_poll:
+            self._skip_next_poll = False
+            log.info("Skipping a CS2 poll cycle after a Leetify rate limit")
+            return
+        try:
+            channel = await self._post_channel(self.auto_post.bot, self.auto_post.channel_id)
+            if channel is None:
+                return
+            for new_match in await self.auto_post.poller.poll():
+                await self._announce(channel, self.auto_post.poller, new_match)
+        except RateLimitedError:
+            log.info("Leetify rate limited the CS2 poll; skipping the next cycle")
+            self._skip_next_poll = True
+        except Exception:
+            log.exception("Unexpected error in a CS2 poll cycle")
+
+    async def _announce(
+        self, channel: PostChannel, poller: MatchPoller, new_match: NewMatch
+    ) -> None:
+        """Send one announcement; the match is confirmed even if the send failed."""
+        try:
+            match = new_match.match
+            identities = await self._match_identities_or_empty(channel.guild, match)
+            embed = build_announcement_embed(
+                match, compute_awards(match), new_match.squad, identities=identities
+            )
+            # Squad members are shown as mentions; render them, but never ping anyone.
+            await _send_safely(
+                channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            )
+        finally:
+            await poller.confirm(new_match)
+
+    async def _post_channel(self, bot: commands.Bot, channel_id: int) -> PostChannel | None:
+        """The auto-post channel, or None (warned once per cause) if it can't be used."""
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden):
+                self._warn_channel(CHANNEL_MISSING)
+                return None
+        if not isinstance(channel, POST_CHANNEL_TYPES):
+            self._warn_channel(CHANNEL_NOT_TEXT)
+            return None
+        permissions = channel.permissions_for(channel.guild.me)
+        can_send = (
+            permissions.send_messages_in_threads
+            if isinstance(channel, discord.Thread)
+            else permissions.send_messages
+        )
+        if not (permissions.view_channel and can_send and permissions.embed_links):
+            self._warn_channel(CHANNEL_NO_PERMISSIONS)
+            return None
+        self._channel_warnings.clear()
+        return channel
+
+    def _warn_channel(self, cause: str) -> None:
+        if cause in self._channel_warnings:
+            return
+        self._channel_warnings.add(cause)
+        log.warning("Not posting CS2 matches: the CS2_CHANNEL_ID channel is %s", cause)
 
     @app_commands.command(name="link", description="Link your Steam account for CS2 stats")
     @app_commands.describe(
@@ -365,7 +478,7 @@ class Cs2(commands.Cog):
         """Fetch and post the scoreboard; True only if the embed was posted."""
         try:
             match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
-            identities = await self._match_identities_or_empty(interaction, match)
+            identities = await self._match_identities_or_empty(interaction.guild, match)
             embed = build_match_embed(
                 match, compute_awards(match), steam64_id, profile, identities=identities
             )
@@ -471,20 +584,19 @@ class Cs2(commands.Cog):
         return await full_match(self.stats, matches[0])
 
     async def _match_identities(
-        self, interaction: discord.Interaction, match: Match
+        self, guild: discord.Guild | None, match: Match
     ) -> dict[str, Identity]:
         """Linked server members among the match players; empty outside a server."""
-        guild = interaction.guild
         if guild is None:
             return {}
         return await resolve_identities(match.players, self.links, member_lookup(guild))
 
     async def _match_identities_or_empty(
-        self, interaction: discord.Interaction, match: Match
+        self, guild: discord.Guild | None, match: Match
     ) -> dict[str, Identity]:
         """Names and mentions are extras, so a failure here never stops the scoreboard."""
         try:
-            return await self._match_identities(interaction, match)
+            return await self._match_identities(guild, match)
         except Exception:
             log.exception("Posting scoreboard without Discord names")
             return {}
@@ -511,6 +623,12 @@ class Cs2(commands.Cog):
 async def setup(bot: NinjaBot) -> None:
     client = CachedStatsProvider(LeetifyClient(bot.config.leetify_api_key))
     store = SqliteLinkStore(Path(bot.config.data_dir) / "cs2.sqlite3")
+    auto_post = AutoPost(
+        bot,
+        MatchPoller(client, store),
+        bot.config.cs2_channel_id,
+        bot.config.cs2_poll_seconds,
+    )
     await bot.add_cog(
         Cs2(
             client,
@@ -519,5 +637,6 @@ async def setup(bot: NinjaBot) -> None:
             UserCooldown(LINK_COOLDOWN_SECONDS),
             SteamCommunityResolver(),
             UserCooldown(LEADERBOARD_COOLDOWN_SECONDS),
+            auto_post,
         )
     )

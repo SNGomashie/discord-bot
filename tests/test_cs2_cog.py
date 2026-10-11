@@ -725,6 +725,30 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     assert isinstance(cog.resolver, SteamCommunityResolver)
     assert cog.leaderboard_cooldown.per_seconds == LEADERBOARD_COOLDOWN_SECONDS == 30
     assert cog.leaderboard_cooldown is not cog.cooldown
+    assert cog.auto_post is not None
+    assert cog.auto_post.bot is bot
+    assert cog.auto_post.channel_id is None
+    assert cog.auto_post.poll_seconds == 300
+    assert cog.auto_post.poller._provider is cog.stats
+    assert cog.auto_post.poller._store is cog.links
+
+
+async def test_setup_passes_channel_config(tmp_path: Path) -> None:
+    bot = MagicMock()
+    bot.config = load_config(
+        {
+            "DISCORD_TOKEN": "x",
+            "GUILD_ID": "1",
+            "DATA_DIR": str(tmp_path),
+            "CS2_CHANNEL_ID": "123",
+            "CS2_POLL_SECONDS": "90",
+        }
+    )
+    bot.add_cog = AsyncMock()
+    await cs2_cog.setup(bot)
+    cog = bot.add_cog.call_args.args[0]
+    assert cog.auto_post.channel_id == 123
+    assert cog.auto_post.poll_seconds == 90
 
 
 async def test_cog_unload_closes_client() -> None:
