@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
+from ninja_bot.cs2 import store as store_module
+from ninja_bot.cs2.store import LinkStore, MatchLog, SqliteLinkStore
 
 STEAM_A = "76561197960287930"
 STEAM_B = "76561198000000001"
@@ -149,3 +151,138 @@ async def test_discord_ids_for_binds_hostile_ids_as_parameters(tmp_path: Path) -
     assert await store.discord_ids_for(["1' OR '1'='1"]) == {}
     assert await store.discord_ids_for([hostile, '") OR 1=1 --']) == {hostile: 2}
     assert await store.all_links() == {1: STEAM_A, 2: hostile}
+
+
+def test_sqlite_store_satisfies_match_log(tmp_path: Path) -> None:
+    log: MatchLog = _store(tmp_path)
+    assert isinstance(log, SqliteLinkStore)
+
+
+async def test_seeded_flag_round_trip(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert await store.is_seeded(STEAM_A) is False
+    await store.mark_seeded(STEAM_A)
+    await store.mark_seeded(STEAM_A)
+    assert await store.is_seeded(STEAM_A) is True
+    assert await store.is_seeded(STEAM_B) is False
+
+
+async def test_removed_link_keeps_seeded_flag(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.set(1, STEAM_A)
+    await store.mark_seeded(STEAM_A)
+    assert await store.remove(1) is True
+    assert await store.is_seeded(STEAM_A) is True
+
+
+async def test_filter_unposted_keeps_input_order(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.mark_posted(["b", "d"])
+    assert await store.filter_unposted(["e", "d", "c", "b", "a"]) == ["e", "c", "a"]
+    assert await store.filter_unposted(["b", "d"]) == []
+
+
+async def test_filter_unposted_empty_input_runs_no_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def recorder(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no query expected")
+
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    path = tmp_path / "links.sqlite3"
+    store = SqliteLinkStore(path)
+    assert await store.filter_unposted([]) == []
+    await store.mark_posted([])
+    assert not _exists(path)
+
+
+async def test_filter_unposted_more_than_one_chunk(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    ids = [f"match-{n}" for n in range(1200)]
+    await store.mark_posted([ids[n] for n in (0, 499, 500, 501, 1199)])
+    unposted = await store.filter_unposted(ids)
+    assert unposted == [m for n, m in enumerate(ids) if n not in (0, 499, 500, 501, 1199)]
+
+
+async def test_mark_posted_is_idempotent(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.mark_posted(["a", "a"])
+    await store.mark_posted(["a"])
+    assert await store.filter_unposted(["a", "b"]) == ["b"]
+    assert _posted_count(tmp_path / "links.sqlite3") == 1
+
+
+async def test_mark_posted_prunes_to_newest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store_module, "MAX_POSTED_MATCHES", 3)
+    clock = iter([100.0, 200.0, 300.0])
+    monkeypatch.setattr(store_module.time, "time", lambda: next(clock))
+    store = _store(tmp_path)
+    await store.mark_posted(["a", "b"])
+    await store.mark_posted(["c"])
+    assert _posted_count(tmp_path / "links.sqlite3") == 3
+    await store.mark_posted(["d", "e"])
+    assert _posted_count(tmp_path / "links.sqlite3") == 3
+    assert await store.filter_unposted(["a", "b", "c", "d", "e"]) == ["a", "b"]
+
+
+async def test_match_log_survives_new_instance(tmp_path: Path) -> None:
+    first = _store(tmp_path)
+    await first.mark_seeded(STEAM_A)
+    await first.mark_posted(["a"])
+    second = _store(tmp_path)
+    assert await second.is_seeded(STEAM_A) is True
+    assert await second.filter_unposted(["a", "b"]) == ["b"]
+
+
+async def test_old_database_with_only_links_upgrades(tmp_path: Path) -> None:
+    path = tmp_path / "links.sqlite3"
+    _create_old_database(path)
+    store = SqliteLinkStore(path)
+    assert await store.all_links() == {1: STEAM_A}
+    assert await store.is_seeded(STEAM_A) is False
+    await store.mark_seeded(STEAM_A)
+    await store.mark_posted(["a"])
+    assert await store.filter_unposted(["a", "b"]) == ["b"]
+    assert await store.get(1) == STEAM_A
+
+
+async def test_match_log_calls_run_in_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def recorder(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        calls.append(func.__name__)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    store = _store(tmp_path)
+    await store.mark_seeded(STEAM_A)
+    await store.is_seeded(STEAM_A)
+    await store.mark_posted(["a"])
+    await store.filter_unposted(["a"])
+    assert calls == ["_mark_seeded", "_is_seeded", "_mark_posted", "_posted_ids"]
+
+
+def _create_old_database(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        with conn:
+            conn.execute(
+                "CREATE TABLE links (discord_id INTEGER PRIMARY KEY, steam64_id TEXT NOT NULL)"
+            )
+            conn.execute("INSERT INTO links VALUES (1, ?)", (STEAM_A,))
+    finally:
+        conn.close()
+
+
+def _posted_count(path: Path) -> int:
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM posted_matches").fetchone()
+    finally:
+        conn.close()
+    return int(row[0])

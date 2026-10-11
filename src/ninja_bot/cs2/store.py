@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Collection
+import time
+from collections.abc import Collection, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Protocol
 
 _SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS links (discord_id INTEGER PRIMARY KEY, steam64_id TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS links (discord_id INTEGER PRIMARY KEY, steam64_id TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS posted_matches"
+    " (match_id TEXT PRIMARY KEY, posted_at REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS seeded_players (steam64_id TEXT PRIMARY KEY)",
 )
 
 # Stays well below SQLite's bound-parameter limit (999 on old builds).
 IN_CHUNK_SIZE = 500
+
+# Posted match IDs kept for duplicate checks; older ones are pruned.
+MAX_POSTED_MATCHES = 500
 
 
 class LinkStore(Protocol):
@@ -30,8 +37,22 @@ class LinkStore(Protocol):
         ...
 
 
+class MatchLog(Protocol):
+    """Which players were seeded and which matches were already announced."""
+
+    async def is_seeded(self, steam64_id: str) -> bool: ...
+
+    async def mark_seeded(self, steam64_id: str) -> None: ...
+
+    async def filter_unposted(self, match_ids: Sequence[str]) -> list[str]:
+        """The IDs not posted yet, in input order."""
+        ...
+
+    async def mark_posted(self, match_ids: Sequence[str]) -> None: ...
+
+
 class SqliteLinkStore:
-    """Discord ID -> Steam64 ID links in a SQLite file; all disk work runs in a thread."""
+    """Links, posted matches and seeded players in one SQLite file; disk work runs in a thread."""
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
@@ -43,7 +64,8 @@ class SqliteLinkStore:
         conn = sqlite3.connect(self._path)
         if not self._ready:
             with conn:
-                conn.execute(_SCHEMA)
+                for statement in _SCHEMA:
+                    conn.execute(statement)
             self._ready = True
         return conn
 
@@ -85,6 +107,45 @@ class SqliteLinkStore:
                 result.update({str(steam64_id): int(discord_id) for steam64_id, discord_id in rows})
         return result
 
+    def _is_seeded(self, steam64_id: str) -> bool:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM seeded_players WHERE steam64_id = ?", (steam64_id,)
+            ).fetchone()
+        return row is not None
+
+    def _mark_seeded(self, steam64_id: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO seeded_players (steam64_id) VALUES (?)", (steam64_id,)
+            )
+
+    def _posted_ids(self, match_ids: list[str]) -> set[str]:
+        posted: set[str] = set()
+        with closing(self._connect()) as conn:
+            for start in range(0, len(match_ids), IN_CHUNK_SIZE):
+                chunk = match_ids[start : start + IN_CHUNK_SIZE]
+                placeholders = ", ".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT match_id FROM posted_matches WHERE match_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                posted.update(str(match_id) for (match_id,) in rows)
+        return posted
+
+    def _mark_posted(self, match_ids: list[str]) -> None:
+        now = time.time()
+        with closing(self._connect()) as conn, conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO posted_matches (match_id, posted_at) VALUES (?, ?)",
+                [(match_id, now) for match_id in match_ids],
+            )
+            conn.execute(
+                "DELETE FROM posted_matches WHERE rowid NOT IN"
+                " (SELECT rowid FROM posted_matches ORDER BY posted_at DESC, rowid DESC LIMIT ?)",
+                (MAX_POSTED_MATCHES,),
+            )
+
     async def get(self, discord_id: int) -> str | None:
         return await asyncio.to_thread(self._get, discord_id)
 
@@ -103,3 +164,20 @@ class SqliteLinkStore:
         if not unique:
             return {}
         return await asyncio.to_thread(self._discord_ids_for, unique)
+
+    async def is_seeded(self, steam64_id: str) -> bool:
+        return await asyncio.to_thread(self._is_seeded, steam64_id)
+
+    async def mark_seeded(self, steam64_id: str) -> None:
+        await asyncio.to_thread(self._mark_seeded, steam64_id)
+
+    async def filter_unposted(self, match_ids: Sequence[str]) -> list[str]:
+        if not match_ids:
+            return []
+        posted = await asyncio.to_thread(self._posted_ids, sorted(set(match_ids)))
+        return [match_id for match_id in match_ids if match_id not in posted]
+
+    async def mark_posted(self, match_ids: Sequence[str]) -> None:
+        if not match_ids:
+            return
+        await asyncio.to_thread(self._mark_posted, list(match_ids))
