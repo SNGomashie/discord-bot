@@ -62,3 +62,11 @@
 - Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py.
 - Needs manual check: `/link` with a real custom URL and bare name in the test server (resolver hits the real steamcommunity.com).
 ---
+
+## 2026-10-11 - US-004
+- README `/link` lists all four accepted inputs, says custom URL names are resolved via Steam's public profile page (no API key) and that the reply shows the resolved ID; the already-linked note now says the no-cooldown shortcut is for ID input only. Manual checks added: custom URL, bare name, non-existent name, relink by name; the old "vanity URL → hint" check is gone.
+- docs/deployment.md: LXC network needs outbound HTTPS to the Leetify API host and steamcommunity.com; troubleshooting row for "Steam couldn't be reached" (network / outage / rate limiting; workaround: 17-digit ID).
+- CLAUDE.md architecture: `parse_steam_target` in steam.py, new `resolver.py` entry, resolver built in the cog's `setup`.
+- Files: README.md, docs/deployment.md, CLAUDE.md.
+- Needs manual check: the README /link checklist items against the dev bot (real steamcommunity.com lookups).
+---

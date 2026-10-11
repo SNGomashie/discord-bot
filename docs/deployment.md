@@ -102,7 +102,7 @@ In dev the commands are synced to `GUILD_ID` on every start, so changes show up 
 
 ## 3. Production (Debian 13 LXC on Proxmox)
 
-Suggested container: unprivileged Debian 13, 1 vCPU, 1 GiB RAM, 8 GiB disk with a few GiB free (downloads and remuxes use temp space), network access to Discord and the video sites. Nothing needs to listen on a port, the bot only makes outbound connections.
+Suggested container: unprivileged Debian 13, 1 vCPU, 1 GiB RAM, 8 GiB disk with a few GiB free (downloads and remuxes use temp space), network access to Discord and the video sites, plus outbound HTTPS to the Leetify API (`api-public.cs-prod.leetify.com`) and `steamcommunity.com` (custom URL lookups in `/link`). Nothing needs to listen on a port, the bot only makes outbound connections.
 
 ### 3.1 Packages and a service user
 
@@ -267,6 +267,7 @@ Read from the environment (and `.env`). See [config.py](../src/ninja_bot/config.
 | "The application did not respond" | The bot is offline or crashed. Check `systemctl status ninja-bot` and `journalctl -u ninja-bot` |
 | `/download` fails with `HTTP Error 403` on YouTube | deno missing or not on the service's `PATH` (`/usr/local/bin`), or yt-dlp is outdated. Run `yt-dlp -v -F <url>` and look for `JS runtimes:` |
 | `ffmpeg not found` | `apt install ffmpeg` in the container |
+| `/link` by custom URL name says "Steam couldn't be reached" (logs: `Steam vanity lookup ...`) | The container can't reach `steamcommunity.com` over HTTPS, Steam is down, or Steam is rate limiting the lookups (the profile XML endpoint is unofficial). Check outbound access with `curl -sI https://steamcommunity.com`; meanwhile link with the 17-digit SteamID64, which skips the lookup |
 | "Too large" for videos that should fit | The upload limit is the server's (10 MiB by default). A shorter clip, a lower quality, or a boosted server fixes it |
 | Replies work but files are not attached | Check the bot's channel permission overrides for **Attach Files** and the server's upload limit |
 | Disk fills up | Temporary download folders are removed after each request. If the bot is killed mid-download, a leftover `ninja-dl-*` folder can remain; with `PrivateTmp=true` it is cleared when the service stops or restarts |
