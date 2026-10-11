@@ -521,3 +521,17 @@ async def test_should_auto_close_reasons(tmp_path: Path) -> None:
     assert should_auto_close(no_deadline, [GM], slot_ids, {}, start + 10**7) is None
     closed = replace(poll, status=STATUS_AWAITING_CONFIRM)
     assert should_auto_close(closed, players, slot_ids, votes, start + 86_400) is None
+
+
+async def test_lone_gm_vote_does_not_auto_close(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, round_hours=24)
+    a, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], ())
+    players = await svc.store.players(poll.id)
+    assert players == [GM]
+    votes = await svc.store.votes(poll.id, poll.round_number)
+    start = poll.round_started_at
+    assert should_auto_close(poll, players, [a], votes, start) is None
+    assert should_auto_close(poll, players, [a], votes, start + 86_400) == "deadline"
+    assert isinstance(await svc.close_round(poll.id, GM, False, "manual"), RoundFits)

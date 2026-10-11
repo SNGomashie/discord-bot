@@ -12,6 +12,8 @@ MAX_ROUNDS = 6
 MAX_PLAYERS = 25
 # Most fitting slots shown when a round finds a date.
 MAX_TOP_SLOTS = 3
+# Fewest joined players (the GM and one more) before "everyone voted" closes a round.
+MIN_PLAYERS_TO_AUTO_CLOSE = 2
 
 
 class Vote(StrEnum):
@@ -108,4 +110,11 @@ def pending_players(
 
 
 def all_voted(players: Sequence[int], round_slot_ids: Sequence[int], votes: Votes) -> bool:
-    return bool(players) and not pending_players(players, round_slot_ids, votes)
+    """Every joined player voted, with at least `MIN_PLAYERS_TO_AUTO_CLOSE` joined.
+
+    The GM is auto-joined, so without the minimum the GM's own vote would close
+    (and burn) the round before anyone else could join.
+    """
+    return len(players) >= MIN_PLAYERS_TO_AUTO_CLOSE and not pending_players(
+        players, round_slot_ids, votes
+    )

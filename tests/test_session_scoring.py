@@ -7,6 +7,7 @@ from ninja_bot.sessions import scoring
 from ninja_bot.sessions.scoring import (
     MAX_PLAYERS,
     MAX_ROUNDS,
+    MIN_PLAYERS_TO_AUTO_CLOSE,
     Fits,
     NextRound,
     NoFit,
@@ -135,7 +136,15 @@ def test_pending_players_and_all_voted() -> None:
 def test_none_of_these_is_not_pending() -> None:
     votes = _votes({1: [N, N, N]}, [10, 20, 30])
     assert pending_players([1], [10, 20, 30], votes) == []
-    assert all_voted([1], [10, 20, 30], votes)
+    assert all_voted([1, 2], [10, 20, 30], {**votes, **_votes({2: [Y, N, N]}, [10, 20, 30])})
+
+
+def test_lone_gm_vote_is_not_all_voted() -> None:
+    assert MIN_PLAYERS_TO_AUTO_CLOSE == 2
+    votes = _votes({GM: [Y]}, [10])
+    assert pending_players([GM], [10], votes) == []
+    assert not all_voted([GM], [10], votes)
+    assert all_voted([GM, 2], [10], {**votes, **_votes({2: [N]}, [10])})
 
 
 def test_votes_from_other_rounds_do_not_count() -> None:
