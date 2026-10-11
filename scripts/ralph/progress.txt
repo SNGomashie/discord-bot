@@ -52,9 +52,15 @@
 - CS2 /scoreboard identities: `_scoreboard_deferred` calls `_match_identities_or_empty` after the fetch (any exception -> logged, `{}`). Cog test `make_interaction()` has `guild = None` (a MagicMock guild would yield MagicMock display names); attach `FakeGuild(members)` via `guild_interaction(...)` in tests/test_cs2_cog.py for member lookups.
 - Squad (tasks/prd-cs2-squad.md): `full_match(provider, match)` (cs2/client.py) must be applied to history entries before announcing; `resolve_identities` (cs2/identities.py) gives Discord display names for tables. Auto-posts are normal channel messages (not interaction replies): always `allowed_mentions=discord.AllowedMentions.none()`, and a post is confirmed (marked posted) after the send attempt even when it fails, so a broken post is never retried forever.
 - CS2 match log (cs2/store.py): `MatchLog` Protocol is implemented by `SqliteLinkStore` in the same file (`posted_matches`, `seeded_players`; `_SCHEMA` is a tuple of `CREATE TABLE IF NOT EXISTS` statements run on first connect, so old link-only DBs upgrade). `filter_unposted`/`mark_posted` skip the thread for empty input; `mark_posted` is `INSERT OR IGNORE` (keeps the first posted_at) then prunes to `MAX_POSTED_MATCHES` (read at call time; tests monkeypatch it and `store_module.time.time`) ordered by posted_at, rowid. `remove` never touches `seeded_players`.
+- CS2 trends (cs2/squad.py): `compute_trend(recent)` windows are by match position (`recent[:5]` vs `recent[5:10]`), unrated matches are dropped per window (need `MIN_WINDOW_RATINGS` 3). Direction thresholds compare with a 1e-9 epsilon so float noise at exactly ±0.01 still counts. Streak: ties/unknown break it; newest tie/unknown -> (None, 0). `format_trend` reuses `format_rating` for the delta; flat shows only `→`.
 
 ## 2026-10-11 - US-001
 - Added `MatchLog` Protocol + `SqliteLinkStore` implementation (`is_seeded`, `mark_seeded`, `filter_unposted`, `mark_posted` with pruning to `MAX_POSTED_MATCHES` = 500).
 - Files: src/ninja_bot/cs2/store.py, tests/test_cs2_store.py
 - Learnings: batch inserts share one `posted_at`, so pruning breaks ties by rowid (later insert = newer).
 ---
+
+## 2026-10-11 - US-002
+- Added `cs2/squad.py`: frozen `Trend(direction, delta, streak_kind, streak_length)`, `compute_trend`, `format_trend` (constants TREND_WINDOW, MIN_WINDOW_RATINGS, TREND_THRESHOLD, MIN_SHOWN_STREAK).
+- Tests: tests/test_cs2_squad.py (directions, boundaries, short/too-short histories, missing ratings, streaks, formatting).
+- Learnings: delta boundaries need an epsilon (0.05 - 0.04 != 0.01 in floats).
