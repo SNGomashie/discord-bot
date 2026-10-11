@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -925,8 +926,10 @@ async def test_button_callback_without_the_cog_is_stale() -> None:
 
 
 async def test_cog_registers_the_dynamic_button(cog: Sessions) -> None:
+    cog.bot.wait_until_ready = AsyncMock(side_effect=asyncio.Event().wait)  # type: ignore[attr-defined]
     await cog.cog_load()
     cog.bot.add_dynamic_items.assert_called_once_with(PollButton)  # type: ignore[attr-defined]
+    await cog.cog_unload()
 
 
 def test_only_views_imports_discord_ui() -> None:

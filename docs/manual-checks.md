@@ -135,6 +135,12 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] With no fitting slot, Close round posts round 2 as a new poll message (buttons work), pinging only players who didn't vote; the old message has no buttons
 - [ ] Confirm by a player is refused privately; Confirm by the GM edits the result to "Confirmed" and posts the session embed, pinging the roster; a second Confirm click is refused privately
 - [ ] Restart the bot mid-poll (while voting, and again while awaiting Confirm): Vote, Close round and Confirm still work afterwards
+- [ ] Deadline: start a poll with `round_hours:1`, leave a player without a vote; about an hour later (checked every minute) the round closes by itself and the outcome is posted
+- [ ] Reminders: confirm a session, then move its start close to now so the reminders fall due (stop the bot first; `<id>` is the session id, `start`/`end` are Unix seconds):
+  `sqlite3 data/sessions.sqlite3 "UPDATE sessions SET start = strftime('%s','now') + 86280, \"end\" = strftime('%s','now') + 100680 WHERE id = <id>;"`
+  (SQLite evaluates every `SET` against the old row, so set `"end"` explicitly, not as `start + ...`.) Start the bot: within a minute or two the 24 h reminder pings the roster (once, also after another restart). Then use `+ 3480` / `+ 17880` and check the 1 h reminder. Setting the start to 30 minutes ahead before any reminder was sent posts only one reminder.
+- [ ] Nudges: with a voting poll and a player who hasn't voted, backdate the round (`sqlite3 data/sessions.sqlite3 "UPDATE polls SET round_started_at = round_started_at - 86400 WHERE id = <id>;"`, bot stopped): after a restart the bot replies to the poll message pinging only that player; no second nudge within 24 h
+- [ ] Delete the channel of a poll with a due reminder: the bot logs one warning and keeps running
 
 ## /help
 

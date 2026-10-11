@@ -120,3 +120,7 @@ CHANNEL_PROBLEM_MESSAGE = (
 POLL_COOLDOWN_MESSAGE = "Slow down! You can start another session poll in {seconds} {unit}."
 STALE_BUTTON_MESSAGE = "This button doesn't work any more."
 GENERIC_ERROR_MESSAGE = "Something went wrong with the session poll. Please try again later."
+
+# Background reminders and nudges (cog). `{players}` are mentions of who gets pinged.
+REMINDER_MESSAGE = "⏰ {players} **{name}** starts {start}!"
+NUDGE_MESSAGE = "👋 {players} please vote in **{name}** (round {round})."

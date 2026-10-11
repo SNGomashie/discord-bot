@@ -10,11 +10,12 @@ from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from ninja_bot.cs2.channels import channel_problem
+from ninja_bot.cs2.channels import PostChannel, channel_problem
+from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.media.cooldown import UserCooldown
-from ninja_bot.posting import send_safely
+from ninja_bot.posting import PostChannelResolver, send_safely
 from ninja_bot.sessions import content
 from ninja_bot.sessions.embed import (
     build_next_round_embed,
@@ -26,6 +27,7 @@ from ninja_bot.sessions.embed import (
     mention,
     timestamp,
 )
+from ninja_bot.sessions.reminders import SessionNotifier
 from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote, pending_players, score_slots
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
@@ -66,6 +68,10 @@ log = logging.getLogger(__name__)
 POLL_COOLDOWN_SECONDS = 30.0
 # Longer than any `YYYY-MM-DD` (with spaces); longer input is rejected by Discord.
 MAX_START_LENGTH = 20
+# How often the background loop closes due rounds and sends reminders and nudges.
+NOTIFY_CHECK_SECONDS = 60
+# `{channel_id}` is filled in per channel; `%s` is the channel problem.
+POST_WARNING = "Can't post session poll messages in channel {channel_id}: %s"
 
 
 def cooldown_message(retry_after: float) -> str:
@@ -101,18 +107,120 @@ class Sessions(commands.Cog):
         bot: commands.Bot,
         service: SessionService,
         cooldown: UserCooldown | None = None,
+        notifier: SessionNotifier | None = None,
     ) -> None:
         self.bot = bot
         self.service = service
         # /session_poll; refunded unless a poll message was posted.
         self.cooldown = cooldown if cooldown is not None else UserCooldown(POLL_COOLDOWN_SECONDS)
+        self.notifier = (
+            notifier if notifier is not None else SessionNotifier(service.store, service.clock)
+        )
+        # One resolver per poll/session channel, so a broken channel warns once per cause.
+        self._channels: dict[int, PostChannelResolver] = {}
 
     async def cog_load(self) -> None:
         # Poll buttons carry their state in the custom_id, so they survive restarts.
         self.bot.add_dynamic_items(PollButton)
+        self.notify_loop.start()
 
     async def cog_unload(self) -> None:
+        self.notify_loop.cancel()
         self.bot.remove_dynamic_items(PollButton)
+
+    @tasks.loop(seconds=NOTIFY_CHECK_SECONDS)
+    async def notify_loop(self) -> None:
+        await self.run_notify_cycle()
+
+    @notify_loop.before_loop
+    async def _before_notify_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def run_notify_cycle(self) -> None:
+        """Close due rounds, then post reminders and nudges; never raises."""
+        for step in (self._close_due_rounds, self._post_reminders, self._post_nudges):
+            try:
+                await step()
+            except Exception:
+                log.exception("Unexpected error in a session poll notify cycle")
+
+    async def _channel(self, channel_id: int) -> PostChannel | None:
+        """The usable channel, or None (warned once per cause) to skip the post this cycle."""
+        resolver = self._channels.get(channel_id)
+        if resolver is None:
+            resolver = PostChannelResolver(
+                self.bot, POST_WARNING.format(channel_id=channel_id), channel_id
+            )
+            self._channels[channel_id] = resolver
+        return await resolver.resolve()
+
+    async def _close_due_rounds(self) -> None:
+        """Close rounds past their deadline (or fully voted) and post the outcome."""
+        now = self.service.clock()
+        for poll in await self.service.store.voting_polls():
+            try:
+                players, slots, votes = await self.service.round_state(poll)
+                reason = should_auto_close(poll, players, [slot.id for slot in slots], votes, now)
+                # A broken channel leaves the round open until the outcome can be posted.
+                if reason is None or await self._channel(poll.channel_id) is None:
+                    continue
+                await self.close_and_post(poll.id, reason)
+            except Exception:
+                log.exception("Could not auto-close the round of session poll %d", poll.id)
+
+    async def _post_reminders(self) -> None:
+        """Ping the roster before a session; marked sent after every send attempt."""
+        for session, offset in await self.notifier.due_reminders():
+            channel = await self._channel(session.channel_id)
+            if channel is None:
+                continue
+            roster = list(session.roster)
+            try:
+                await send_safely(
+                    channel.send(
+                        content=content.REMINDER_MESSAGE.format(
+                            players=", ".join(mention(user_id) for user_id in roster),
+                            name=escape_name(session.name, MAX_NAME_LENGTH),
+                            start=timestamp(session.start, "R"),
+                        ),
+                        embed=build_session_embed(session),
+                        allowed_mentions=_pinging(roster),
+                    ),
+                    "session reminder",
+                )
+            finally:
+                await self.notifier.confirm_reminder(session.id, offset)
+
+    async def _post_nudges(self) -> None:
+        """Reply to the poll message pinging who hasn't voted; counted after every attempt."""
+        for poll, pending in await self.notifier.due_nudges():
+            channel = await self._channel(poll.channel_id)
+            if channel is None:
+                continue
+            kwargs: dict[str, Any] = {}
+            if poll.message_id is not None:
+                # Still sent (as a plain message) if the poll message was deleted.
+                kwargs["reference"] = discord.MessageReference(
+                    message_id=poll.message_id,
+                    channel_id=poll.channel_id,
+                    guild_id=poll.guild_id,
+                    fail_if_not_exists=False,
+                )
+            try:
+                await send_safely(
+                    channel.send(
+                        content=content.NUDGE_MESSAGE.format(
+                            players=", ".join(mention(user_id) for user_id in pending),
+                            name=escape_name(poll.name, MAX_NAME_LENGTH),
+                            round=poll.round_number,
+                        ),
+                        allowed_mentions=_pinging(pending),
+                        **kwargs,
+                    ),
+                    "session poll nudge",
+                )
+            finally:
+                await self.notifier.confirm_nudge(poll.id, poll.round_number)
 
     @app_commands.command(
         name="session_poll", description="Start a poll to find a date for a game session"
