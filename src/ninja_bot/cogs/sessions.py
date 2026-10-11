@@ -41,6 +41,7 @@ from ninja_bot.sessions.service import (
     JoinResult,
     NoPrefill,
     NotAllowed,
+    NotReady,
     NotVoting,
     RoundAdvanced,
     RoundFailed,
@@ -693,10 +694,11 @@ class Sessions(commands.Cog):
     ) -> RoundOutcome:
         """Close the round via the service and post its outcome in the poll's channel.
 
-        `NotVoting` / `NotAllowed` post nothing (a double click or a lost race).
+        `NotVoting` / `NotAllowed` / `NotReady` post nothing (a double click, a lost race or
+        a round that changed since its reason was checked).
         """
         outcome = await self.service.close_round(poll_id, by_user_id, is_manager, reason)
-        if not isinstance(outcome, NotVoting | NotAllowed):
+        if not isinstance(outcome, NotVoting | NotAllowed | NotReady):
             await self.post_outcome(outcome)
         return outcome
 
@@ -762,7 +764,8 @@ class Sessions(commands.Cog):
         )
         if isinstance(outcome, NotAllowed):
             message = content.NOT_ALLOWED_MESSAGE
-        elif isinstance(outcome, NotVoting):
+        elif isinstance(outcome, NotVoting | NotReady):
+            # A manual close never gives `NotReady`; it is handled for completeness.
             message = (
                 content.STALE_BUTTON_MESSAGE
                 if outcome.poll is None

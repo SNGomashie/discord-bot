@@ -160,7 +160,15 @@ class NotAllowed:
     poll: Poll
 
 
-RoundOutcome = RoundFits | RoundAdvanced | RoundFailed | NotVoting | NotAllowed
+@dataclass(frozen=True)
+class NotReady:
+    """An automatic close whose reason no longer holds (e.g. a player joined); the round
+    stays open."""
+
+    poll: Poll
+
+
+RoundOutcome = RoundFits | RoundAdvanced | RoundFailed | NotVoting | NotAllowed | NotReady
 
 
 def should_auto_close(
@@ -364,7 +372,8 @@ class SessionService:
     ) -> RoundOutcome:
         """Evaluate the current round once: confirm candidates, a next round or a failure.
 
-        Only a manual close checks permissions (GM or manager).
+        Only a manual close checks permissions (GM or manager); an automatic close
+        re-checks its reason here, since the round may have changed since the caller looked.
         """
         async with self._lock:
             poll = await self._voting_poll(poll_id)
@@ -374,6 +383,10 @@ class SessionService:
                 return NotAllowed(poll)
             players, slots, votes = await self.round_state(poll)
             slot_ids = [slot.id for slot in slots]
+            if reason != "manual" and (
+                should_auto_close(poll, players, slot_ids, votes, self.clock()) is None
+            ):
+                return NotReady(poll)
             pending = tuple(pending_players(players, slot_ids, votes))
             result = _evaluate(poll, players, slot_ids, votes)
             if isinstance(result, Fits):

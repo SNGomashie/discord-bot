@@ -30,6 +30,7 @@ from ninja_bot.sessions.service import (
     VOTE_MESSAGES,
     JoinResult,
     NoPrefill,
+    NotReady,
     RoundAdvanced,
     RoundFailed,
     RoundFits,
@@ -606,6 +607,20 @@ async def test_advance_if_ready_closes_once_everyone_voted(
     assert await cog.advance_if_ready(poll_id) is None
     assert await cog.advance_if_ready(9999) is None
     send.assert_awaited_once()
+
+
+async def test_auto_close_that_is_no_longer_ready_posts_nothing(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    await cog.handle_join(make_interaction(user_id=PLAYER), poll_id)
+    send, edit = channel_mocks(cog)
+    for reason in ("all_voted", "deadline"):
+        outcome = await cog.close_and_post(poll_id, reason)  # type: ignore[arg-type]
+        assert isinstance(outcome, NotReady)
+    send.assert_not_awaited()
+    edit.assert_not_awaited()
+    assert (await store.get_poll(poll_id)).status == STATUS_VOTING  # type: ignore[union-attr]
 
 
 async def test_advance_if_ready_errors_give_none(

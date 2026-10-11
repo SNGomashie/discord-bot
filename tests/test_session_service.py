@@ -21,6 +21,7 @@ from ninja_bot.sessions.service import (
     JoinResult,
     NoPrefill,
     NotAllowed,
+    NotReady,
     NotVoting,
     Prefiller,
     RoundAdvanced,
@@ -335,7 +336,7 @@ async def test_close_round_advances_to_next_window(tmp_path: Path) -> None:
     poll, slot_ids = await _three_players(svc)
     await svc.submit_vote(poll.id, GM, slot_ids, ())
     await svc.submit_vote(poll.id, PLAYER, (), ())
-    outcome = await svc.close_round(poll.id, 0, False, "deadline")
+    outcome = await svc.close_round(poll.id, GM, False, "manual")
     assert isinstance(outcome, RoundAdvanced)
     assert outcome.poll.status == STATUS_VOTING
     assert outcome.poll.round_number == 2
@@ -397,7 +398,9 @@ async def test_manual_close_permissions(tmp_path: Path) -> None:
     assert (await svc.store.get_poll(poll.id)).status == STATUS_VOTING  # type: ignore[union-attr]
     assert isinstance(await svc.close_round(poll.id, PLAYER, True, "manual"), RoundAdvanced)
     # Automatic closes skip the check.
-    assert isinstance(await svc.close_round(poll.id, PLAYER, False, "deadline"), RoundAdvanced)
+    for user in (GM, PLAYER, OTHER):
+        await svc.submit_vote(poll.id, user, (), ())
+    assert isinstance(await svc.close_round(poll.id, PLAYER, False, "all_voted"), RoundAdvanced)
 
 
 async def test_confirm_builds_roster_from_yes_and_if_needed(tmp_path: Path) -> None:
@@ -478,7 +481,7 @@ async def test_cancel_session_permissions(tmp_path: Path) -> None:
     poll = await _create(svc)
     a, *_ = await _slot_ids(svc, poll)
     await svc.submit_vote(poll.id, GM, [a], ())
-    assert isinstance(await svc.close_round(poll.id, GM, False, "all_voted"), RoundFits)
+    assert isinstance(await svc.close_round(poll.id, GM, False, "manual"), RoundFits)
     session = await svc.confirm(poll.id, a, GM, False)
     with pytest.raises(SessionRefused) as not_gm:
         await svc.cancel_session(session.id, PLAYER, False)
@@ -497,7 +500,7 @@ async def test_cancel_started_session_is_refused(tmp_path: Path) -> None:
     poll = await _create(svc)
     a, *_ = await _slot_ids(svc, poll)
     await svc.submit_vote(poll.id, GM, [a], ())
-    await svc.close_round(poll.id, GM, False, "all_voted")
+    await svc.close_round(poll.id, GM, False, "manual")
     session = await svc.confirm(poll.id, a, GM, False)
     svc.clock.now = session.start  # type: ignore[attr-defined]
     with pytest.raises(SessionRefused):
@@ -623,3 +626,50 @@ async def test_join_after_a_close_is_refused(tmp_path: Path) -> None:
     assert isinstance(await close, RoundFits)
     assert await join == JoinResult.POLL_CLOSED
     assert await svc.store.players(poll.id) == [GM]
+
+
+class JoiningStore(SqliteSessionStore):
+    """Joins `OTHER` on the next `get_poll`: a player who joins after the caller's
+    unlocked readiness check, before the locked close reads the round."""
+
+    join_next = False
+
+    async def get_poll(self, poll_id: int) -> Poll | None:
+        if self.join_next:
+            self.join_next = False
+            await super().join(poll_id, OTHER)
+        return await super().get_poll(poll_id)
+
+
+async def test_all_voted_close_rechecks_under_the_lock(tmp_path: Path) -> None:
+    store = JoiningStore(tmp_path / "sessions.sqlite3")
+    svc = SessionService(store, TZ, FakeClock(), NoPrefill())
+    poll = await _create(svc)
+    await svc.join(poll.id, PLAYER)
+    slot_ids = await _slot_ids(svc, poll)
+    for user in (GM, PLAYER):
+        await svc.submit_vote(poll.id, user, slot_ids, ())
+    players, _, votes = await svc.round_state(poll)
+    assert should_auto_close(poll, players, slot_ids, votes, svc.clock()) == "all_voted"
+    store.join_next = True
+    outcome = await svc.close_round(poll.id, 0, False, "all_voted")
+    assert isinstance(outcome, NotReady)
+    assert outcome.poll.status == STATUS_VOTING
+    assert (await store.get_poll(poll.id)).status == STATUS_VOTING  # type: ignore[union-attr]
+    assert await store.players(poll.id) == [GM, PLAYER, OTHER]
+    # Once the new player votes, the reason holds again and the round closes.
+    await svc.submit_vote(poll.id, OTHER, slot_ids, ())
+    assert isinstance(await svc.close_round(poll.id, 0, False, "all_voted"), RoundFits)
+
+
+async def test_deadline_close_before_the_deadline_stays_open(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, round_hours=24)
+    await svc.join(poll.id, PLAYER)
+    svc.clock.now = poll.round_started_at + 86_399  # type: ignore[attr-defined]
+    assert isinstance(await svc.close_round(poll.id, 0, False, "deadline"), NotReady)
+    assert (await svc.store.get_poll(poll.id)).status == STATUS_VOTING  # type: ignore[union-attr]
+    svc.clock.now = poll.round_started_at + 86_400  # type: ignore[attr-defined]
+    outcome = await svc.close_round(poll.id, 0, False, "deadline")
+    assert isinstance(outcome, RoundAdvanced)
+    assert outcome.pending == (GM, PLAYER)

@@ -102,3 +102,9 @@
 - Tests: concurrent same-user joins (JOINED + ALREADY_JOINED), a held vote counted by a concurrent close then confirmable, a vote/join after a close refused (`GatedStore`).
 - Files: sessions/service.py, tests/test_session_service.py. No user-visible/doc change.
 - Learnings: the first version of the in-flight race test passed without the lock (thread ordering); wait for the competing task with a timeout and assert it is still blocked.
+
+## 2026-10-11 - US-003
+- `close_round` with `"all_voted"`/`"deadline"` re-runs `should_auto_close` inside the lock; `None` returns the new `NotReady(poll)` (in `RoundOutcome`) and leaves the round open. `close_and_post` posts nothing for it (so `advance_if_ready`/`_close_due_rounds` stay quiet); `handle_close` folds it into the `NotVoting` branch (manual closes never give it).
+- Tests: a player joining between the unlocked check and the locked close (`JoiningStore` hooks `get_poll`), an early `"deadline"` close, the cog posting nothing for `NotReady`. Existing tests that used `"all_voted"`/`"deadline"` as a shortcut for "skip the permission check" now use `"manual"` by the GM (or really vote everyone).
+- Files: sessions/service.py, cogs/sessions.py, tests/test_session_service.py, tests/test_session_cog.py, CLAUDE.md (close_round outcomes). No user-visible/doc change.
+- Learnings: in service tests, don't pass an automatic reason to `close_round` unless it is really true at the fake clock time; it now returns `NotReady`.
