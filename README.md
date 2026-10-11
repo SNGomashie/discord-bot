@@ -286,7 +286,7 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 
 `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`
 
-where the cause is `missing` (not found), `not a text channel`, or `missing View Channel, Send Messages or Embed Links`. The warning repeats only after the channel has worked again.
+where the cause is `missing` (not found), `not a text channel`, `missing View Channel, Send Messages or Embed Links`, or `unavailable (Discord error)` (Discord failed to look the channel up, e.g. an outage; the next cycle tries again). The warning repeats only after the channel has worked again.
 
 ## Activity tracking
 
@@ -331,7 +331,7 @@ With `ACTIVITY_CHANNEL_ID` set, the bot posts the `/activity` overview of the pr
 
   `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>`
 
-  where the cause is `missing`, `not a text channel`, or `missing View Channel, Send Messages or Embed Links`.
+  where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links`, or `unavailable (Discord error)` (a Discord error while looking the channel up; the next hourly check tries again).
 - Members appear as mentions, but nobody is pinged.
 
 ### Toasty ;pokemon catches
@@ -431,6 +431,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
+  posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
                   help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener)
   help/           /help logic: content (all help text), commands, embed, lookup

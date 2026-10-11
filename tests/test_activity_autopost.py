@@ -13,7 +13,12 @@ import pytest
 from ninja_bot.activity.embed import SHAME_FIELD, build_monthly_embed
 from ninja_bot.activity.store import SqliteActivityStore
 from ninja_bot.cogs.activity import REPORT_CHECK_SECONDS, Activity
-from ninja_bot.cs2.channels import CHANNEL_MISSING, CHANNEL_NO_PERMISSIONS, CHANNEL_NOT_TEXT
+from ninja_bot.cs2.channels import (
+    CHANNEL_MISSING,
+    CHANNEL_NO_PERMISSIONS,
+    CHANNEL_NOT_TEXT,
+    CHANNEL_UNAVAILABLE,
+)
 
 CHANNEL_ID = 555
 USER = 42
@@ -224,6 +229,29 @@ async def test_missing_channel_warns_once_and_stays_unposted(
     assert "ACTIVITY_CHANNEL_ID" in caplog.text
     assert "CS2" not in caplog.text
     # Nothing was sent, so the month posts once the channel is fixed.
+    assert await store.report_posted("2026-10") is False
+
+
+async def test_fetch_http_error_warns_once_and_stays_unposted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = await make_store(tmp_path, 10)
+    bot = make_bot(None)
+    bot.fetch_channel = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=503), "Service Unavailable")
+    )
+    cog = make_cog(store, bot, FakeClock(ts(11, 2)))
+    with caplog.at_level(logging.WARNING):
+        await cog.run_report_cycle()
+        await cog.run_report_cycle()
+    assert (
+        caplog.text.count(
+            "Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is "
+            f"{CHANNEL_UNAVAILABLE}"
+        )
+        == 1
+    )
+    assert "Unexpected error" not in caplog.text
     assert await store.report_posted("2026-10") is False
 
 

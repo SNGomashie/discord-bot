@@ -27,15 +27,10 @@ from ninja_bot.activity.reporter import MonthlyReporter
 from ninja_bot.activity.store import ActivityStore, PokemonEvent, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
 from ninja_bot.cogs.cs2 import MemberCache, member_lookup
-from ninja_bot.cs2.channels import (
-    CHANNEL_MISSING,
-    CHANNEL_NOT_TEXT,
-    PostChannel,
-    channel_problem,
-    is_post_channel,
-)
+from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.media.cooldown import UserCooldown
+from ninja_bot.posting import PostChannelResolver, send_safely
 
 if TYPE_CHECKING:
     from ninja_bot.bot import NinjaBot
@@ -49,6 +44,7 @@ COOLDOWN_SECONDS = 10.0
 # Longer than any `YYYY-MM` (with spaces); longer input is rejected by Discord.
 MAX_MONTH_LENGTH = 20
 GENERIC_ERROR_MESSAGE = "Something went wrong while loading voice activity. Please try again later."
+POST_WARNING = "Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is %s"
 
 
 def cooldown_message(retry_after: float) -> str:
@@ -66,14 +62,8 @@ def no_activity_message(name: str | None, month: Month) -> str:
     return f"**{escape_name(name)}** wasn't in voice in {label}."
 
 
-async def _send_safely(send: Awaitable[object]) -> bool:
-    """Await a Discord send; log and swallow HTTP errors (e.g. an expired token)."""
-    try:
-        await send
-    except discord.HTTPException:
-        log.warning("Could not send activity response", exc_info=True)
-        return False
-    return True
+def _send_safely(send: Awaitable[object]) -> Awaitable[bool]:
+    return send_safely(send, "activity response")
 
 
 def _channel_id(state: discord.VoiceState) -> int | None:
@@ -126,8 +116,10 @@ class Activity(commands.Cog):
         # Monthly auto-post (ACTIVITY_CHANNEL_ID); off when None.
         self.channel_id = channel_id
         self.reporter = MonthlyReporter(store, self.tz, clock)
-        # Channel problems already logged, so a broken setup warns once instead of every hour.
-        self._channel_warnings: set[str] = set()
+        # Finds the auto-post channel; a broken setup warns once instead of every hour.
+        self._post_channel = (
+            PostChannelResolver(bot, POST_WARNING, channel_id) if channel_id is not None else None
+        )
         # Guild membership answers for the wall of shame (REST-backed, no members intent).
         self.members = members if members is not None else MemberCache()
 
@@ -215,13 +207,13 @@ class Activity(commands.Cog):
 
     async def run_report_cycle(self) -> None:
         """Post at most one ended month's overview; never raises, so the loop keeps running."""
-        if self.channel_id is None:
+        if self._post_channel is None:
             return
         try:
             month = await self.reporter.due_month()
             if month is None:
                 return
-            channel = await self._post_channel(self.channel_id)
+            channel = await self._post_channel.resolve()
             if channel is None:
                 return
             await self._post_report(channel, month)
@@ -245,34 +237,6 @@ class Activity(commands.Cog):
                 log.info("Posted the activity overview for %s", month.key)
         finally:
             await self.reporter.confirm(month)
-
-    async def _post_channel(self, channel_id: int) -> PostChannel | None:
-        """The auto-post channel, or None (warned once per cause) if it can't be used."""
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except (discord.NotFound, discord.Forbidden):
-                self._warn_channel(CHANNEL_MISSING)
-                return None
-        if not is_post_channel(channel):
-            self._warn_channel(CHANNEL_NOT_TEXT)
-            return None
-        problem = channel_problem(channel, channel.guild.me)
-        if problem is not None:
-            self._warn_channel(problem)
-            return None
-        self._channel_warnings.clear()
-        return channel
-
-    def _warn_channel(self, cause: str) -> None:
-        if cause in self._channel_warnings:
-            return
-        self._channel_warnings.add(cause)
-        log.warning(
-            "Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is %s",
-            cause,
-        )
 
     @app_commands.command(name="activity", description="Show the server's voice activity")
     @app_commands.describe(month="Which month, as YYYY-MM (defaults to this month)")

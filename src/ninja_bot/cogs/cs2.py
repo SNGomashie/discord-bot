@@ -15,13 +15,7 @@ from discord.ext import commands, tasks
 
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.cache import CachedStatsProvider, TtlCache
-from ninja_bot.cs2.channels import (
-    CHANNEL_MISSING,
-    CHANNEL_NOT_TEXT,
-    PostChannel,
-    channel_problem,
-    is_post_channel,
-)
+from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     build_announcement_embed,
@@ -56,6 +50,7 @@ from ninja_bot.cs2.steam import (
 )
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
 from ninja_bot.media.cooldown import UserCooldown
+from ninja_bot.posting import PostChannelResolver, send_safely
 
 if TYPE_CHECKING:
     from ninja_bot.bot import NinjaBot
@@ -63,6 +58,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 GENERIC_ERROR_MESSAGE = "Something went wrong while fetching CS2 stats. Please try again later."
+POST_WARNING = "Not posting CS2 matches: the CS2_CHANNEL_ID channel is %s"
 COOLDOWN_SECONDS = 10.0
 LINK_COOLDOWN_SECONDS = 15.0
 ALREADY_LINKED_MESSAGE = "You're already linked to that Steam account."
@@ -180,14 +176,8 @@ def member_lookup(guild: discord.Guild, cache: MemberCache) -> MemberLookup:
     return lookup
 
 
-async def _send_safely(send: Awaitable[object]) -> bool:
-    """Await a Discord send; log and swallow HTTP errors (e.g. an expired token)."""
-    try:
-        await send
-    except discord.HTTPException:
-        log.warning("Could not send CS2 response", exc_info=True)
-        return False
-    return True
+def _send_safely(send: Awaitable[object]) -> Awaitable[bool]:
+    return send_safely(send, "CS2 response")
 
 
 class Cs2(commands.Cog):
@@ -221,8 +211,12 @@ class Cs2(commands.Cog):
         self.auto_post = auto_post
         # Set after a Leetify rate limit so the next poll cycle is skipped once.
         self._skip_next_poll = False
-        # Channel problems already logged, so a broken setup warns once instead of every cycle.
-        self._channel_warnings: set[str] = set()
+        # Finds the auto-post channel; a broken setup warns once instead of every cycle.
+        self._post_channel = (
+            PostChannelResolver(auto_post.bot, POST_WARNING, auto_post.channel_id)
+            if auto_post is not None and auto_post.channel_id is not None
+            else None
+        )
         # Discord member names for scoreboards and auto-posts; in memory only.
         self.members = members if members is not None else MemberCache()
 
@@ -251,14 +245,14 @@ class Cs2(commands.Cog):
 
     async def run_poll_cycle(self) -> None:
         """Post new matches of linked players; never raises, so the loop keeps running."""
-        if self.auto_post is None or self.auto_post.channel_id is None:
+        if self.auto_post is None or self._post_channel is None:
             return
         if self._skip_next_poll:
             self._skip_next_poll = False
             log.info("Skipping a CS2 poll cycle after a Leetify rate limit")
             return
         try:
-            channel = await self._post_channel(self.auto_post.bot, self.auto_post.channel_id)
+            channel = await self._post_channel.resolve()
             if channel is None:
                 return
             result = await self.auto_post.poller.poll()
@@ -286,31 +280,6 @@ class Cs2(commands.Cog):
             )
         finally:
             await poller.confirm(new_match)
-
-    async def _post_channel(self, bot: commands.Bot, channel_id: int) -> PostChannel | None:
-        """The auto-post channel, or None (warned once per cause) if it can't be used."""
-        channel = bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await bot.fetch_channel(channel_id)
-            except (discord.NotFound, discord.Forbidden):
-                self._warn_channel(CHANNEL_MISSING)
-                return None
-        if not is_post_channel(channel):
-            self._warn_channel(CHANNEL_NOT_TEXT)
-            return None
-        problem = channel_problem(channel, channel.guild.me)
-        if problem is not None:
-            self._warn_channel(problem)
-            return None
-        self._channel_warnings.clear()
-        return channel
-
-    def _warn_channel(self, cause: str) -> None:
-        if cause in self._channel_warnings:
-            return
-        self._channel_warnings.add(cause)
-        log.warning("Not posting CS2 matches: the CS2_CHANNEL_ID channel is %s", cause)
 
     @app_commands.command(name="link", description="Link your Steam account for CS2 stats")
     @app_commands.describe(
