@@ -111,3 +111,11 @@
 - Learnings: in tests, call `Help.help.callback(cog, interaction, command, public)` positionally; the autocomplete callback is a plain cog method you can await directly.
 - Needs manual check: autocomplete suggestions appear while typing `command`; `public:true` posts visibly in the channel; a second public call within 15 s gets the private cooldown reply.
 ---
+
+## 2026-10-11 - US-008
+- Added tests/test_help_drift.py: a fixture loads every extension from `bot.EXTENSIONS` onto a real `NinjaBot` (test `Config`, no `CS2_CHANNEL_ID`, `DATA_DIR` under tmp_path; no login/network needed, unloaded in teardown) and yields the top-level `app_commands.Command`s.
+- Tests: registered <-> `COMMANDS` both ways, `parameter_notes` keys are real params, Discord command/param descriptions non-empty, README "Commands at a glance" rows (regex on first column `` `/name` ``, section ends at next `## `) match exactly (no missing/extra/duplicate), overview + every detail embed within Discord limits. Failure messages name the commands.
+- Verified the README test fails when a row is removed.
+- No docs change (tests only); full /help docs are US-009.
+- Learnings: `NinjaBot(config)` + `await bot.load_extension(ext)` works offline in tests (setup_hook/sync are never called); unload the extensions afterwards so Cs2.cog_unload closes its clients.
+---
