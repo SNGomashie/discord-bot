@@ -134,3 +134,11 @@
 - Service `_advance` returns `RoundAdvanced(replace(advanced, message_id=poll.message_id), ...)` so the cog still edits the closed round's message to ROUND_CLOSED_MESSAGE.
 - Files: sessions/store.py, sessions/service.py, tests/test_session_store.py, tests/test_session_cog.py (failed next-round post now leaves message_id None), README.md (Data and storage polls row), CLAUDE.md.
 - Learnings: session fakes all subclass `SqliteSessionStore`, so new store methods need no fake updates.
+
+## 2026-10-11 - US-008
+- `SessionService.rebuild_outcome(poll_id)` (read-only, under the service lock): `RoundFits` for `awaiting_confirm` (re-evaluated like `confirm`), `RoundAdvanced` for voting round 2+ (current slots, pending = who hasn't voted this round), else None.
+- Cog: `_outcome_lock` around `close_and_post`, `handle_close`'s close+post and each repair; `_post_result` stores `result_message_id`; `repair_missing_messages()` is the first notify step (re-read poll, skip if message exists or `_channel` is None, then `post_outcome(rebuilt)`); nudges skip polls without `message_id`; poll cancel also edits `result_message_id`.
+- Tests: tests/test_session_notify.py (repair of result / next round, no double post, unusable channel, lock race checked to fail without the lock, no nudge without message), tests/test_session_service.py (rebuild_outcome), tests/test_session_cancel.py (both messages edited).
+- Docs: README Session polls (Nudges, Channel gone, Old messages, /session_cancel poll bullet), docs/manual-checks.md (failed outcome post, cancel awaiting_confirm), CLAUDE.md.
+- Needs manual check: revoke Send Messages, close a round, restore it, see the message appear once (docs/manual-checks.md).
+- Learning: lock order is cog `_outcome_lock` -> service `_lock`, never the reverse.

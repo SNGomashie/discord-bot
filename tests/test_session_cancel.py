@@ -42,6 +42,7 @@ CHANNEL = 100
 GM = 1
 PLAYER = 2
 POLL_MESSAGE = 555
+RESULT_MESSAGE = 556
 HOUR = 3600
 
 
@@ -377,6 +378,26 @@ async def test_cancel_twice_is_refused_the_second_time(cog: Sessions) -> None:
     again = make_interaction()
     await cog.handle_session_cancel(again, f"poll:{poll.id}")
     assert reply(again) == (content.UNKNOWN_POLL_MESSAGE, {"ephemeral": True})
+
+
+async def test_cancel_awaiting_confirm_edits_the_poll_and_result_messages(cog: Sessions) -> None:
+    poll = await open_poll(cog)
+    slots = [slot.id for slot in await cog.service.store.poll_slots(poll.id, 1)]
+    await cog.service.submit_vote(poll.id, GM, slots, [])
+    await cog.service.submit_vote(poll.id, PLAYER, slots, [])
+    assert isinstance(await cog.service.close_round(poll.id, GM, False, "manual"), RoundFits)
+    await cog.service.store.set_result_message(poll.id, RESULT_MESSAGE)
+    await cog.handle_session_cancel(make_interaction(), f"poll:{poll.id}")
+    bot: Any = cog.bot
+    edited = [
+        call.args[0]
+        for call in bot.get_partial_messageable.return_value.get_partial_message.call_args_list
+    ]
+    assert edited == [POLL_MESSAGE, RESULT_MESSAGE]
+    for call in message_edit(cog).await_args_list:
+        assert call.kwargs["content"] == content.CANCELLED_POLL_EDIT
+        assert call.kwargs["view"] is None
+    assert message_edit(cog).await_count == 2
 
 
 async def test_cancel_without_message_id_skips_the_edit(cog: Sessions) -> None:

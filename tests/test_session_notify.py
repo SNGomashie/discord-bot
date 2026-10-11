@@ -17,7 +17,7 @@ from ninja_bot.cogs.sessions import NOTIFY_CHECK_SECONDS, Sessions
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.sessions import content
 from ninja_bot.sessions.reminders import MAX_NUDGES, NUDGE_INTERVAL_SECONDS
-from ninja_bot.sessions.service import NoPrefill, RoundFits, SessionService
+from ninja_bot.sessions.service import NoPrefill, RoundAdvanced, RoundFits, SessionService
 from ninja_bot.sessions.store import (
     STATUS_AWAITING_CONFIRM,
     STATUS_VOTING,
@@ -293,6 +293,123 @@ async def test_deadline_with_pending_players_closes_the_round(
     assert len(sent(channel)) == 1
 
 
+# Repairing unposted outcome messages
+
+FORBIDDEN = discord.Forbidden(MagicMock(status=403), "Missing Access")
+
+
+async def voted_poll(cog: Sessions, *, player_votes: bool) -> int:
+    poll_id = await open_poll(cog)
+    slots = await slot_ids(cog, poll_id)
+    await cog.service.submit_vote(poll_id, GM, slots, [])
+    if player_votes:
+        await cog.service.submit_vote(poll_id, PLAYER, slots, [])
+    return poll_id
+
+
+async def test_failed_result_post_is_repaired_once(cog: Sessions, channel: MagicMock) -> None:
+    poll_id = await voted_poll(cog, player_votes=True)
+    channel.send.side_effect = [FORBIDDEN, MagicMock(id=777)]
+    assert isinstance(await cog.close_and_post(poll_id, "manual", GM), RoundFits)
+    store = cog.service.store
+    poll = await store.get_poll(poll_id)
+    assert poll is not None
+    assert (poll.status, poll.result_message_id) == (STATUS_AWAITING_CONFIRM, None)
+
+    await cog.run_notify_cycle()
+    await cog.run_notify_cycle()
+    assert channel.send.await_count == 2
+    kwargs = sent(channel)[1]
+    assert kwargs["content"] == content.RESULT_PING.format(gm=f"<@{GM}>")
+    assert pinged(kwargs) == [GM]
+    assert kwargs["view"].children
+    assert (await store.get_poll(poll_id)).result_message_id == 777  # type: ignore[union-attr]
+
+
+async def test_failed_next_round_post_is_repaired_once(cog: Sessions, channel: MagicMock) -> None:
+    poll_id = await voted_poll(cog, player_votes=False)
+    channel.send.side_effect = [FORBIDDEN, MagicMock(id=777)]
+    assert isinstance(await cog.close_and_post(poll_id, "manual", GM), RoundAdvanced)
+    store = cog.service.store
+    poll = await store.get_poll(poll_id)
+    assert poll is not None
+    assert (poll.round_number, poll.message_id) == (2, None)
+
+    await cog.run_notify_cycle()
+    await cog.run_notify_cycle()
+    assert channel.send.await_count == 2
+    kwargs = sent(channel)[1]
+    assert len(kwargs["embeds"]) == 2
+    assert kwargs["view"].children
+    # Nobody voted in round 2 yet.
+    assert pinged(kwargs) == [GM, PLAYER]
+    assert (await store.get_poll(poll_id)).message_id == 777  # type: ignore[union-attr]
+
+
+async def test_posted_outcomes_are_not_repaired(cog: Sessions, channel: MagicMock) -> None:
+    fits = await voted_poll(cog, player_votes=True)
+    advances = await voted_poll(cog, player_votes=False)
+    await cog.close_and_post(fits, "manual", GM)
+    await cog.close_and_post(advances, "manual", GM)
+    assert channel.send.await_count == 2
+    await cog.run_notify_cycle()
+    assert channel.send.await_count == 2
+
+
+async def test_repair_waits_for_a_usable_channel(
+    store: SqliteSessionStore, clock: FakeClock
+) -> None:
+    bot = make_bot(None)
+    gone = make_cog(store, clock, bot)
+    poll_id = await voted_poll(gone, player_votes=True)
+    send = bot.get_partial_messageable.return_value.send
+    send.side_effect = FORBIDDEN
+    await gone.close_and_post(poll_id, "manual", GM)
+    await gone.run_notify_cycle()
+    send.assert_awaited_once()
+    assert (await store.get_poll(poll_id)).result_message_id is None  # type: ignore[union-attr]
+
+    channel = make_channel()
+    working = make_cog(store, clock, make_bot(channel))
+    await working.run_notify_cycle()
+    channel.send.assert_awaited_once()
+    assert (await store.get_poll(poll_id)).result_message_id == 777  # type: ignore[union-attr]
+
+
+async def test_the_lock_serialises_a_close_and_a_repair(cog: Sessions, channel: MagicMock) -> None:
+    poll_id = await voted_poll(cog, player_votes=True)
+    release = asyncio.Event()
+    sending = asyncio.Event()
+
+    async def slow_send(**kwargs: Any) -> MagicMock:
+        sending.set()
+        await release.wait()
+        return MagicMock(id=777)
+
+    channel.send.side_effect = slow_send
+    close = asyncio.create_task(cog.close_and_post(poll_id, "manual", GM))
+    await sending.wait()
+    # The round is closed but its result isn't stored yet: a repair now would post it again.
+    repair = asyncio.create_task(cog.repair_missing_messages())
+    await asyncio.wait({repair}, timeout=0.1)
+    assert not repair.done()
+    release.set()
+    await close
+    await repair
+    channel.send.assert_awaited_once()
+
+
+async def test_no_nudge_without_a_poll_message(
+    cog: Sessions, clock: FakeClock, channel: MagicMock
+) -> None:
+    poll = await cog.service.create_poll(GUILD, CHANNEL, GM, "Strahd", "fri,sat", "19:00")
+    await cog.service.join(poll.id, PLAYER)
+    await cog.service.submit_vote(poll.id, GM, await slot_ids(cog, poll.id), [])
+    clock.now += 2 * NUDGE_INTERVAL_SECONDS
+    await cog.run_notify_cycle()
+    assert sent(channel) == []
+
+
 # The loop
 
 
@@ -302,11 +419,12 @@ async def test_the_cycle_never_raises(
     async def broken(*args: Any) -> None:
         raise RuntimeError("database is locked")
 
+    monkeypatch.setattr(cog.service.store, "polls_missing_messages", broken)
     monkeypatch.setattr(cog.service.store, "voting_polls", broken)
     monkeypatch.setattr(cog.service.store, "active_sessions", broken)
     with caplog.at_level(logging.ERROR):
         await cog.run_notify_cycle()
-    assert caplog.text.count("notify cycle") == 3
+    assert caplog.text.count("notify cycle") == 4
 
 
 async def test_loop_starts_on_load_and_stops_on_unload(cog: Sessions) -> None:

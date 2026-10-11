@@ -687,3 +687,54 @@ async def test_deadline_close_before_the_deadline_stays_open(tmp_path: Path) -> 
     outcome = await svc.close_round(poll.id, 0, False, "deadline")
     assert isinstance(outcome, RoundAdvanced)
     assert outcome.pending == (GM, PLAYER)
+
+
+# Rebuilding an unposted outcome
+
+
+async def test_rebuild_outcome_of_a_fitting_round_matches_the_close(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    await svc.join(poll.id, PLAYER)
+    slots = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, slots, [])
+    await svc.submit_vote(poll.id, PLAYER, [slots[1]], [slots[0]])
+    closed = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(closed, RoundFits)
+    rebuilt = await svc.rebuild_outcome(poll.id)
+    assert rebuilt == closed
+    after = await svc.store.get_poll(poll.id)
+    assert after is not None and after.status == STATUS_AWAITING_CONFIRM
+
+
+async def test_rebuild_outcome_of_a_later_round_has_its_slots_and_pending(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    await svc.join(poll.id, PLAYER)
+    await svc.submit_vote(poll.id, GM, await _slot_ids(svc, poll), [])
+    advanced = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(advanced, RoundAdvanced)
+    await svc.submit_vote(poll.id, GM, [advanced.slots[0].id], [])
+    rebuilt = await svc.rebuild_outcome(poll.id)
+    assert isinstance(rebuilt, RoundAdvanced)
+    assert rebuilt.poll.round_number == 2
+    assert rebuilt.slots == advanced.slots
+    assert rebuilt.pending == (PLAYER,)
+    assert await svc.store.votes(poll.id, 2) == {(GM, advanced.slots[0].id): Vote.YES} | {
+        (GM, slot.id): Vote.NO for slot in advanced.slots[1:]
+    }
+
+
+async def test_rebuild_outcome_is_none_for_other_polls(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    assert await svc.rebuild_outcome(999) is None
+    first_round = await _create(svc)
+    assert await svc.rebuild_outcome(first_round.id) is None
+    cancelled = await _create(svc)
+    await svc.cancel_poll(cancelled.id, GM, False)
+    assert await svc.rebuild_outcome(cancelled.id) is None
+    failed = await _create(svc)
+    for _ in range(MAX_ROUNDS):
+        await svc.close_round(failed.id, GM, False, "manual")
+    assert (await svc.store.get_poll(failed.id)).status == STATUS_FAILED  # type: ignore[union-attr]
+    assert await svc.rebuild_outcome(failed.id) is None

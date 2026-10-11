@@ -405,6 +405,36 @@ class SessionService:
             await self.store.set_status(poll.id, STATUS_FAILED)
             return RoundFailed(await self._reload(poll), FailReason.LAST_ROUND, pending)
 
+    async def rebuild_outcome(self, poll_id: int) -> RoundFits | RoundAdvanced | None:
+        """The outcome to post again for a poll whose outcome message was never sent.
+
+        `awaiting_confirm`: the fitting top slots (as `confirm` evaluates them). Voting past
+        round 1: the current slots and who hasn't voted in them. None for anything else.
+        Changes nothing.
+        """
+        async with self._lock:
+            poll = await self.store.get_poll(poll_id)
+            if poll is None:
+                return None
+            if poll.status == STATUS_AWAITING_CONFIRM:
+                players, slots, votes = await self.round_state(poll)
+                slot_ids = [slot.id for slot in slots]
+                result = _evaluate(poll, players, slot_ids, votes)
+                if not isinstance(result, Fits):
+                    return None
+                by_id = {slot.id: slot for slot in slots}
+                return RoundFits(
+                    poll,
+                    result.top,
+                    tuple(by_id[score.slot_id] for score in result.top),
+                    tuple(pending_players(players, slot_ids, votes)),
+                )
+            if poll.status == STATUS_VOTING and poll.round_number > 1:
+                players, slots, votes = await self.round_state(poll)
+                pending = pending_players(players, [slot.id for slot in slots], votes)
+                return RoundAdvanced(poll, tuple(slots), tuple(pending))
+            return None
+
     async def overview(self, guild_id: int) -> Overview:
         """`/sessions`: the guild's open polls, upcoming sessions and who each voting poll
         still waits for."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -60,7 +61,13 @@ from ninja_bot.sessions.slots import (
     MAX_WEEKS,
     InvalidSessionInput,
 )
-from ninja_bot.sessions.store import STATUS_VOTING, Poll, Session, SqliteSessionStore
+from ninja_bot.sessions.store import (
+    STATUS_AWAITING_CONFIRM,
+    STATUS_VOTING,
+    Poll,
+    Session,
+    SqliteSessionStore,
+)
 from ninja_bot.sessions.views import PollAction, PollButton, VoteView, confirm_view, poll_view
 
 if TYPE_CHECKING:
@@ -127,6 +134,9 @@ class Sessions(commands.Cog):
         )
         # One resolver per poll/session channel, so a broken channel warns once per cause.
         self._channels: dict[int, PostChannelResolver] = {}
+        # Held around closing a round and posting its outcome, and around a repair, so a
+        # repair never sees a closed round whose outcome is still being posted.
+        self._outcome_lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
         # Poll buttons carry their state in the custom_id, so they survive restarts.
@@ -146,8 +156,15 @@ class Sessions(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def run_notify_cycle(self) -> None:
-        """Close due rounds, then post reminders and nudges; never raises."""
-        for step in (self._close_due_rounds, self._post_reminders, self._post_nudges):
+        """Repair unposted outcomes, close due rounds, then post reminders and nudges; never
+        raises."""
+        steps = (
+            self.repair_missing_messages,
+            self._close_due_rounds,
+            self._post_reminders,
+            self._post_nudges,
+        )
+        for step in steps:
             try:
                 await step()
             except Exception:
@@ -162,6 +179,31 @@ class Sessions(commands.Cog):
             )
             self._channels[channel_id] = resolver
         return await resolver.resolve()
+
+    async def repair_missing_messages(self) -> None:
+        """Post again the result or next-round message Discord rejected; never raises."""
+        for poll in await self.service.store.polls_missing_messages():
+            try:
+                async with self._outcome_lock:
+                    await self._repair(poll.id)
+            except Exception:
+                log.exception("Could not repair the message of session poll %d", poll.id)
+
+    async def _repair(self, poll_id: int) -> None:
+        """Re-read the poll (under `_outcome_lock`) and post its outcome if still missing."""
+        poll = await self.service.store.get_poll(poll_id)
+        if poll is None:
+            return
+        if poll.status == STATUS_VOTING and poll.message_id is not None:
+            return
+        if poll.status == STATUS_AWAITING_CONFIRM and poll.result_message_id is not None:
+            return
+        if await self._channel(poll.channel_id) is None:
+            return
+        outcome = await self.service.rebuild_outcome(poll_id)
+        if outcome is not None:
+            log.info("Posting the missing outcome message of session poll %d", poll_id)
+            await self.post_outcome(outcome)
 
     async def _close_due_rounds(self) -> None:
         """Close rounds past their deadline (or fully voted) and post the outcome."""
@@ -203,18 +245,20 @@ class Sessions(commands.Cog):
     async def _post_nudges(self) -> None:
         """Reply to the poll message pinging who hasn't voted; counted after every attempt."""
         for poll, pending in await self.notifier.due_nudges():
+            # Without a poll message (its post failed and awaits repair) there's nothing to
+            # vote on yet.
+            if poll.message_id is None:
+                continue
             channel = await self._channel(poll.channel_id)
             if channel is None:
                 continue
-            kwargs: dict[str, Any] = {}
-            if poll.message_id is not None:
-                # Still sent (as a plain message) if the poll message was deleted.
-                kwargs["reference"] = discord.MessageReference(
-                    message_id=poll.message_id,
-                    channel_id=poll.channel_id,
-                    guild_id=poll.guild_id,
-                    fail_if_not_exists=False,
-                )
+            # Still sent (as a plain message) if the poll message was deleted.
+            reference = discord.MessageReference(
+                message_id=poll.message_id,
+                channel_id=poll.channel_id,
+                guild_id=poll.guild_id,
+                fail_if_not_exists=False,
+            )
             try:
                 await send_safely(
                     channel.send(
@@ -224,7 +268,7 @@ class Sessions(commands.Cog):
                             round=poll.round_number,
                         ),
                         allowed_mentions=_pinging(pending),
-                        **kwargs,
+                        reference=reference,
                     ),
                     "session poll nudge",
                 )
@@ -505,7 +549,8 @@ class Sessions(commands.Cog):
                 poll = await self.service.cancel_poll(
                     target.id, user_id, _is_manager(interaction), guild.id
                 )
-                name, channel_id, message_id = poll.name, poll.channel_id, poll.message_id
+                name, channel_id = poll.name, poll.channel_id
+                message_ids = [poll.message_id, poll.result_message_id]
                 edit = content.CANCELLED_POLL_EDIT
                 reply = content.POLL_CANCELLED_MESSAGE.format(
                     name=escape_name(poll.name, MAX_NAME_LENGTH), user=mention(user_id)
@@ -514,7 +559,8 @@ class Sessions(commands.Cog):
                 session = await self.service.cancel_session(
                     target.id, user_id, _is_manager(interaction), guild.id
                 )
-                name, channel_id, message_id = session.name, session.channel_id, session.message_id
+                name, channel_id = session.name, session.channel_id
+                message_ids = [session.message_id]
                 edit = content.CANCELLED_SESSION_EDIT
                 reply = content.SESSION_CANCELLED_MESSAGE.format(
                     name=escape_name(session.name, MAX_NAME_LENGTH),
@@ -530,13 +576,15 @@ class Sessions(commands.Cog):
                 reply, allowed_mentions=discord.AllowedMentions.none()
             )
         )
-        await self._edit_message(
-            channel_id,
-            message_id,
-            content=edit,
-            view=None,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        # A poll's result message has Confirm buttons too.
+        for message_id in message_ids:
+            await self._edit_message(
+                channel_id,
+                message_id,
+                content=edit,
+                view=None,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def handle_poll_action(
         self, interaction: discord.Interaction, poll_id: int, action: str, arg: int | None
@@ -704,9 +752,10 @@ class Sessions(commands.Cog):
         `NotVoting` / `NotAllowed` / `NotReady` post nothing (a double click, a lost race or
         a round that changed since its reason was checked).
         """
-        outcome = await self.service.close_round(poll_id, by_user_id, is_manager, reason)
-        if not isinstance(outcome, NotVoting | NotAllowed | NotReady):
-            await self.post_outcome(outcome)
+        async with self._outcome_lock:
+            outcome = await self.service.close_round(poll_id, by_user_id, is_manager, reason)
+            if not isinstance(outcome, NotVoting | NotAllowed | NotReady):
+                await self.post_outcome(outcome)
         return outcome
 
     async def post_outcome(self, outcome: RoundFits | RoundAdvanced | RoundFailed) -> None:
@@ -731,7 +780,7 @@ class Sessions(commands.Cog):
         poll = outcome.poll
         players, _, votes = await self.service.round_state(poll)
         tz = self.service.tz
-        await self._post(
+        message = await self._post(
             poll.channel_id,
             "session poll result",
             content=content.RESULT_PING.format(gm=mention(poll.gm_id)),
@@ -739,6 +788,8 @@ class Sessions(commands.Cog):
             view=confirm_view(poll.id, [(s.id, format_slot_label(s, tz)) for s in outcome.slots]),
             allowed_mentions=_pinging([poll.gm_id]),
         )
+        if message is not None:
+            await self.service.store.set_result_message(poll.id, message.id)
 
     async def _post_next_round(self, outcome: RoundAdvanced) -> None:
         poll = outcome.poll
@@ -766,22 +817,23 @@ class Sessions(commands.Cog):
 
     async def handle_close(self, interaction: discord.Interaction, poll_id: int) -> None:
         """**Close round**: GM or Manage Events only; the outcome is posted in the channel."""
-        outcome = await self.service.close_round(
-            poll_id, interaction.user.id, _is_manager(interaction), "manual"
-        )
-        if isinstance(outcome, NotAllowed):
-            message = content.NOT_ALLOWED_MESSAGE
-        elif isinstance(outcome, NotVoting | NotReady):
-            # A manual close never gives `NotReady`; it is handled for completeness.
-            message = (
-                content.STALE_BUTTON_MESSAGE
-                if outcome.poll is None
-                else content.ROUND_ALREADY_CLOSED_MESSAGE
+        async with self._outcome_lock:
+            outcome = await self.service.close_round(
+                poll_id, interaction.user.id, _is_manager(interaction), "manual"
             )
-        else:
-            await _send_safely(interaction.response.defer())
-            await self.post_outcome(outcome)
-            return
+            if isinstance(outcome, NotAllowed):
+                message = content.NOT_ALLOWED_MESSAGE
+            elif isinstance(outcome, NotVoting | NotReady):
+                # A manual close never gives `NotReady`; it is handled for completeness.
+                message = (
+                    content.STALE_BUTTON_MESSAGE
+                    if outcome.poll is None
+                    else content.ROUND_ALREADY_CLOSED_MESSAGE
+                )
+            else:
+                await _send_safely(interaction.response.defer())
+                await self.post_outcome(outcome)
+                return
         await _send_safely(interaction.response.send_message(message, ephemeral=True))
 
     async def handle_confirm(
