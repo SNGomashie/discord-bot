@@ -2,11 +2,12 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from ninja_bot.activity.periods import Month
 from ninja_bot.activity.reporter import MonthlyReporter
-from ninja_bot.activity.store import SqliteActivityStore
+from ninja_bot.activity.store import ActivityStore, Session, SqliteActivityStore
 
 UTC_TZ = ZoneInfo("UTC")
 NEW_YORK = ZoneInfo("America/New_York")
@@ -117,20 +118,76 @@ async def test_zero_length_session_is_no_data(tmp_path: Path) -> None:
     assert await reporter.due_month() is None
 
 
+class CountingStore:
+    """Wraps a real store and records every call the reporter makes."""
+
+    def __init__(self, store: SqliteActivityStore) -> None:
+        self.store = store
+        self.calls: list[str] = []
+
+    async def first_session_start(self) -> float | None:
+        self.calls.append("first_session_start")
+        return await self.store.first_session_start()
+
+    async def posted_months(self) -> set[str]:
+        self.calls.append("posted_months")
+        return await self.store.posted_months()
+
+    async def report_posted(self, month_key: str) -> bool:
+        self.calls.append(f"report_posted {month_key}")
+        return await self.store.report_posted(month_key)
+
+    async def sessions_between(self, start_ts: float, end_ts: float) -> list[Session]:
+        self.calls.append("sessions_between")
+        return await self.store.sessions_between(start_ts, end_ts)
+
+    async def mark_report_posted(self, month_key: str, now: float) -> None:
+        self.calls.append("mark_report_posted")
+        await self.store.mark_report_posted(month_key, now)
+
+
+def counting_reporter(
+    store: SqliteActivityStore, now: float
+) -> tuple[MonthlyReporter, CountingStore]:
+    counting = CountingStore(store)
+    return MonthlyReporter(cast(ActivityStore, counting), UTC_TZ, FakeClock(now)), counting
+
+
 async def test_never_older_than_first_session(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     await add_session(store, ts(2026, 10, 10))
-    store_calls: list[str] = []
-    original = store.report_posted
-
-    async def recording(month_key: str) -> bool:
-        store_calls.append(month_key)
-        return await original(month_key)
-
-    store.report_posted = recording  # type: ignore[method-assign]
-    reporter = MonthlyReporter(store, UTC_TZ, FakeClock(ts(2027, 1, 2)))
+    reporter, counting = counting_reporter(store, ts(2027, 1, 2))
     assert await reporter.due_month() == Month(2026, 10)
-    assert store_calls == ["2026-10"]
+    assert counting.calls == ["first_session_start", "posted_months", "sessions_between"]
+
+
+async def test_posted_months_cost_two_store_calls(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    await add_session(store, ts(2024, 10, 10))
+    month = Month(2024, 10)
+    for _ in range(24):
+        await store.mark_report_posted(month.key, ts(2026, 11, 1))
+        month = month.next()
+    assert month == Month(2026, 10)
+    reporter, counting = counting_reporter(store, ts(2026, 10, 20))
+    assert await reporter.due_month() is None
+    assert counting.calls == ["first_session_start", "posted_months"]
+
+
+async def test_only_unposted_months_are_checked_for_data(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    await add_session(store, ts(2026, 8, 10))
+    await add_session(store, ts(2026, 10, 10))
+    await store.mark_report_posted("2026-08", ts(2026, 9, 1))
+    reporter, counting = counting_reporter(store, ts(2026, 11, 2))
+    assert await reporter.due_month() == Month(2026, 10)
+    # September (no data) and October are checked; August is skipped in memory.
+    assert counting.calls == [
+        "first_session_start",
+        "posted_months",
+        "sessions_between",
+        "sessions_between",
+    ]
 
 
 async def test_session_spanning_month_end_counts_for_both(tmp_path: Path) -> None:

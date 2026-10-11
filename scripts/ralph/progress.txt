@@ -178,3 +178,11 @@
 - Tests: tests/test_activity_periods.py (0001-01, 2014-12, 9999-12, 2015-13 rejected; 2015-01 previous/start/end in UTC, Amsterdam, Kiritimati, Pago_Pago), tests/test_activity_commands.py (both commands reply privately with the format message; 2015-01 builds /activity and /myactivity in UTC, Kiritimati, Pago_Pago).
 - Docs: README /activity `month` bullet (earliest month) and Errors bullet. help/content.py states no range, unchanged.
 ---
+
+## 2026-10-11 - US-007
+- `posted_months() -> set[str]` on `ActivityStore` + `SqliteActivityStore`; `MonthlyReporter.due_month` fetches it once and only calls `_has_data` for unposted months (all posted: 2 store calls). `report_posted` kept (tests/other callers).
+- `Activity.monthly_report` computes the month's start/end once (previous month window ends at `start`).
+- New index `voice_sessions_start ON voice_sessions (start_ts)` in `_SCHEMA` (lazy, so existing DBs get it on first connect).
+- Tests: `CountingStore` wrapper in tests/test_activity_reporter.py (24 posted months = 2 calls; posted months skipped in memory), store tests for `posted_months` and the index on a fresh and an old-schema DB.
+- Docs: none (README Data and storage lists no indexes).
+---

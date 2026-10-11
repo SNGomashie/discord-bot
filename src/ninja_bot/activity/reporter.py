@@ -29,11 +29,12 @@ class MonthlyReporter:
         first = await self.store.first_session_start()
         if first is None:
             return None
+        posted = await self.store.posted_months()
         now = self.clock()
         current = month_of(now, self.tz)
         month = month_of(first, self.tz)
         while month < current:
-            if not await self.store.report_posted(month.key) and await self._has_data(month, now):
+            if month.key not in posted and await self._has_data(month, now):
                 return month
             month = month.next()
         return None

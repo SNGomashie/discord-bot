@@ -12,6 +12,7 @@ _SCHEMA = (
     " user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, start_ts REAL NOT NULL,"
     " end_ts REAL NULL, last_seen REAL)",
     "CREATE INDEX IF NOT EXISTS voice_sessions_user_start ON voice_sessions (user_id, start_ts)",
+    "CREATE INDEX IF NOT EXISTS voice_sessions_start ON voice_sessions (start_ts)",
     "CREATE TABLE IF NOT EXISTS reports_posted"
     " (month_key TEXT PRIMARY KEY, posted_at REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS pokemon_events (message_id INTEGER PRIMARY KEY,"
@@ -119,6 +120,10 @@ class ActivityStore(Protocol):
     async def mark_report_posted(self, month_key: str, now: float) -> None: ...
 
     async def report_posted(self, month_key: str) -> bool: ...
+
+    async def posted_months(self) -> set[str]:
+        """Keys of every month whose report was marked posted."""
+        ...
 
 
 class SqliteActivityStore:
@@ -241,6 +246,11 @@ class SqliteActivityStore:
             ).fetchone()
         return row is not None
 
+    def _posted_months(self) -> set[str]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT month_key FROM reports_posted").fetchall()
+        return {str(month_key) for (month_key,) in rows}
+
     async def open_session(self, user_id: int, channel_id: int, now: float) -> None:
         await asyncio.to_thread(self._open_session, user_id, channel_id, now)
 
@@ -276,3 +286,6 @@ class SqliteActivityStore:
 
     async def report_posted(self, month_key: str) -> bool:
         return await asyncio.to_thread(self._report_posted, month_key)
+
+    async def posted_months(self) -> set[str]:
+        return await asyncio.to_thread(self._posted_months)

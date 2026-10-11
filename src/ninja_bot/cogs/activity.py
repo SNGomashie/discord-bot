@@ -398,15 +398,13 @@ class Activity(commands.Cog):
         """
         now = self.clock()
         previous = month.previous()
-        sessions = await self.store.sessions_between(
-            month.start(self.tz).timestamp(), month.end(self.tz).timestamp()
-        )
+        start = month.start(self.tz).timestamp()
+        end = month.end(self.tz).timestamp()
+        sessions = await self.store.sessions_between(start, end)
         previous_sessions = await self.store.sessions_between(
-            previous.start(self.tz).timestamp(), previous.end(self.tz).timestamp()
+            previous.start(self.tz).timestamp(), start
         )
-        pokemon_events = await self.store.pokemon_events_between(
-            month.start(self.tz).timestamp(), month.end(self.tz).timestamp()
-        )
+        pokemon_events = await self.store.pokemon_events_between(start, end)
         voice_user_ranges = await self.store.voice_user_ranges()
         report = build_monthly_report(
             sessions, previous_sessions, voice_user_ranges, month, self.tz, now, pokemon_events

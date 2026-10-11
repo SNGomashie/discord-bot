@@ -182,10 +182,13 @@ async def test_first_session_start(tmp_path: Path) -> None:
 async def test_reports_posted(tmp_path: Path) -> None:
     store = _store(tmp_path)
     assert await store.report_posted("2026-09") is False
+    assert await store.posted_months() == set()
     await store.mark_report_posted("2026-09", 1000.0)
     await store.mark_report_posted("2026-09", 2000.0)
+    await store.mark_report_posted("2026-07", 2000.0)
     assert await store.report_posted("2026-09") is True
     assert await store.report_posted("2026-10") is False
+    assert await store.posted_months() == {"2026-07", "2026-09"}
 
 
 async def test_data_survives_new_instance(tmp_path: Path) -> None:
@@ -205,6 +208,20 @@ async def test_creates_missing_parent_directory_and_index(tmp_path: Path) -> Non
     await store.open_session(USER_A, CHANNEL_X, 1000.0)
     assert _exists(path)
     assert "voice_sessions_user_start" in _index_names(path)
+    assert "voice_sessions_start" in _index_names(path)
+
+
+async def test_existing_database_gets_start_index(tmp_path: Path) -> None:
+    path = tmp_path / "activity.sqlite3"
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE voice_sessions (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,"
+            " channel_id INTEGER NOT NULL, start_ts REAL NOT NULL, end_ts REAL NULL,"
+            " last_seen REAL)"
+        )
+    assert "voice_sessions_start" not in _index_names(path)
+    await SqliteActivityStore(path).first_session_start()
+    assert "voice_sessions_start" in _index_names(path)
 
 
 def test_constructor_does_no_io(tmp_path: Path) -> None:
@@ -234,6 +251,7 @@ async def test_blocking_calls_run_in_thread(
     await store.voice_user_ranges()
     await store.mark_report_posted("2026-09", 1300.0)
     await store.report_posted("2026-09")
+    await store.posted_months()
     assert calls == [
         "_open_session",
         "_heartbeat",
@@ -244,6 +262,7 @@ async def test_blocking_calls_run_in_thread(
         "_voice_user_ranges",
         "_mark_report_posted",
         "_report_posted",
+        "_posted_months",
     ]
 
 
