@@ -1364,7 +1364,8 @@ ABSENT_ID = 8  # linked, but not a member of the server
 class FakeGuild:
     """Members by ID; `fetch_member` raises NotFound for anyone else (like Discord)."""
 
-    def __init__(self, members: Mapping[int, str]) -> None:
+    def __init__(self, members: Mapping[int, str], guild_id: int = 1) -> None:
+        self.id = guild_id
         self.members = dict(members)
         self.fetch_calls: list[int] = []
 

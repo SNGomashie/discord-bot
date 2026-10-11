@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from ninja_bot.cs2.awards import compute_awards
-from ninja_bot.cs2.cache import CachedStatsProvider
+from ninja_bot.cs2.cache import CachedStatsProvider, TtlCache
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     build_announcement_embed,
@@ -69,6 +70,10 @@ type PostChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
 CHANNEL_MISSING = "missing"
 CHANNEL_NOT_TEXT = "not a text channel"
 CHANNEL_NO_PERMISSIONS = "missing View Channel, Send Messages or Embed Links"
+# Discord display names are cached briefly to save REST calls; a 404 for a shorter time.
+MEMBER_NAME_TTL_SECONDS = 300.0
+MEMBER_MISSING_TTL_SECONDS = 60.0
+MEMBER_CACHE_SIZE = 512
 
 
 @dataclass(frozen=True)
@@ -133,20 +138,62 @@ def clean_match_id(match: str | None) -> str | None:
     return match.strip() or None
 
 
-def member_lookup(guild: discord.Guild) -> MemberLookup:
-    """Display name of a guild member: cache first, then REST (no Server Members intent)."""
+class MemberCache:
+    """Display names per (guild ID, user ID); only definitive answers are cached."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        max_size: int = MEMBER_CACHE_SIZE,
+    ) -> None:
+        self.names: TtlCache[tuple[int, int], str] = TtlCache(
+            MEMBER_NAME_TTL_SECONDS, clock, max_size
+        )
+        # Confirmed "not a member" (Discord answered 404); the value is always True.
+        self.not_members: TtlCache[tuple[int, int], bool] = TtlCache(
+            MEMBER_MISSING_TTL_SECONDS, clock, max_size
+        )
+        # Lookups in progress, so concurrent callers share one REST call.
+        self.pending: dict[tuple[int, int], asyncio.Task[str | None]] = {}
+
+
+def member_lookup(guild: discord.Guild, cache: MemberCache) -> MemberLookup:
+    """Display name of a guild member: our cache, then the member cache, then REST.
+
+    No Server Members intent is needed. Transient HTTP errors are not cached, so the next
+    lookup tries again.
+    """
+
+    async def fetch(key: tuple[int, int]) -> str | None:
+        try:
+            member = await guild.fetch_member(key[1])
+        except discord.NotFound:
+            cache.not_members.set(key, True)
+            return None
+        except discord.HTTPException as exc:
+            log.warning("Could not fetch a Discord member: HTTP %s", exc.status)
+            return None
+        cache.names.set(key, member.display_name)
+        return member.display_name
 
     async def lookup(discord_id: int) -> str | None:
+        key = (guild.id, discord_id)
+        name = cache.names.get(key)
+        if name is not None:
+            return name
+        if cache.not_members.get(key):
+            return None
         member = guild.get_member(discord_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(discord_id)
-            except discord.NotFound:
-                return None
-            except discord.HTTPException as exc:
-                log.warning("Could not fetch a Discord member: HTTP %s", exc.status)
-                return None
-        return member.display_name
+        if member is not None:
+            cache.names.set(key, member.display_name)
+            return member.display_name
+        task = cache.pending.get(key)
+        if task is None:
+            task = asyncio.create_task(fetch(key))
+            cache.pending[key] = task
+            task.add_done_callback(lambda _: cache.pending.pop(key, None))
+        # Shielded so one cancelled caller doesn't cancel the lookup for the others.
+        return await asyncio.shield(task)
 
     return lookup
 
@@ -171,6 +218,7 @@ class Cs2(commands.Cog):
         resolver: SteamResolver | None = None,
         leaderboard_cooldown: UserCooldown | None = None,
         auto_post: AutoPost | None = None,
+        members: MemberCache | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -193,6 +241,8 @@ class Cs2(commands.Cog):
         self._skip_next_poll = False
         # Channel problems already logged, so a broken setup warns once instead of every cycle.
         self._channel_warnings: set[str] = set()
+        # Discord member names for scoreboards and auto-posts; in memory only.
+        self.members = members if members is not None else MemberCache()
 
     async def cog_load(self) -> None:
         if self.auto_post is None or self.auto_post.channel_id is None:
@@ -590,7 +640,9 @@ class Cs2(commands.Cog):
         """Linked server members among the match players; empty outside a server."""
         if guild is None:
             return {}
-        return await resolve_identities(match.players, self.links, member_lookup(guild))
+        return await resolve_identities(
+            match.players, self.links, member_lookup(guild, self.members)
+        )
 
     async def _match_identities_or_empty(
         self, guild: discord.Guild | None, match: Match
