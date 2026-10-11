@@ -9,7 +9,7 @@ Builds on the CS2 scoreboard feature (`tasks/prd-cs2-scoreboard.md`, branch `ral
 
 Data still comes from the Leetify public API, and everything is rule-based (no LLM calls).
 
-**Prerequisite:** `ralph/cs2-scoreboard` **and** `ralph/cs2-hardening` (`tasks/prd-cs2-hardening.md`, the code-review fixes; it adds `aclose` to `StatsProvider`, `MatchNotFoundError` and `newest_first`) are merged to `main`. This PRD reuses its `cs2/` package (models, `StatsProvider`, `LinkStore`/`SqliteLinkStore`, `formatting.py`, `awards.py`, `embed.py`) and `cogs/cs2.py`, and the config fields `cs2_channel_id`, `cs2_poll_seconds`, `data_dir`. Create the new branch from the updated `main`.
+**Prerequisite:** `ralph/cs2-scoreboard`, `ralph/cs2-hardening` (`tasks/prd-cs2-hardening.md`: adds `aclose` to `StatsProvider`, `MatchNotFoundError` and `newest_first`), `ralph/cs2-vanity-links` (`tasks/prd-cs2-vanity-links.md`) and `ralph/cs2-scoreboard-players` (`tasks/prd-cs2-scoreboard-players.md`: adds `full_match` and `resolve_identities`) are all merged to `main`. This PRD reuses its `cs2/` package (models, `StatsProvider`, `LinkStore`/`SqliteLinkStore`, `formatting.py`, `awards.py`, `embed.py`) and `cogs/cs2.py`, and the config fields `cs2_channel_id`, `cs2_poll_seconds`, `data_dir`. Create the new branch from the updated `main`.
 
 ## Goals
 
@@ -103,7 +103,7 @@ Data still comes from the Leetify public API, and everything is rule-based (no L
 
 **Acceptance Criteria:**
 - [ ] `format_team_table` accepts an optional `highlight: Collection[str]` of Steam IDs; highlighted players get a `▸` prefix in their row (the name budget shrinks so the row width is unchanged) and the table still respects `max_chars`
-- [ ] `build_announcement_embed(match, awards, squad: Sequence[SquadMember]) -> discord.Embed` in `cs2/embed.py`, where `SquadMember(discord_id, steam64_id)`; it reuses the same title, colour (green if the squad majority's team won, red if lost, grey on a mixed or tie result), team tables (with highlights), and awards as `build_match_embed`
+- [ ] `build_announcement_embed(match, awards, squad: Sequence[SquadMember]) -> discord.Embed` in `cs2/embed.py`, where `SquadMember(discord_id, steam64_id)`; it reuses the same title, colour (green if the squad majority's team won, red if lost, grey on a mixed or tie result), team tables (with highlights), and awards as `build_match_embed`; table names use the Discord display names from `resolve_identities` (`cs2/identities.py`, from `tasks/prd-cs2-scoreboard-players.md`) where available
 - [ ] A `Squad` field lists each friend as `<@discord_id> K/D/A, ADR, rating` (one line each, at most 10), and the embed has no per-player breakdown field
 - [ ] Members whose Steam ID is not in the match are ignored; an empty `squad` produces the same output as `build_match_embed` with no focus
 - [ ] Limits asserted as before (`<= 1024` per field, `<= 6000` total, `<= 25` fields) for a 10-player match with 5 squad members
@@ -116,7 +116,7 @@ Data still comes from the Leetify public API, and everything is rule-based (no L
 
 **Acceptance Criteria:**
 - [ ] `cs2/poller.py` defines `NewMatch(match, squad)` and `MatchPoller(provider, store, clock, max_age_seconds=10800, max_per_cycle=3)` where `store` is a `LinkStore` + `MatchLog`
-- [ ] `async poll() -> list[NewMatch]` loads all links and handles each linked Steam ID sequentially with `get_recent_matches`
+- [ ] `async poll() -> list[NewMatch]` loads all links and handles each linked Steam ID sequentially with `get_recent_matches`; before a match is returned as a `NewMatch` it is replaced by `full_match(provider, match)` (from `cs2/client.py`, added by `tasks/prd-cs2-scoreboard-players.md`) because the history endpoint may list only the linked player, and the squad is computed from the full player list
 - [ ] A player that is not yet seeded is **seeded**: all their currently returned match IDs are recorded as posted, `mark_seeded` is called, and nothing is announced for them (this makes `/link` and first start silent)
 - [ ] For seeded players, matches whose IDs are not yet posted are candidates; candidates older than `max_age_seconds` (from `finished_at`; kept when `finished_at` is unknown) are recorded as posted and dropped
 - [ ] A match returned for several linked players is merged into one `NewMatch` listing every linked player who is in it (squad members are the linked Steam IDs present in `match.players`)
