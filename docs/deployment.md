@@ -159,6 +159,8 @@ LEETIFY_API_KEY=<leetify api key>
 # Optional: monthly activity report channel and its time zone.
 # ACTIVITY_CHANNEL_ID=<channel id>
 # ACTIVITY_TIMEZONE=Europe/Amsterdam
+# Optional: session poll time zone (default: ACTIVITY_TIMEZONE).
+# SESSIONS_TIMEZONE=Europe/Amsterdam
 # Optional: track Toasty ;pokemon catches (enable Message Content Intent in the portal first).
 # TOASTY_BOT_ID=<toasty user id>
 ```
@@ -265,6 +267,7 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log; `activity.sqlite3`: voice sessions, Toasty `;pokemon` events and posted monthly reports). Default `data` (relative to `WorkingDirectory`) |
 | `ACTIVITY_CHANNEL_ID` | optional | optional | Channel for the automatic monthly activity report (previous month, posted once after the month ends in `ACTIVITY_TIMEZONE`). Unset = no monthly auto-post. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `ACTIVITY_TIMEZONE` | optional | optional | IANA time zone name for activity month boundaries. Default `UTC`; an unknown name is a `ConfigError` at startup |
+| `SESSIONS_TIMEZONE` | optional | optional | IANA time zone name for session poll slot times. Default: the value of `ACTIVITY_TIMEZONE`; an unknown name is a `ConfigError` at startup |
 | `TOASTY_BOT_ID` | optional | optional | User ID of the Toasty bot. Set = track `;pokemon` catches and request the Message Content intent, which must also be enabled in the Developer Portal. Unset = no Toasty tracking |
 
 ## 6. Troubleshooting

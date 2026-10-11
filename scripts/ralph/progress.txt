@@ -79,3 +79,11 @@
 - Pokémon stats (activity/pokemon_stats.py): `pokemon_stats` filters events to the local month itself; `impatient_awards` returns `Award`s with `AwardKey.IMPATIENT` (value = hits) that go into `MonthlyReport.awards`, but `build_monthly_embed` renders keys in `POKEMON_AWARDS` in the Pokémon field instead of Awards. `UserProfile.pokemon` is None when the month has no Pokémon data (zeros otherwise). The Pokémon field always ends with a `🎯 Server:` totals line so a cooldown-only month never yields an empty (skipped) field. Command `FakeStore` needs `pokemon_events_between`.
 - Toasty (activity/pokemon.py, cogs/activity.py): `PokemonTracker(store, toasty_bot_id, guild_id, pending)` is a separate cog added in `setup` only with `TOASTY_BOT_ID` (shares the Activity store). Commands are remembered in `PendingCommands` (not consumed on lookup, so duplicate deliveries and edits still pair); events use the reply's `created_at` and `message_id` (INSERT OR IGNORE = idempotent). Embeds go to the parser as `embed.to_dict()`. Fixtures in tests/fixtures/toasty/replies.json carry `from_toasty` (false = other bot, must record nothing). Cog tests: `make_message`/`make_tracker` (real SqliteActivityStore) in tests/test_activity_pokemon.py.
 
+
+## 2026-10-11 - US-001
+- Added `Config.sessions_timezone` (default "UTC"); `load_config` reads `SESSIONS_TIMEZONE` via `_parse_timezone` with the parsed `activity_timezone` as default (blank/unset = activity zone).
+- Tests in tests/test_config.py (fallback, explicit wins, blank, invalid).
+- Docs: README Configuration table, .env.example, docs/deployment.md (example env block + settings reference).
+- Files: src/ninja_bot/config.py, tests/test_config.py, README.md, .env.example, docs/deployment.md
+- **Learnings:** `_parse_timezone(source, key, default)` takes any default, so a zone that falls back to another zone just passes the already-parsed value.
+---
