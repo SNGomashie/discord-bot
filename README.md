@@ -67,7 +67,7 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `LEETIFY_API_KEY` | none | no, recommended | Sent to Leetify as a bearer token. Get one at [leetify.com/app/developer](https://leetify.com/app/developer). Without it, requests are sent unauthenticated. |
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
-| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log). A relative path is relative to the process's working directory. |
+| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions and posted monthly reports). A relative path is relative to the process's working directory. |
 | `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report. Unset means no monthly auto-post. Positive integer. |
 | `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
 | `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
@@ -298,7 +298,9 @@ where the cause is `missing` (not found), `not a text channel`, or `missing View
 
 ## Data and storage
 
-The only persistent data is the CS2 database at `<DATA_DIR>/cs2.sqlite3`. It is created on first use (the directory too) and holds three tables:
+The bot keeps two SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
+
+The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds three tables:
 
 | Table | Columns | Purpose |
 |---|---|---|
@@ -306,7 +308,14 @@ The only persistent data is the CS2 database at `<DATA_DIR>/cs2.sqlite3`. It is 
 | `posted_matches` | `match_id` (primary key), `posted_at` | Matches already auto-posted; pruned to the newest 500. |
 | `seeded_players` | `steam64_id` (primary key) | Players whose old matches were recorded silently. |
 
-In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing it means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
+The activity database at `<DATA_DIR>/activity.sqlite3` holds two tables:
+
+| Table | Columns | Purpose |
+|---|---|---|
+| `voice_sessions` | `id` (primary key), `user_id`, `channel_id`, `start_ts`, `end_ts`, `last_seen` | One row per stretch of voice time (Unix timestamps). `end_ts` is empty while the member is still connected; `last_seen` is the last heartbeat, used to close sessions left open by a crash or restart. Never pruned. |
+| `reports_posted` | `month_key` (primary key, `YYYY-MM`), `posted_at` | Months whose activity overview was already auto-posted. |
+
+In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
 
 ## Troubleshooting
 
@@ -348,6 +357,7 @@ src/ninja_bot/
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
+  activity/       activity logic: periods (months), formatting, store (SQLite voice sessions)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/ and tests/fixtures/steam/
 docs/             deployment.md, manual-checks.md

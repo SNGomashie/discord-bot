@@ -66,6 +66,7 @@
 - Help cog (cogs/help.py): `command_infos(tree_commands)` keeps only `app_commands.Command` (str() on locale_str descriptions, choice values as str); `help_reply(infos, command)` returns an Embed or the unknown-command str. Tests build the tree from `Cog.__cog_app_commands__` of the real cog classes (`tree_commands()` in tests/test_help_cog.py) and a MagicMock bot whose `tree.get_commands` returns them.
 - Activity config: `ACTIVITY_TIMEZONE` is validated by `_parse_timezone` in config.py (ZoneInfo; catches `ZoneInfoNotFoundError` and `ValueError` for path-like names) and kept as a str on `Config`; build the `ZoneInfo` where it's used. `NinjaBot(config)` can be constructed in sync tests (no event loop needed) to inspect `bot.intents`.
 - Activity months (activity/periods.py): `Month(year, month)` is the one month definition (`key`, `start/end(tz)` aware local datetimes, end exclusive, `days`, `previous/next`); `month_of(ts, tz)`, `parse_month` -> `InvalidMonthError` (ValueError, user-facing `.message`; the constructor also rejects month 0/13 and years outside 1..9998). Aware datetimes sharing one tzinfo subtract as wall-clock time (DST ignored): compare `.timestamp()`s for real durations. `format_hours`/`day_strip` in activity/formatting.py.
+- Activity store (activity/store.py): `Session(id, user_id, channel_id, start_ts, end_ts, last_seen)` frozen dataclass lives here (stats.py reuses it). `SqliteActivityStore` mirrors cs2/store.py. `open_session` closes any open session of the user at `now` in the same transaction (one `with conn`). `close_stale(default_end=None) -> int` ends open sessions at `MAX(start_ts, COALESCE(last_seen, default_end, start_ts))` and returns the count. `sessions_between(start, end)` = `start_ts < end AND (end_ts IS NULL OR end_ts > start)` (half-open window), ordered by start_ts, id. Tests: tests/test_activity_store.py.
 
 ## 2026-10-11 - US-001
 - Config gains `activity_channel_id`, `activity_timezone` ("UTC"), `toasty_bot_id`; `_parse_timezone` raises ConfigError naming the variable. NinjaBot sets `intents.message_content = config.toasty_bot_id is not None`.
@@ -75,4 +76,8 @@
 ## 2026-10-11 - US-002
 - New package `ninja_bot.activity`: periods.py (`Month`, `month_of`, `parse_month`, `InvalidMonthError`) and formatting.py (`format_hours` truncates, NaN/inf/negative -> `0m`; `day_strip` 🟩/⬜ with a space every 7 days, days outside the month ignored).
 - Files: src/ninja_bot/activity/{__init__,periods,formatting}.py, tests/test_activity_periods.py, tests/test_activity_formatting.py. No docs (internal helpers).
+---
+## 2026-10-11 - US-003
+- `activity/store.py`: `ActivityStore` Protocol, `Session`, `SqliteActivityStore` (voice_sessions + index on (user_id, start_ts), reports_posted). `close_stale` returns how many sessions it closed (useful for logging in US-004).
+- Files: src/ninja_bot/activity/store.py, tests/test_activity_store.py, README.md (Data and storage, DATA_DIR row, layout), docs/deployment.md (backup notes, DATA_DIR), CLAUDE.md (activity Architecture entries).
 ---
