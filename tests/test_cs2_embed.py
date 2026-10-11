@@ -6,24 +6,32 @@ from pathlib import Path
 import discord
 import pytest
 
+from ninja_bot.cs2 import embed as embed_module
 from ninja_bot.cs2.awards import Award, compute_awards
 from ninja_bot.cs2.embed import (
     AWARDS_FIELD,
     BREAKDOWN_FIELD,
     FORM_FIELD,
     FRIENDS_FIELD,
+    LEADERBOARD_CONTINUED_FIELD,
+    LEADERBOARD_FIELD,
     MATCHES_FIELD,
+    MAX_LEADERBOARD_ROWS,
     NO_TEAM,
+    NOBODY_LINKED_MESSAGE,
     OTHER_PLAYERS_FIELD,
     PROFILE_COLOUR,
     RANKS_FIELD,
     RATINGS_FIELD,
+    UNRANKED,
     WINRATE_FIELD,
     YOUR_TEAM,
+    build_leaderboard_embed,
     build_match_embed,
     build_profile_embed,
     format_breakdown,
     format_friends,
+    format_leaderboard_row,
     format_player_stats,
     format_ranks,
     format_rating_bars,
@@ -47,6 +55,7 @@ from ninja_bot.cs2.models import (
     parse_match,
     parse_profile,
 )
+from ninja_bot.cs2.squad import LeaderboardRow, Metric, Trend, metric_label
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
 
@@ -703,3 +712,113 @@ def test_friends_lines_dropped_whole_over_the_field_limit(monkeypatch: pytest.Mo
     lines = value.splitlines()
     assert lines[-1] == f"+{4 - (len(lines) - 1)} more"
     assert all(line.endswith("(Team A)") for line in lines[:-1])
+
+
+def leaderboard_row(
+    rank: int | None,
+    discord_id: int,
+    name: str,
+    value: float | None,
+    trend: Trend | None = None,
+) -> LeaderboardRow:
+    return LeaderboardRow(rank=rank, discord_id=discord_id, name=name, value=value, trend=trend)
+
+
+def test_leaderboard_embed_lists_ranked_rows() -> None:
+    trend = Trend(direction="up", delta=0.03, streak_kind="win", streak_length=3)
+    rows = [
+        leaderboard_row(1, 11, "Alice", 0.05, trend),
+        leaderboard_row(2, 22, "Bob", 0.02),
+        leaderboard_row(3, 33, "Carol", 0.0),
+        leaderboard_row(4, 44, "Dave", -0.04),
+    ]
+
+    embed = build_leaderboard_embed(rows, Metric.RATING)
+
+    assert embed.title is not None
+    assert metric_label(Metric.RATING) in embed.title
+    assert [f.name for f in embed.fields] == [LEADERBOARD_FIELD]
+    lines = (embed.fields[0].value or "").split("\n")
+    assert lines == [
+        "🥇 <@11> Alice · **+0.05** ↑ +0.03 🔥3",
+        "🥈 <@22> Bob · **+0.02**",
+        "🥉 <@33> Carol · **+0.00**",
+        "4. <@44> Dave · **-0.04**",
+    ]
+    assert embed.footer.text is None
+
+
+def test_leaderboard_embed_uses_metric_formatting() -> None:
+    embed = build_leaderboard_embed([leaderboard_row(1, 11, "Alice", 0.62)], Metric.WINRATE)
+
+    assert embed.fields[0].value == "🥇 <@11> Alice · **62%**"
+
+
+def test_leaderboard_embed_shares_medals_for_ties() -> None:
+    rows = [
+        leaderboard_row(1, 11, "Alice", 70),
+        leaderboard_row(1, 22, "Bob", 70),
+        leaderboard_row(3, 33, "Carol", 60),
+        leaderboard_row(4, 44, "Dave", 50),
+    ]
+
+    lines = (build_leaderboard_embed(rows, Metric.AIM).fields[0].value or "").split("\n")
+
+    assert [line.split(" ")[0] for line in lines] == ["🥇", "🥇", "🥉", "4."]
+
+
+def test_leaderboard_embed_shows_dash_for_missing_values() -> None:
+    rows = [leaderboard_row(1, 11, "Alice", 0.05), leaderboard_row(None, 22, "Bob", None)]
+
+    lines = (build_leaderboard_embed(rows, Metric.CLUTCH).fields[0].value or "").split("\n")
+
+    assert lines[1] == f"{UNRANKED} <@22> Bob · **-**"
+
+
+def test_leaderboard_embed_escapes_names() -> None:
+    embed = build_leaderboard_embed([leaderboard_row(1, 11, "*bold*", 0.05)], Metric.RATING)
+
+    assert escape_name("*bold*") in (embed.fields[0].value or "")
+
+
+def test_leaderboard_embed_empty_points_to_link() -> None:
+    embed = build_leaderboard_embed([], Metric.RATING)
+
+    assert embed.fields == []
+    assert embed.description == NOBODY_LINKED_MESSAGE
+    assert "/link" in embed.description
+
+
+def test_leaderboard_embed_caps_rows_and_splits_fields() -> None:
+    trend = Trend(direction="down", delta=-0.12, streak_kind="loss", streak_length=12)
+    # Every character escapes, so names are as long as escaping can make them.
+    name = "_" * 32
+    rows = [
+        leaderboard_row(i + 1, 10**19 + i, name, -0.15, trend)
+        for i in range(MAX_LEADERBOARD_ROWS + 5)
+    ]
+
+    embed = build_leaderboard_embed(rows, Metric.OPENING)
+
+    assert len(embed) <= 6000
+    assert len(embed.fields) > 1
+    assert all(len(f.value or "") <= 1024 for f in embed.fields)
+    lines = [line for f in embed.fields for line in (f.value or "").split("\n")]
+    assert len(lines) == MAX_LEADERBOARD_ROWS
+    assert all(line.startswith(f"{i + 1}. ") or i < 3 for i, line in enumerate(lines))
+    assert lines[-1].startswith(f"{MAX_LEADERBOARD_ROWS}. <@{10**19 + 24}>")
+    assert embed.footer.text == "+5 more"
+
+
+def test_leaderboard_embed_fields_hold_whole_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embed_module, "FIELD_VALUE_LIMIT", 60)
+    rows = [leaderboard_row(i + 1, 11 + i, f"Player{i}", 0.01) for i in range(6)]
+    expected = [format_leaderboard_row(row, Metric.RATING) for row in rows]
+
+    embed = build_leaderboard_embed(rows, Metric.RATING)
+
+    assert all(len(f.value or "") <= 60 for f in embed.fields)
+    assert [f.name for f in embed.fields][1:] == [LEADERBOARD_CONTINUED_FIELD] * (
+        len(embed.fields) - 1
+    )
+    assert [line for f in embed.fields for line in (f.value or "").split("\n")] == expected

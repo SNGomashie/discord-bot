@@ -14,6 +14,13 @@ from ninja_bot.cs2.formatting import (
 )
 from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile, Ranks
+from ninja_bot.cs2.squad import (
+    LeaderboardRow,
+    Metric,
+    format_metric_value,
+    format_trend,
+    metric_label,
+)
 
 # Discord embed limits.
 TITLE_LIMIT = 256
@@ -35,6 +42,13 @@ WINRATE_FIELD = "Winrate"
 MATCHES_FIELD = "Matches"
 RATINGS_FIELD = "Ratings"
 PROFILE_COLOUR = discord.Colour.blurple()
+LEADERBOARD_COLOUR = discord.Colour.gold()
+LEADERBOARD_FIELD = "Ranking"
+LEADERBOARD_CONTINUED_FIELD = "Ranking (cont.)"
+MAX_LEADERBOARD_ROWS = 25
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+UNRANKED = "-"
+NOBODY_LINKED_MESSAGE = "Nobody is linked yet. Use `/link` to link your Steam account."
 # Aim/positioning/utility are 0-100 scores; clutch/opening are signed ratings whose
 # bar is full at this value (a guess until real API data is captured).
 SCORE_MAX = 100.0
@@ -214,6 +228,65 @@ def build_profile_embed(profile: Profile) -> discord.Embed:
     if profile.recent_matches:
         _add_field(embed, FORM_FIELD, form_strip(profile.recent_matches), inline=False)
     return embed
+
+
+def build_leaderboard_embed(rows: Sequence[LeaderboardRow], metric: Metric) -> discord.Embed:
+    """The squad ranked by `metric`: one line per player (medals for the top 3).
+
+    Lines are packed into fields of at most `FIELD_VALUE_LIMIT` characters without
+    splitting a line; at most `MAX_LEADERBOARD_ROWS` players are shown (`+N more` footer).
+    Mentions are built only from stored numeric Discord IDs; send with
+    `AllowedMentions.none()`.
+    """
+    embed = discord.Embed(
+        title=f"CS2 leaderboard: {metric_label(metric)}",
+        colour=LEADERBOARD_COLOUR,
+    )
+    if not rows:
+        embed.description = NOBODY_LINKED_MESSAGE
+        return embed
+    lines = [format_leaderboard_row(row, metric) for row in rows[:MAX_LEADERBOARD_ROWS]]
+    for index, chunk in enumerate(_pack_lines(lines, FIELD_VALUE_LIMIT)):
+        name = LEADERBOARD_FIELD if index == 0 else LEADERBOARD_CONTINUED_FIELD
+        embed.add_field(name=name, value=chunk, inline=False)
+    hidden = len(rows) - MAX_LEADERBOARD_ROWS
+    if hidden > 0:
+        embed.set_footer(text=f"+{hidden} more")
+    return embed
+
+
+def format_leaderboard_row(row: LeaderboardRow, metric: Metric) -> str:
+    """`🥇 <@id> Name · **+0.05** ↑ +0.03 🔥3`; unranked rows start with `-`."""
+    if row.rank is None:
+        position = UNRANKED
+    else:
+        position = MEDALS.get(row.rank, f"{row.rank}.")
+    text = (
+        f"{position} <@{row.discord_id}> {escape_name(row.name)}"
+        f" · **{format_metric_value(metric, row.value)}**"
+    )
+    trend = format_trend(row.trend)
+    return f"{text} {trend}" if trend else text
+
+
+def _pack_lines(lines: Sequence[str], limit: int) -> list[str]:
+    """Join lines into chunks of at most `limit` characters, never splitting a line.
+
+    A single line longer than `limit` is truncated on its own.
+    """
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        line = _truncate(line, limit)
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        chunks.append(current)
+        current = line
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def format_ranks(ranks: Ranks) -> str:
