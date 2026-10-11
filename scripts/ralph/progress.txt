@@ -116,3 +116,9 @@
 - Docs: README reminders bullet, docs/manual-checks.md late-confirmation check, CLAUDE.md reminders entry.
 - Needs manual check: late confirmation in Discord (docs/manual-checks.md).
 - Learning: re-exports for mypy strict use `from x import NAME as NAME`.
+
+## 2026-10-11 - US-005
+- `VoteView.save` with both `yes_ids` and `maybe_ids` empty replies `content.VOTE_EMPTY_MESSAGE` ephemerally, doesn't stop the view and doesn't call `on_save`. None of these work is unchanged; a pre-filled form saves as is (picks start from the stored votes).
+- Tests: empty Save refused + view open + nothing stored, clearing picks then Save refused, later pick saves; pre-filled unchanged Save. `test_save_after_the_poll_closed...` now picks a slot first.
+- Files: sessions/views.py, sessions/content.py, tests/test_session_cog.py, README.md (Vote button bullet), docs/manual-checks.md.
+- Needs manual check: empty Save in Discord (docs/manual-checks.md).

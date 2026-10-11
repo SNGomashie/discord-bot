@@ -523,6 +523,49 @@ async def test_none_of_these_records_all_no(cog: Sessions, store: SqliteSessionS
     assert mine and set(mine) == {Vote.NO}
 
 
+async def test_empty_save_is_refused_and_the_form_stays_open(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    edit = poll_message_edit(cog)
+    view = await open_vote(cog, poll_id, GM)
+    interaction = await save(view, GM)
+    assert reply(interaction) == (content.VOTE_EMPTY_MESSAGE, {"ephemeral": True})
+    interaction.response.edit_message.assert_not_awaited()
+    assert not view.is_finished()
+    assert await store.votes(poll_id, 1) == {}
+    edit.assert_not_awaited()
+    # Clearing earlier picks is refused the same way; picking a slot afterwards still saves.
+    first, *_ = await slot_ids(store, poll_id)
+    view.pick("yes", [first])
+    view.pick("yes", [])
+    interaction = await save(view, GM)
+    assert reply(interaction) == (content.VOTE_EMPTY_MESSAGE, {"ephemeral": True})
+    view.pick("maybe", [first])
+    interaction = await save(view, GM)
+    interaction.response.edit_message.assert_awaited_once_with(
+        content=VOTE_MESSAGES[VoteResult.RECORDED], view=None
+    )
+    assert (await store.votes(poll_id, 1))[(GM, first)] is Vote.IF_NEEDED
+    assert view.is_finished()
+
+
+async def test_prefilled_save_without_changes_keeps_the_votes(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    poll_message_edit(cog)
+    first, second, *_ = await slot_ids(store, poll_id)
+    await cog.service.submit_vote(poll_id, GM, [first], [second])
+    view = await open_vote(cog, poll_id, GM)
+    interaction = await save(view, GM)
+    interaction.response.edit_message.assert_awaited_once_with(
+        content=VOTE_MESSAGES[VoteResult.RECORDED], view=None
+    )
+    votes = await store.votes(poll_id, 1)
+    assert (votes[(GM, first)], votes[(GM, second)]) == (Vote.YES, Vote.IF_NEEDED)
+
+
 async def test_vote_refused_for_non_members_and_closed_polls(
     cog: Sessions, store: SqliteSessionStore
 ) -> None:
@@ -543,6 +586,7 @@ async def test_save_after_the_poll_closed_is_refused_without_refresh(
     poll_id = await make_poll(cog, store)
     edit = poll_message_edit(cog)
     view = await open_vote(cog, poll_id, GM)
+    view.pick("yes", (await slot_ids(store, poll_id))[:1])
     await store.cancel_poll(poll_id)
     interaction = await save(view, GM)
     interaction.response.edit_message.assert_awaited_once_with(

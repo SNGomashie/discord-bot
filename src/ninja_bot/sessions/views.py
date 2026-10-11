@@ -173,7 +173,9 @@ class VoteView(ui.View):
     """Private vote form: **Works for me** / **Only if needed** selects, Save, None of these.
 
     `options` are (slot id, label) pairs; the selects start with the user's stored votes.
-    Both buttons hand the choice to `on_save` and stop the view.
+    Both buttons hand the choice to `on_save` and stop the view, except a Save with nothing
+    picked: that is refused privately and the form stays open, so a too-early Save never
+    counts as "none of these".
     """
 
     def __init__(
@@ -204,6 +206,9 @@ class VoteView(ui.View):
 
     @ui.button(label=content.VOTE_SAVE_BUTTON, style=discord.ButtonStyle.success, row=2)
     async def save(self, interaction: discord.Interaction, button: ui.Button[VoteView]) -> None:
+        if not self.yes_ids and not self.maybe_ids:
+            await interaction.response.send_message(content.VOTE_EMPTY_MESSAGE, ephemeral=True)
+            return
         self.stop()
         await self.on_save(interaction, self.yes_ids, self.maybe_ids)
 

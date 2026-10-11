@@ -129,6 +129,7 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] Vote opens a private form (only you see it) with the two multi-selects, Save and None of these work; option labels read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE`
 - [ ] Pick slots, Save: the form turns into "Your votes are saved." and the poll counts and `Waiting for` update
 - [ ] Vote again: the selects are pre-selected with your saved votes; None of these work turns all your votes into no
+- [ ] Vote without having saved anything, press Save with both selects empty: a private "Pick at least one slot..." reply, the form stays open and nothing is saved; pick a slot and Save works. Vote again and press Save without changing the pre-selected votes: they are saved unchanged
 - [ ] The form and the poll embed fit on the phone app (selects usable, labels not cut off)
 - [ ] Close round pressed by a player without Manage Events is refused privately; pressed by the GM it closes the round
 - [ ] With two players voting ✅ on a slot (and `min_players` unset), the last Save closes the round by itself: the old poll message says "Round 1 is closed." without buttons, and the result message pings only the GM with Confirm buttons

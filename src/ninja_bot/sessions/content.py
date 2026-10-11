@@ -125,6 +125,10 @@ VOTE_YES_PLACEHOLDER = "✅ Works for me"
 VOTE_MAYBE_PLACEHOLDER = "🤔 Only if needed"
 VOTE_SAVE_BUTTON = "Save"
 VOTE_NONE_BUTTON = "None of these work"
+# Save pressed with both selects empty; the form stays open.
+VOTE_EMPTY_MESSAGE = (
+    "Pick at least one slot, or press **None of these work** if none of them suit you."
+)
 
 # /session_poll and button replies (cog).
 GUILD_ONLY_MESSAGE = "Session polls only work in a server channel."
