@@ -402,16 +402,19 @@ class Sessions(commands.Cog):
 
     async def poll_message(self, poll: Poll) -> tuple[discord.Embed, discord.ui.View]:
         """The poll embed for the current round and its buttons."""
+        return await self.poll_embed(poll), poll_view(poll.id)
+
+    async def poll_embed(self, poll: Poll) -> discord.Embed:
+        """The poll embed for the current round."""
         players, slots, votes = await self.service.round_state(poll)
         slot_ids = [slot.id for slot in slots]
-        embed = build_poll_embed(
+        return build_poll_embed(
             poll,
             slots,
             score_slots(slot_ids, players, votes),
             players,
             pending_players(players, slot_ids, votes),
         )
-        return embed, poll_view(poll.id)
 
     @app_commands.command(
         name="sessions", description="List open session polls and upcoming sessions"
@@ -651,17 +654,21 @@ class Sessions(commands.Cog):
         await self.advance_if_ready(poll_id)
 
     async def refresh_poll_message(self, poll_id: int) -> None:
-        """Re-render the public poll message; failures are logged, never raised."""
+        """Re-render the embed of a voting poll's message; failures are logged, never raised.
+
+        Closed polls are left alone, and the edit never sends `view=`: the buttons are
+        static, so a refresh that lands after a close can't bring them back.
+        """
         try:
             poll = await self.service.store.get_poll(poll_id)
-            if poll is None or poll.message_id is None:
+            if poll is None or poll.status != STATUS_VOTING or poll.message_id is None:
                 return
-            embed, view = await self.poll_message(poll)
+            embed = await self.poll_embed(poll)
         except Exception:
             log.exception("Could not refresh session poll %d", poll_id)
             return
         await self._edit_poll_message(
-            poll, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none()
+            poll, embed=embed, allowed_mentions=discord.AllowedMentions.none()
         )
 
     async def advance_if_ready(self, poll_id: int) -> RoundOutcome | None:

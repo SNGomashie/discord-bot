@@ -608,6 +608,59 @@ async def test_failed_refresh_does_not_break_the_vote(
     assert await store.votes(poll_id, 1)
 
 
+async def test_refresh_edits_only_the_embed_of_a_voting_poll(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    poll_id = await make_poll(cog, store)
+    edit = poll_message_edit(cog)
+    await cog.refresh_poll_message(poll_id)
+    edit.assert_awaited_once()
+    kwargs = edit.await_args.kwargs
+    assert set(kwargs) == {"embed", "allowed_mentions"}
+    assert isinstance(kwargs["embed"], discord.Embed)
+
+
+@pytest.mark.parametrize(
+    "status", [STATUS_AWAITING_CONFIRM, STATUS_CONFIRMED, STATUS_FAILED, STATUS_CANCELLED]
+)
+async def test_refresh_leaves_closed_polls_alone(
+    cog: Sessions, store: SqliteSessionStore, status: str
+) -> None:
+    poll_id = await make_poll(cog, store)
+    edit = poll_message_edit(cog)
+    await store.set_status(poll_id, status)
+    await cog.refresh_poll_message(poll_id)
+    edit.assert_not_awaited()
+
+
+async def test_refresh_racing_a_close_keeps_the_buttons_removed(
+    cog: Sessions, store: SqliteSessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poll_id = await make_poll(cog, store)
+    _, edit = channel_mocks(cog)
+    views: list[Any] = ["buttons"]
+
+    async def record(**kwargs: Any) -> None:
+        if "view" in kwargs:
+            views.append(kwargs["view"])
+
+    edit.side_effect = record
+    render = cog.poll_embed
+
+    async def close_meanwhile(poll: Any) -> discord.Embed:
+        # The refresh read a voting poll; the round closes before its edit lands.
+        monkeypatch.setattr(cog, "poll_embed", render)
+        embed = await render(poll)
+        await cog.close_and_post(poll_id, "manual", GM)
+        return embed
+
+    monkeypatch.setattr(cog, "poll_embed", close_meanwhile)
+    await cog.refresh_poll_message(poll_id)
+    assert edit.await_count == 2
+    assert "view" not in edit.await_args.kwargs
+    assert views[-1] is None
+
+
 async def test_unexpected_save_error_replies_generic(
     cog: Sessions, store: SqliteSessionStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -122,3 +122,9 @@
 - Tests: empty Save refused + view open + nothing stored, clearing picks then Save refused, later pick saves; pre-filled unchanged Save. `test_save_after_the_poll_closed...` now picks a slot first.
 - Files: sessions/views.py, sessions/content.py, tests/test_session_cog.py, README.md (Vote button bullet), docs/manual-checks.md.
 - Needs manual check: empty Save in Discord (docs/manual-checks.md).
+
+## 2026-10-11 - US-006
+- `refresh_poll_message` returns unless the poll is `voting` and edits only `embed` + `allowed_mentions` (no `view=`), so a late refresh can't restore buttons a close removed. New `Sessions.poll_embed(poll)`; `poll_message` = `poll_embed` + `poll_view`.
+- Tests: voting refresh edits embed only; no edit for awaiting_confirm/confirmed/failed/cancelled; refresh racing a close (patched `poll_embed` closes before the edit) leaves `view=None` last.
+- Files: cogs/sessions.py, tests/test_session_cog.py, CLAUDE.md. No user-visible doc change.
+- Learning: when monkeypatching `cog.poll_embed` to inject a race, restore it first: the close path re-renders via `poll_message` -> `poll_embed` and would recurse.
