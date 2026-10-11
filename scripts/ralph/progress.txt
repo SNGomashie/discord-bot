@@ -45,6 +45,7 @@
 - Capture summary (scripts/capture_leetify.py): `summarize_documents(documents)` copies no values from the documents (match ids become `match-N` labels, everything else is counts), so it is safe on raw or anonymized data; `main` prints it after writing files. Verdict strings are `COMPARE_FEWER`/`COMPARE_SAME`/`COMPARE_UNKNOWN`.
 - Scoreboard players (tasks/prd-cs2-scoreboard-players.md): it is unconfirmed whether Leetify's `/v3/profile/matches` lists all players or only the requested one, so `full_match` (cs2/client.py) re-fetches by id when the history entry lacks two non-empty teams; `scripts/capture_leetify.py` prints which case the real API is. Mentions never render in code blocks or embed field names: use them only in normal embed text/field values, always with `AllowedMentions.none()`, and build them only from stored numeric Discord IDs. Member lookups use REST (`fetch_member`), no Server Members intent.
 - CS2 reverse lookup: `LinkStore.discord_ids_for(steam64_ids)` -> {steam_id: lowest discord_id}; `SqliteLinkStore` dedupes/sorts input, skips the thread for empty input, and runs `IN (...)` in chunks of `IN_CHUNK_SIZE` (500) on one connection with bound params. `MemoryLinkStore` in tests/test_cs2_cog.py mirrors the lowest-ID rule.
+- CS2 identities (cs2/identities.py): `resolve_identities(players, links, lookup)` -> {steam_id: Identity}; one `discord_ids_for` query, distinct Discord IDs looked up concurrently (capped at `MAX_LOOKUPS` 10), failing lookups logged by type name only. Cog: `member_lookup(guild)` (module function) and `Cs2._match_identities(interaction, match)` ({} without a guild, store untouched). Tests in tests/test_cs2_identities.py (`FakeLinks`, `FakeLookup`).
 - Partial matches in tests: `dataclasses.replace(match, players=...)`; cog `FakeStats(by_id=[full])` makes `get_match` return a different match than the history entry.
 
 ## 2026-10-11 - US-001
@@ -75,4 +76,11 @@
 - `MemoryLinkStore` fake gets the method.
 - Files: src/ninja_bot/cs2/store.py, tests/test_cs2_store.py, tests/test_cs2_cog.py
 - Tests: found/not found, empty input (no thread, no file), duplicates (lowest ID), 1200 IDs across chunk boundaries, hostile quote/SQL IDs.
+---
+
+## 2026-10-11 - US-005
+- New src/ninja_bot/cs2/identities.py: frozen `Identity`, `MemberLookup` alias, `resolve_identities` (dedupes players, one reverse-link query, `asyncio.gather` over distinct Discord IDs, any lookup exception -> not a member + warning without traceback).
+- cogs/cs2.py: `member_lookup(guild)` (get_member, then fetch_member; NotFound -> None, HTTPException -> None + log) and `Cs2._match_identities` (no guild -> {} without querying the store). Not wired into /scoreboard yet (US-008).
+- Tests: tests/test_cs2_identities.py (found, not member, unlinked, one user on two Steam IDs, raising lookup, concurrency, empty, cap, cog lookup cache/fetch/NotFound/HTTPException/no guild).
+- Needs manual check: none yet (visible after US-008).
 ---

@@ -23,6 +23,7 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
   - `store.py`: `LinkStore` Protocol, `SqliteLinkStore` (`<DATA_DIR>/cs2.sqlite3`).
   - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name` (names in code blocks), `escape_name` (names in embed text), `display_width` (table alignment).
   - `awards.py`: `compute_awards` (fun match awards).
+  - `identities.py`: `Identity`, `resolve_identities` (match players -> linked server members via an injected `lookup`; never imports discord). The cog's `member_lookup(guild)` provides it (cache, then REST `fetch_member`).
   - `embed.py`: `build_match_embed`, `build_profile_embed`.
 - `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.
 - `tests/`: pytest (asyncio_mode=auto).
