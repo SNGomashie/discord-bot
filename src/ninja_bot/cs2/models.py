@@ -44,8 +44,9 @@ class ApiError(Cs2Error):
 
 class InvalidSteamIdError(Cs2Error):
     default_message = (
-        "That doesn't look like a Steam ID. "
-        "Use your 17-digit SteamID64 or a `steamcommunity.com/profiles/<id>` link."
+        "That doesn't look like a Steam account. Use your 17-digit SteamID64, "
+        "a `steamcommunity.com/profiles/<id>` or `steamcommunity.com/id/<name>` link, "
+        "or your custom URL name."
     )
 
 

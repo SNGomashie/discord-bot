@@ -45,7 +45,7 @@ from ninja_bot.cs2.models import (
     parse_match,
     parse_profile,
 )
-from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH, VANITY_URL_MESSAGE
+from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH, STEAM_ID_ONLY_MESSAGE
 from ninja_bot.cs2.store import SqliteLinkStore
 from ninja_bot.media.cooldown import UserCooldown
 
@@ -242,7 +242,7 @@ def test_not_linked_message_escapes_links() -> None:
     ("steam", "message"),
     [
         ("not an id", InvalidSteamIdError.default_message),
-        ("https://steamcommunity.com/id/someone", VANITY_URL_MESSAGE),
+        ("https://steamcommunity.com/id/someone", STEAM_ID_ONLY_MESSAGE),
     ],
 )
 async def test_link_invalid_id_is_ephemeral_and_skips_api(steam: str, message: str) -> None:
