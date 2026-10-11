@@ -209,11 +209,38 @@ def test_current_streak_ends_today_in_current_month() -> None:
     assert user.current_streak == 4
 
 
-def test_current_streak_zero_when_today_inactive() -> None:
+def test_current_streak_survives_a_quiet_morning() -> None:
+    now = ts(2026, 10, 11, 9)
+    user = monthly_stats(days_session(list(range(1, 11))), OCTOBER, UTC_TZ, now)[1]
+    assert user.current_streak == 10
+    assert user.longest_streak == 10
+
+
+def test_current_streak_counts_today_when_active() -> None:
+    now = ts(2026, 10, 11, 22)
+    user = monthly_stats(days_session(list(range(1, 12))), OCTOBER, UTC_TZ, now)[1]
+    assert user.current_streak == 11
+
+
+def test_current_streak_zero_when_yesterday_and_today_inactive() -> None:
     now = ts(2026, 10, 13, 22)
-    user = monthly_stats(days_session([9, 10, 11, 12]), OCTOBER, UTC_TZ, now)[1]
+    user = monthly_stats(days_session([9, 10, 11]), OCTOBER, UTC_TZ, now)[1]
     assert user.current_streak == 0
-    assert user.longest_streak == 4
+    assert user.longest_streak == 3
+
+
+def test_current_streak_zero_on_the_first_before_joining() -> None:
+    # On the 1st there is no yesterday in the month: a quiet morning gives 0.
+    november = Month(2026, 11)
+    now = ts(2026, 11, 1, 9)
+    late_october = session(ts(2026, 10, 31, 20), ts(2026, 11, 1, 0, 10))
+    user = monthly_stats([late_october], november, UTC_TZ, now)[1]
+    assert user.active_days == frozenset({1})
+    assert user.current_streak == 1
+    quiet = session(ts(2026, 10, 31, 20), ts(2026, 11, 1, 0, 2))
+    user = monthly_stats([quiet], november, UTC_TZ, now)[1]
+    assert user.active_days == frozenset()
+    assert user.current_streak == 0
 
 
 # --- rank ---

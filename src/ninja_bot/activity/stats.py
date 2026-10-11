@@ -78,7 +78,14 @@ def _longest_run(days: frozenset[int]) -> int:
     return longest
 
 
-def _run_ending_on(days: frozenset[int], last_day: int) -> int:
+def _run_ending_on(days: frozenset[int], last_day: int, *, ongoing: bool) -> int:
+    """Length of the run of active days ending on `last_day`.
+
+    When `last_day` is today (`ongoing`), a quiet day so far doesn't break the
+    run: it then ends on yesterday.
+    """
+    if ongoing and last_day not in days:
+        last_day -= 1
     length = 0
     while last_day - length in days:
         length += 1
@@ -90,8 +97,8 @@ def monthly_stats(
 ) -> dict[int, UserStats]:
     """Per-user stats for `month` in local time `tz`; users without time are left out.
 
-    The current streak ends on the month's last day, or on today while the month
-    is the current one.
+    The current streak ends on the month's last day, or, while the month is the
+    current one, on today (yesterday if today isn't active yet).
     """
     start = month.start(tz).timestamp()
     end = month.end(tz).timestamp()
@@ -105,7 +112,8 @@ def monthly_stats(
         for day, seconds in _seconds_per_day(*clipped, tz).items():
             day_seconds[session.user_id][day] += seconds
 
-    if month_of(now, tz) == month:
+    ongoing = month_of(now, tz) == month
+    if ongoing:
         streak_end = datetime.fromtimestamp(now, tz).day
     else:
         streak_end = month.days(tz)
@@ -121,7 +129,7 @@ def monthly_stats(
             total_seconds=total,
             active_days=active,
             longest_streak=_longest_run(active),
-            current_streak=_run_ending_on(active, streak_end),
+            current_streak=_run_ending_on(active, streak_end, ongoing=ongoing),
             sessions_count=len(user_durations),
             longest_session_seconds=max(user_durations),
             average_session_seconds=total / len(user_durations),

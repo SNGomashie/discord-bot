@@ -311,7 +311,7 @@ The bot records how long each member spends in voice channels. It always runs; t
 
 ### /myactivity
 
-`/myactivity [user] [month]` posts one member's month (default: you), publicly: total voice time and rank, active days out of the days in the month, current and longest streak of active days, number of sessions with the longest and average session, a strip with one square per day (🟩 active, ⬜ not), and any awards they won (including ⏳ Impatient). When the month has Pokémon data, a **Pokémon** field shows their catches, shinies and cooldown hits (`0 catches · 0 shinies · 0 cooldown hits` if they didn't play). A member with Pokémon data but no voice time that month gets the "wasn't in voice" reply.
+`/myactivity [user] [month]` posts one member's month (default: you), publicly: total voice time and rank, active days out of the days in the month, current and longest streak of active days, number of sessions with the longest and average session, a strip with one square per day (🟩 active, ⬜ not), and any awards they won (including ⏳ Impatient). Streaks count active days in a row within the viewed month only, so they restart on the 1st. For an ended month the current streak is the run ending on its last day; for the current month it ends today, or yesterday while you haven't been in voice yet today, so a quiet morning doesn't break it. When the month has Pokémon data, a **Pokémon** field shows their catches, shinies and cooldown hits (`0 catches · 0 shinies · 0 cooldown hits` if they didn't play). A member with Pokémon data but no voice time that month gets the "wasn't in voice" reply.
 
 ### Months, cooldown and errors
 
