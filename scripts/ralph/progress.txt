@@ -1,4 +1,4 @@
-# Ralph progress log — started 2026-10-10 (feature: cs2-hardening; patterns carried over)
+# Ralph progress log — started 2026-10-11 (feature: cs2-vanity-links; patterns carried over)
 
 ## Codebase Patterns
 - Config: optional env ints go through `_parse_positive_int(source, key, default)` (or `_parse_optional_positive_int(source, key)` for values without a default, e.g. channel IDs) in config.py (raises ConfigError naming the variable). New Config fields need a default so existing constructors keep working.
@@ -25,7 +25,7 @@
 - CS2 models (cs2/models.py): `Cs2Error` mirrors `MediaError` (default_message/.message). `PlayerMatchStats` has every stat optional except steam64_id (keyword defaults); `accuracy`/`spray_accuracy` are percentages (0-100). `hs_percent` is 0-100, `kd_ratio` with 0 deaths = kills. `Match.team_scores` is a tuple of `TeamScore(team_number, score)`; `Match.teams()` always returns 2 tuples (padded with `()`), dropping players without a team number. `Profile` ratings are flat fields; ranks live in `Ranks(premier, faceit_level, leetify)`; `RecentMatch.score` is (own, other).
 - CS2 parsing (cs2/models.py): tolerant helpers `_opt_str`/`_opt_id`/`_opt_int`/`_opt_float` are duplicated from media/models.py (private there). `_percent` turns fractions <= 1.0 into 0-100 (accuracy, accuracy_head, spray_accuracy); `_milliseconds` turns match `reaction_time` < 10 (seconds) into ms. Both are guesses at units until the capture script is run. `_opt_datetime` parses ISO 8601 (incl. `Z`) and makes naive values UTC. Match stat names used: `trade_kills_succeed`, `flash_assist`, `initial_team_number`, `shots_hit_friend`. `team_scores` come out sorted by team number.
 - CS2 profile parsing: `parse_profile` raises PrivateProfileError for any `privacy_mode` other than "public" (missing/null = public), ApiError without steam64_id. Faceit level comes from `ranks.faceit` (not `faceit_level`). `rating` holds aim/positioning/utility/clutch/opening/ct_leetify/t_leetify. Recent matches: entries without id are skipped, `outcome` outside win/loss/tie -> None, `score` must be a 2-item list; sorted newest first by finished_at (undated last, stable).
-- CS2 Steam IDs: `parse_steam_id` (cs2/steam.py) caps input at `MAX_STEAM_INPUT_LENGTH` (200, raw text before strip) — reuse it as the `app_commands.Range` max on `/link steam`. Vanity URLs raise `InvalidSteamIdError(VANITY_URL_MESSAGE)`; everything else uses the default message. Host match is case-insensitive; query strings/extra path segments are rejected.
+- CS2 Steam IDs: `parse_steam_target` (cs2/steam.py) returns `SteamId` | `VanityName` (frozen, `.value`); it caps input at `MAX_STEAM_INPUT_LENGTH` (200, raw text before strip) — reuse it as the `app_commands.Range` max on `/link steam`. `is_vanity_name` / `VANITY_NAME_RE` (2-32 ASCII `A-Za-z0-9_-`, never 17 digits) is the one vanity check; reuse it in the resolver. `/profiles/` URLs reject query strings/extra segments; `/id/` URLs ignore `?`/`#`. `parse_steam_id` is a thin ID-only wrapper (raises `STEAM_ID_ONLY_MESSAGE` for vanity input) used only by scripts/capture_leetify.py (the cog uses `parse_steam_target`).
 - CS2 client (cs2/client.py): `LeetifyClient(api_key, base_url, fetch, timeout_s)`; `fetch(url, headers) -> FetchResponse(status, body)` is injectable (tests use a `StubFetch`), default is a lazy aiohttp session closed by `aclose()`. `asyncio.timeout` wraps every fetch, so injected fetches are bounded too. Errors are raised `from None` with default messages and logs only show the path/status, so the key can't leak. 404s map to `PlayerNotFoundError` by default; `_get`/`_get_object`/`_raise_for_status` take `not_found=` (get_match passes `MatchNotFoundError`). Fetch errors caught in `_get`: `TimeoutError`, `aiohttp.ClientError`, `OSError`, `UnicodeDecodeError` (from `response.text()`; it's a ValueError subclass, so it must be caught around the fetch, not by the JSON `except ValueError`). `/v3/profile/matches` is expected to return a JSON list of match details (parsed with `parse_match`, bad entries skipped, newest first); unverified until the capture script runs.
 - CS2 links (cs2/store.py): `LinkStore` Protocol + `SqliteLinkStore(path)`; one short-lived sqlite3 connection per call (wrapped in `contextlib.closing`, since `with conn` only commits), sync `_get/_set/_remove/_all_links` helpers run via `asyncio.to_thread`. Parent dir + schema are created lazily on first call, so constructing the store does no I/O.
 - CS2 formatting (cs2/formatting.py): `format_team_table` renders a header + one row per player inside ``` with fixed widths (`_ROW_FORMAT`); `clean_name` strips backticks/non-printables and truncates to 12 with `…` (reuse it anywhere a player name goes into a code block). Star = most MVPs, then best rating (none if both unknown everywhere). Over `max_chars` it drops rows from the bottom + `+N more`; raises ValueError if even the header doesn't fit. `format_rating` gives `+0.05`/`-` and never `-0.00`. `form_strip` shows the newest 5 newest-first (🟩🟥🟨⬜) + ` avg +x.xx` (omitted without ratings); empty -> `NO_RECENT_MATCHES`.
@@ -39,76 +39,34 @@
 - CS2 /scoreboard fetches run concurrently via `Cs2._fetch_match_and_profile` (two tasks; await match then profile, so a match error wins; `finally` cancels both and `gather(..., return_exceptions=True)` drains them so nothing is left running or unretrieved). Concurrency tests use `GatedStats` (FakeStats + `asyncio.Event` started/gate per call) and `gated_cog` in tests/test_cs2_cog.py.
 - CS2 table widths: name column width is `NAME_WIDTH` in *display columns* (`display_width`: W/F = 2, Mn/Me/Cf/combining = 0). `_ROW_FORMAT` has no name width; `_pad_name` pads header and rows. Read `NAME_WIDTH` at call time (tests monkeypatch `formatting.NAME_WIDTH`).
 - CS2 names in embed text outside code blocks (award lines, field names, embed titles, cog messages) go through `escape_name` (cs2/formatting.py); names inside code blocks use `clean_name`. `escape_markdown` already doubles backslashes but only escapes *complete* `[x](y)` links, so `escape_name` escapes leftover `[ ] ( )` after it (odd backslash run = already escaped). Never pre-escape before `escape_markdown` (it would double your backslashes). Use `ignore_links=False` so URLs get the same treatment.
+- Vanity links (tasks/prd-cs2-vanity-links.md): `steamcommunity.com/id/<name>/?xml=1` fixtures in tests/fixtures/steam/ are hand-written, not captured; the endpoint is unofficial, so every failure must degrade to a friendly message pointing at the 17-digit ID. Never parse that response with an XML library (regex only, body capped).
+- CS2 resolver (cs2/resolver.py): `SteamResolver` Protocol + `SteamCommunityResolver(fetch, timeout_s)` reuses `FetchFn`/`FetchResponse` from client.py; `vanity_url(name)` re-validates with `is_vanity_name` before building the URL. Body capped at `MAX_BODY_BYTES` (64 KiB) twice: in the default aiohttp fetch (`content.read(cap)`, incremental UTF-8 decode so a cut multi-byte char isn't an error) and again on `FetchResponse.body` so injected fetches get the same cap. 429 raises `RateLimitedError(STEAM_RATE_LIMITED_MESSAGE)` (the default message names Leetify). Tests: `StubFetch` + fake `aiohttp.ClientSession` (`get(url, headers, allow_redirects)`, `content.read(n)`) in tests/test_cs2_resolver.py.
+- CS2 /link with vanity names (cogs/cs2.py): `Cs2(stats, links, cooldown, link_cooldown, resolver)` (resolver defaults to a lazy `SteamCommunityResolver`). `handle_link`: parse -> (SteamId only: pre-defer `links.get` already-linked check) -> link cooldown -> defer -> `_link_deferred(user_id, target)` which returns the reply text (vanity: resolve, then the already-linked check after the defer, so that reply goes through the followup and the cooldown stays taken). `linked_message(name, steam64_id)` adds `(Steam ID ...)` only for vanity input. `cog_unload` closes stats then resolver in try/finally. Tests: `FakeResolver` + `vanity_cog(links, resolver, **FakeStats kwargs)` in tests/test_cs2_cog.py.
 
-## 2026-10-10 - US-001
-- `/link` now parses the Steam input, defers ephemerally (thinking) before calling Leetify, and sends all later replies via `_send_safely(interaction.followup.send(..., ephemeral=True))`. `cog_app_command_error` wraps both sends in `_send_safely`.
-- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py (new `followup_reply` helper, defer-order, followup-failure, error-handler tests).
-- Learnings: to assert call order across a fake and an AsyncMock, append to a shared list from both (`AsyncMock(side_effect=lambda **_: calls.append(...))`).
-- Needs manual check: `/link <id>` in Discord shows "thinking…" then the ephemeral linked message.
+## 2026-10-11 - US-001
+- `parse_steam_target` + `SteamId`/`VanityName` + `is_vanity_name` in cs2/steam.py; `VANITY_URL_MESSAGE` removed. `InvalidSteamIdError.default_message` now lists all four accepted forms.
+- Kept `parse_steam_id` as an ID-only wrapper (capture script needs a SteamID64; the cog still uses it until US-003 wires in the resolver).
+- Files: src/ninja_bot/cs2/steam.py, src/ninja_bot/cs2/models.py, tests/test_cs2_steam.py, tests/test_cs2_cog.py.
+- Learnings: `-76561197960287930` is a valid vanity name under the 2-32 `A-Za-z0-9_-` rule (only exact 17-digit strings are excluded).
 ---
 
-## 2026-10-10 - US-002
-- `/link` has its own `link_cooldown` (`LINK_COOLDOWN_SECONDS = 15`, 4th `Cs2` arg, wired in `setup`). Order: parse, check stored link (same id -> ephemeral `ALREADY_LINKED_MESSAGE`, no API call, no cooldown), take cooldown (`cooldown_message` reply), defer, Leetify. Never refunded after the API call.
-- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py (`link_cog` helper; `FakeClock` moved up next to the other fakes).
-- Learnings: a store error on the pre-defer link check reuses `_reply_lookup_error` (generic ephemeral reply).
-- Needs manual check: `/link` twice quickly (second throttled); `/link` same account again (already linked).
+## 2026-10-11 - US-002
+- `VanityNotFoundError` / `SteamLookupError` in cs2/models.py; new cs2/resolver.py (`SteamResolver`, `SteamCommunityResolver`, `vanity_url`); hand-written fixtures tests/fixtures/steam/profile.xml + profile_not_found.xml.
+- Mapping: ID regex first (first match wins), else VanityNotFoundError (an `<error>` element only changes the log level); 404 -> not found, 429 -> RateLimitedError with a Steam-specific message, other non-2xx/3xx/timeouts/ClientError/OSError/UnicodeDecodeError -> SteamLookupError. Logs never include the body or tracebacks.
+- Files: src/ninja_bot/cs2/models.py, src/ninja_bot/cs2/resolver.py, tests/test_cs2_resolver.py, tests/fixtures/steam/*.
+- Needs manual check: real `steamcommunity.com/id/<name>/?xml=1` still returns `<steamID64>` (unofficial endpoint) — covered by the US-004 manual /link checks.
 ---
 
-## 2026-10-10 - US-003
-- Added `MatchNotFoundError` (models.py); `_raise_for_status` takes a `not_found` error type threaded through `_get`/`_get_object`; `get_match` passes `MatchNotFoundError`, profile endpoints keep `PlayerNotFoundError`.
-- Files: src/ninja_bot/cs2/models.py, src/ninja_bot/cs2/client.py, tests/test_cs2_client.py (status mapping per endpoint), tests/test_cs2_cog.py (end-to-end unknown id via a real `LeetifyClient` with a 404 fetch).
-- Needs manual check: `/scoreboard match:nonsense` shows the match-not-found message.
+## 2026-10-11 - US-003
+- `/link` accepts vanity input: `Cs2` takes a `SteamResolver` (5th arg; `setup` passes `SteamCommunityResolver()`), `handle_link` uses `parse_steam_target`, SteamIDs keep the old flow with zero resolver calls; vanity names take the link cooldown, defer, resolve, then check the stored link. Resolver/Leetify/store errors after the defer are one followup (`Cs2Error.message` or generic + log). Success reply shows the resolved SteamID64 for vanity input. `cog_unload` closes stats and resolver. `/link steam` description mentions custom URL names.
+- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py.
+- Needs manual check: `/link` with a real custom URL and bare name in the test server (resolver hits the real steamcommunity.com).
 ---
 
-## 2026-10-10 - US-004
-- `LeetifyClient._get` now also catches `UnicodeDecodeError` around the fetch (warning with the exception type, no traceback, `ApiError` from None). `FetchFn` comment documents the exceptions an injected fetch may raise.
-- Files: src/ninja_bot/cs2/client.py, tests/test_cs2_client.py (UnicodeDecodeError case in the connection-error parametrization, incl. the key in the error object; log test asserting WARNING, no exc_info, no key).
-- Regression coverage for ClientError/OSError/timeout/non-JSON already existed (test_connection_errors_become_api_error, test_timeout, test_bad_json).
----
-
-## 2026-10-10 - US-005
-- Added public generic `newest_first` (PEP 695 TypeVar bound to a `_Dated` Protocol with a read-only `finished_at` property) in cs2/models.py; `parse_profile` wraps it in `tuple(...)`, `LeetifyClient.get_recent_matches` returns it directly. Removed `client._newest_first`, `client._EPOCH`, models `_newest_first` and the `datetime` import in client.py.
-- Files: src/ninja_bot/cs2/models.py, src/ninja_bot/cs2/client.py, tests/test_cs2_models.py
-- Learnings: `list.sort(reverse=True)` is still stable; sorting (time, item) pairs by `pair[0]` avoids a `type: ignore` for the Optional key.
----
-
-## 2026-10-10 - US-006
-- Added `escape_name` (+ `ESCAPED_NAME_LENGTH` 32) in cs2/formatting.py: drops non-printables/newlines, strips, truncates to 32 with `…` before escaping, `escape_markdown(ignore_links=False)`, then escapes any still-unescaped `[ ] ( )` (catches truncated links and `\[x](y)`, which `escape_markdown` alone leaves rendering). `?` for empty/None.
-- Used for award names, the focus-player field name and the profile embed title (now max 32 chars instead of 256) in cs2/embed.py, and in `linked_message`/`not_linked_message` in cogs/cs2.py. Team tables keep `clean_name`.
-- Files: src/ninja_bot/cs2/formatting.py, src/ninja_bot/cs2/embed.py, src/ninja_bot/cogs/cs2.py, tests/test_cs2_formatting.py, tests/test_cs2_embed.py (hostile award/field-name/title tests; `test_profile_embed_limits` now expects the 32-char escaped title), tests/test_cs2_cog.py.
-- Needs manual check: link a test account whose Leetify name contains `[x](https://…)` or `**` and confirm `/scoreboard` and `/profile` show it literally.
----
-
-## 2026-10-10 - US-007
-- `/scoreboard` now fetches the match and the profile at the same time (`_fetch_match_and_profile`, tasks + cancel/drain in `finally`). Error behaviour unchanged: match `Cs2Error` message wins and cancels a slow profile; profile `Cs2Error` drops the breakdown; unexpected errors give the generic message.
-- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py (`GatedStats`, `gated_cog`, `wait_started`; concurrency tests for latest and explicit match, slow-profile cancel, profile errors while match in flight, both failing leaves no tasks).
-- Learnings: `asyncio.timeout(1)` around the "both started" wait turns a sequential regression into a fast failure instead of a hang.
-- Needs manual check: `/scoreboard` still posts the same embed in Discord.
----
-
-## 2026-10-10 - US-008
-- `StatsProvider` protocol gained `aclose()` (comment: wrappers must delegate it); `Cs2.cog_unload` calls it unconditionally (no isinstance check; `LeetifyClient` import stays for `setup`).
-- `FakeStats.aclose` counts `close_calls`; tests: unloading closes the provider exactly once, injected-fetch client close is a no-op and safe twice.
-- Files: src/ninja_bot/cs2/client.py, src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py, tests/test_cs2_client.py
----
-
-## 2026-10-10 - US-009
-- `display_width` helper; `clean_name` truncates by display width (to NAME_WIDTH-1 columns + `…`, so a wide char that doesn't fit is dropped); `_pad_name` pads the header and every row by display width; `_ROW_FORMAT` no longer hardcodes 12.
-- Files: src/ninja_bot/cs2/formatting.py, tests/test_cs2_formatting.py (display width, CJK/emoji/combining truncation, equal row widths at NAME_WIDTH 8/12/16, 10 wide-name rows within FIELD_VALUE_LIMIT).
-- Learnings: emoji like 😀 are east-asian width W; `…` and `★` are ambiguous (A) and count as 1. Discord's mobile/desktop fonts may still render some emoji at other widths.
-- Needs manual check: `/scoreboard` with a CJK/emoji-named player looks aligned in Discord.
----
-
-## 2026-10-10 - US-010
-- `.env.example`: `CS2_CHANNEL_ID` / `CS2_POLL_SECONDS` now say they're reserved for automatic match posts (not implemented), have no effect today, and that a malformed value still stops the bot at startup (matches README / docs/deployment.md "reserved ... not used yet").
-- config.py: comment that both values are reserved and validated to fail fast; parsing unchanged. store.py: one-line comment on `LinkStore.all_links` / `SqliteLinkStore.all_links` (used by the upcoming leaderboard and poller).
-- Files: .env.example, src/ninja_bot/config.py, src/ninja_bot/cs2/store.py
----
-
-## 2026-10-10 - US-011
-- README `/scoreboard` section: `/link` 15 s cooldown (after a valid request, not refunded), same-account re-link is a no-op, "match not found" for a wrong `match:` id, escaped names; four new manual checklist items.
-- CLAUDE.md architecture: `newest_first` (models.py), `aclose` on `StatsProvider` (client.py), `escape_name` / `display_width` (formatting.py).
-- tasks/prd-cs2-squad.md US-005 already says `CachedStatsProvider.aclose()` delegates to the inner provider; no edit needed.
-- Files: README.md, CLAUDE.md
-- needs manual check: the four new README checklist items (link throttle, already linked, match not found, markdown name).
+## 2026-10-11 - US-004
+- README `/link` lists all four accepted inputs, says custom URL names are resolved via Steam's public profile page (no API key) and that the reply shows the resolved ID; the already-linked note now says the no-cooldown shortcut is for ID input only. Manual checks added: custom URL, bare name, non-existent name, relink by name; the old "vanity URL → hint" check is gone.
+- docs/deployment.md: LXC network needs outbound HTTPS to the Leetify API host and steamcommunity.com; troubleshooting row for "Steam couldn't be reached" (network / outage / rate limiting; workaround: 17-digit ID).
+- CLAUDE.md architecture: `parse_steam_target` in steam.py, new `resolver.py` entry, resolver built in the cog's `setup`.
+- Files: README.md, docs/deployment.md, CLAUDE.md.
+- Needs manual check: the README /link checklist items against the dev bot (real steamcommunity.com lookups).
 ---

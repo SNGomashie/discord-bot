@@ -16,7 +16,13 @@ from ninja_bot.cs2.client import LeetifyClient, StatsProvider
 from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.models import Cs2Error, Match, NoMatchesError, NotLinkedError, Profile
-from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH, parse_steam_id
+from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
+from ninja_bot.cs2.steam import (
+    MAX_STEAM_INPUT_LENGTH,
+    SteamId,
+    VanityName,
+    parse_steam_target,
+)
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
 from ninja_bot.media.cooldown import UserCooldown
 
@@ -35,8 +41,11 @@ MAX_MATCH_ID_LENGTH = 64
 INVALID_MATCH_ID_MESSAGE = "That doesn't look like a Leetify match id."
 
 
-def linked_message(name: str) -> str:
-    return f"Linked to **{escape_name(name)}** on Leetify."
+def linked_message(name: str, steam64_id: str | None = None) -> str:
+    """Success reply; `steam64_id` is shown when it came from a custom URL lookup."""
+    if steam64_id is None:
+        return f"Linked to **{escape_name(name)}** on Leetify."
+    return f"Linked to **{escape_name(name)}** on Leetify (Steam ID {steam64_id})."
 
 
 def not_linked_message(name: str) -> str:
@@ -79,9 +88,12 @@ class Cs2(commands.Cog):
         links: LinkStore,
         cooldown: UserCooldown | None = None,
         link_cooldown: UserCooldown | None = None,
+        resolver: SteamResolver | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
+        # Turns custom URL names into SteamID64s; creates no session until first use.
+        self.resolver = resolver if resolver is not None else SteamCommunityResolver()
         # Used by the stats commands; taken after input is valid, refunded unless posted.
         self.cooldown = cooldown if cooldown is not None else UserCooldown(COOLDOWN_SECONDS)
         # Separate from the stats cooldown; never refunded once Leetify was called.
@@ -90,11 +102,14 @@ class Cs2(commands.Cog):
         )
 
     async def cog_unload(self) -> None:
-        await self.stats.aclose()
+        try:
+            await self.stats.aclose()
+        finally:
+            await self.resolver.aclose()
 
     @app_commands.command(name="link", description="Link your Steam account for CS2 stats")
     @app_commands.describe(
-        steam="Your SteamID64 or steamcommunity.com/profiles/<id> link",
+        steam="Your SteamID64, custom URL name, or steamcommunity.com profile link",
     )
     async def link(
         self,
@@ -129,39 +144,51 @@ class Cs2(commands.Cog):
 
     async def handle_link(self, interaction: discord.Interaction, steam: str) -> None:
         try:
-            steam64_id = parse_steam_id(steam)
+            target = parse_steam_target(steam)
         except Cs2Error as exc:
             await interaction.response.send_message(exc.message, ephemeral=True)
             return
 
-        try:
-            current = await self.links.get(interaction.user.id)
-        except Exception as exc:
-            await self._reply_lookup_error(interaction, exc)
-            return
-        if current == steam64_id:
-            await interaction.response.send_message(ALREADY_LINKED_MESSAGE, ephemeral=True)
-            return
+        # A known ID can be checked before any network call; a name has to be resolved first.
+        if isinstance(target, SteamId):
+            try:
+                current = await self.links.get(interaction.user.id)
+            except Exception as exc:
+                await self._reply_lookup_error(interaction, exc)
+                return
+            if current == target.value:
+                await interaction.response.send_message(ALREADY_LINKED_MESSAGE, ephemeral=True)
+                return
 
         retry_after = self.link_cooldown.try_acquire(interaction.user.id)
         if retry_after > 0:
             await interaction.response.send_message(cooldown_message(retry_after), ephemeral=True)
             return
 
-        # Leetify can be slow; defer so Discord doesn't time out the interaction.
+        # Steam and Leetify can be slow; defer so Discord doesn't time out the interaction.
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            profile = await self.stats.get_profile(steam64_id)
-            await self.links.set(interaction.user.id, steam64_id)
+            message = await self._link_deferred(interaction.user.id, target)
         except Cs2Error as exc:
-            await _send_safely(interaction.followup.send(exc.message, ephemeral=True))
-            return
+            message = exc.message
         except Exception:
             log.exception("Unexpected error linking a Steam account")
-            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE, ephemeral=True))
-            return
-        name = profile.name or steam64_id
-        await _send_safely(interaction.followup.send(linked_message(name), ephemeral=True))
+            message = GENERIC_ERROR_MESSAGE
+        await _send_safely(interaction.followup.send(message, ephemeral=True))
+
+    async def _link_deferred(self, user_id: int, target: SteamId | VanityName) -> str:
+        """Resolve, verify and store the link; returns the reply text."""
+        if isinstance(target, VanityName):
+            steam64_id = await self.resolver.resolve_vanity(target.value)
+            if await self.links.get(user_id) == steam64_id:
+                return ALREADY_LINKED_MESSAGE
+            shown_id: str | None = steam64_id
+        else:
+            steam64_id = target.value
+            shown_id = None
+        profile = await self.stats.get_profile(steam64_id)
+        await self.links.set(user_id, steam64_id)
+        return linked_message(profile.name or steam64_id, shown_id)
 
     async def handle_unlink(self, interaction: discord.Interaction) -> None:
         try:
@@ -314,5 +341,11 @@ async def setup(bot: NinjaBot) -> None:
     client = LeetifyClient(bot.config.leetify_api_key)
     store = SqliteLinkStore(Path(bot.config.data_dir) / "cs2.sqlite3")
     await bot.add_cog(
-        Cs2(client, store, UserCooldown(COOLDOWN_SECONDS), UserCooldown(LINK_COOLDOWN_SECONDS))
+        Cs2(
+            client,
+            store,
+            UserCooldown(COOLDOWN_SECONDS),
+            UserCooldown(LINK_COOLDOWN_SECONDS),
+            SteamCommunityResolver(),
+        )
     )

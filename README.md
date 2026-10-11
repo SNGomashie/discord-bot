@@ -36,11 +36,11 @@ Full walkthrough in **[docs/deployment.md](docs/deployment.md)**: creating the D
 
 ## /scoreboard (CS2)
 CS2 stats from the [Leetify](https://leetify.com) public API:
-- `/link steam:<id or link>` links your Discord account to your SteamID64 (17 digits) or a `steamcommunity.com/profiles/<id>` URL. Vanity `/id/<name>` URLs are not accepted. `/unlink` removes the link. Both replies are only visible to you.
+- `/link steam:<id, link or name>` links your Discord account to a Steam account. It accepts your SteamID64 (17 digits), a `steamcommunity.com/profiles/<id>` URL, a `steamcommunity.com/id/<name>` URL, or just your custom URL name. Custom URL names are resolved to a SteamID64 through Steam's public profile page (no API key needed); the reply then shows the resolved ID so you can check it is yours. `/unlink` removes the link. Both replies are only visible to you.
 - `/scoreboard [player] [match]` posts the full scoreboard of your (or `player`'s) latest match, or of a specific Leetify match id: both team tables, fun awards, the focus player's stats, Leetify breakdown and recent form.
 - `/profile [player]` posts ranks, winrate, Leetify rating bars and recent form.
 
-`/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. `/link` has its own 15-second cooldown that only applies after a valid request (an invalid Steam ID doesn't count) and is not refunded; linking the account you're already linked to just says so, without a Leetify lookup or cooldown. A wrong `match:` id gets a "match not found" reply instead of the "player not found" one. Player names from Leetify are escaped, so markdown in a name is shown as plain text. Players need a public Leetify profile.
+`/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. `/link` has its own 15-second cooldown that only applies after a valid request (an invalid Steam ID doesn't count) and is not refunded; linking the account you're already linked to by SteamID64 or `/profiles/` URL just says so, without a Leetify lookup or cooldown (by custom URL name, the name has to be looked up first, so the cooldown applies). A wrong `match:` id gets a "match not found" reply instead of the "player not found" one. Player names from Leetify are escaped, so markdown in a name is shown as plain text. Players need a public Leetify profile.
 
 **Settings** (see [`.env.example`](.env.example) and the [settings reference](docs/deployment.md#5-settings-reference)):
 - `LEETIFY_API_KEY`: get one at [leetify.com/app/developer](https://leetify.com/app/developer). Optional in config (without it requests are sent unauthenticated), but recommended.
@@ -50,7 +50,11 @@ CS2 stats from the [Leetify](https://leetify.com) public API:
 **Checking the test fixtures:** the Leetify fixtures in `tests/fixtures/leetify/` are hand-written from the API docs. Run `uv run python scripts/capture_leetify.py <steam64_id>` (dev only, needs `LEETIFY_API_KEY`) to save the real profile, matches list and latest match, with Steam IDs and names replaced by placeholders, to `data/leetify-capture/` (gitignored), then compare field names and units with the fixtures.
 
 **Manual test checklist** (dev bot in the test server):
-- [ ] `/link` with a SteamID64, then with a profile URL → ephemeral confirmation; vanity URL → ephemeral hint
+- [ ] `/link` with a SteamID64, then with a profile URL → ephemeral confirmation
+- [ ] `/link` with a custom URL (`steamcommunity.com/id/<name>`) → ephemeral confirmation showing the resolved Steam ID
+- [ ] `/link` with a bare custom URL name → same confirmation
+- [ ] `/link` with a custom URL name nobody uses → "No Steam profile uses that custom URL" reply
+- [ ] `/link` by name for the account you're already linked to → "already linked" reply
 - [ ] `/scoreboard` → embed of your latest match (team tables, awards, your stats, breakdown, form)
 - [ ] `/scoreboard player:@friend` and `/scoreboard match:<id>` → that player's / that match's scoreboard
 - [ ] `/profile` and `/profile player:@friend` → ranks, winrate, rating bars, form
