@@ -112,3 +112,11 @@
 - Files: src/ninja_bot/sessions/scoring.py, tests/test_session_scoring.py, CLAUDE.md, README.md
 - **Learnings:** a GM with no vote on a slot makes it not fit (only Yes/If needed count).
 ---
+
+## 2026-10-11 - US-005
+- Added `src/ninja_bot/sessions/store.py`: `Poll`/`PollSlot` frozen dataclasses, `STATUS_*` constants + `POLL_STATUSES`/`OPEN_STATUSES`, `SessionStore` Protocol, `SqliteSessionStore` (`sessions.sqlite3`: `polls`, `poll_slots`, `poll_players`, `poll_votes`).
+- `create_poll` is keyword-only and takes the generated `Slot`s + `now`; inserts poll (round 1, `voting`), slots and the GM in one transaction. `days` stored as "4,5", `times` as "HH:MM,...", `window_start` as ISO date.
+- `poll_votes` table already exists (so `leave` can delete votes); US-006 only adds methods on it. `players` are in join order (rowid). `set_status` raises ValueError for unknown statuses. `"end"` is quoted in SQL (keyword).
+- Tests: tests/test_session_store.py (leave-removes-votes inserts votes with raw SQL for now; US-006 can switch to `record_votes`).
+- Docs: README Data and storage (+ DATA_DIR row, layout block), docs/deployment.md backup notes + DATA_DIR row, CLAUDE.md architecture.
+- Learnings: SQLite `end` must be quoted as a column name.

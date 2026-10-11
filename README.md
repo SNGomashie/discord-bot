@@ -71,7 +71,7 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `LEETIFY_API_KEY` | none | no, recommended | Sent to Leetify as a bearer token. Get one at [leetify.com/app/developer](https://leetify.com/app/developer). Without it, requests are sent unauthenticated. |
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
-| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions, Toasty `;pokemon` events and posted monthly reports). A relative path is relative to the process's working directory. |
+| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions, Toasty `;pokemon` events and posted monthly reports) and `sessions.sqlite3` (session polls, their slots, players and votes). A relative path is relative to the process's working directory. |
 | `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report (see [Monthly auto-post](#monthly-auto-post)). Unset means no monthly auto-post. Positive integer. |
 | `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
 | `SESSIONS_TIMEZONE` | `ACTIVITY_TIMEZONE` | no | IANA time zone name in which session poll slot times (for example `19:00`) are read and shown. Unset or empty means the same zone as `ACTIVITY_TIMEZONE` (so `UTC` when neither is set). An unknown name stops the bot at startup with a `ConfigError`. |
@@ -370,7 +370,7 @@ Pokémon names are shown as plain text (markdown escaped) and cut at 32 characte
 
 ## Data and storage
 
-The bot keeps two SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
+The bot keeps three SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
 
 The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds three tables:
 
@@ -388,7 +388,16 @@ The activity database at `<DATA_DIR>/activity.sqlite3` holds three tables:
 | `reports_posted` | `month_key` (primary key, `YYYY-MM`), `posted_at` | Months whose activity overview was already auto-posted. |
 | `pokemon_events` | `message_id` (primary key, Toasty's reply), `user_id`, `ts`, `kind` (`catch` or `cooldown`), `pokemon` (empty for cooldowns), `shiny` | One row per Toasty reply to a member's `;pokemon` (only with `TOASTY_BOT_ID`; see [Toasty ;pokemon catches](#toasty-pokemon-catches)). No message text. Never pruned. |
 
-In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
+The session poll database at `<DATA_DIR>/sessions.sqlite3` holds these tables:
+
+| Table | Columns | Purpose |
+|---|---|---|
+| `polls` | `id` (primary key), `guild_id`, `channel_id`, `message_id`, `name`, `gm_id`, `days` (weekdays, Mon=0, comma-separated), `times` (`HH:MM`, comma-separated), `weeks`, `duration_hours`, `min_players`, `round_hours`, `round_number`, `window_start` (`YYYY-MM-DD`), `status` (`voting`, `awaiting_confirm`, `confirmed`, `failed` or `cancelled`), `created_at`, `round_started_at` | One row per session poll. `message_id` is empty until the poll message is sent. Never pruned. |
+| `poll_slots` | `id` (primary key), `poll_id`, `round_number`, `start`, `end` | The candidate slots of each round (Unix timestamps). Earlier rounds' slots are kept. |
+| `poll_players` | `poll_id`, `user_id` (primary key together) | Who joined each poll (the GM joins automatically). |
+| `poll_votes` | `poll_id`, `user_id`, `slot_id` (primary key together), `vote` (`yes`, `if_needed` or `no`) | Each player's vote per slot. Leaving a poll deletes that player's votes. |
+
+In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. Losing `sessions.sqlite3` loses every open session poll (its buttons stop working) and its votes. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
 
 ## Troubleshooting
 
@@ -440,7 +449,7 @@ src/ninja_bot/
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
-  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation)
+  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md
