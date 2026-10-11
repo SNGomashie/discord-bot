@@ -31,7 +31,9 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
   - `embed.py`: `build_match_embed` (/scoreboard), `build_announcement_embed` (auto-posts: squad highlights, `Squad` field, `squad_outcome` colour), `build_profile_embed`, `build_leaderboard_embed`.
   - `channels.py`: `channel_problem(channel, me)` (can the bot auto-post there? cause strings `CHANNEL_*`, `PostChannel`, `is_post_channel`; no network).
   - `poller.py`: `MatchPoller` (new matches of linked players for auto-posts: seeds new players silently, age filter, max per cycle, `full_match` + squad; `confirm` marks a match posted after each send attempt).
+- `src/ninja_bot/cogs/activity.py`: voice tracking cog (thin wrapper: `on_voice_state_update` applies `plan_transition` via the store, 60 s heartbeat `tasks.loop`, first `on_ready` runs `reconcile` (`close_stale`, then fresh sessions for members in voice) and starts the heartbeat; injectable clock).
 - `src/ninja_bot/activity/`: activity tracking logic:
+  - `tracker.py`: `plan_transition(before, after, afk) -> Open | Close | Move | Nothing` (AFK channel = not in voice; no discord import).
   - `periods.py`: `Month` (the one month definition), `month_of`, `parse_month`, `InvalidMonthError`.
   - `formatting.py`: `format_hours`, `day_strip`.
   - `store.py`: `ActivityStore` Protocol, `Session` dataclass, `SqliteActivityStore` (`<DATA_DIR>/activity.sqlite3`: `voice_sessions` with `last_seen` heartbeats, `reports_posted`; same lazy-schema/`asyncio.to_thread` pattern as `cs2/store.py`; `open_session` closes the user's open session first).

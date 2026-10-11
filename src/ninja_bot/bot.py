@@ -13,6 +13,7 @@ EXTENSIONS = [
     "ninja_bot.cogs.core",
     "ninja_bot.cogs.media",
     "ninja_bot.cogs.cs2",
+    "ninja_bot.cogs.activity",
     "ninja_bot.cogs.help",
 ]
 

@@ -18,6 +18,7 @@ It does three things:
 - [/download](#download)
 - [CS2 stats](#cs2-stats)
 - [Auto-posted matches](#auto-posted-matches)
+- [Activity tracking](#activity-tracking)
 - [/help](#help)
 - [Data and storage](#data-and-storage)
 - [Troubleshooting](#troubleshooting)
@@ -72,7 +73,7 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
 | `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
 
-**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead.
+**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
 
 **Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channel needs a few extra things; see [Auto-posted matches](#auto-posted-matches). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
@@ -284,6 +285,16 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 
 where the cause is `missing` (not found), `not a text channel`, or `missing View Channel, Send Messages or Embed Links`. The warning repeats only after the channel has worked again.
 
+## Activity tracking
+
+The bot records how long each member spends in voice channels. It always runs; there is nothing to turn on.
+
+- **What is counted:** time connected to any voice or stage channel of the server (`GUILD_ID` when set, otherwise every server the bot is in). Muting, deafening, streaming or camera changes don't split or stop a session; moving to another channel ends the session and starts a new one in the new channel. Bots are never tracked.
+- **AFK excluded:** the server's AFK channel counts as not being in voice. Being moved there (by Discord or by hand) ends the session; leaving it for a normal channel starts a new one.
+- **Restarts:** every open session gets a heartbeat once a minute. When the bot starts, sessions left open by the previous run (a crash, restart or update) are closed at their last heartbeat, so the downtime is not counted, and everyone currently in a non-AFK voice channel gets a fresh session. Time spent in voice while the bot was offline is lost (up to a minute before the stop as well).
+- **Intents:** only the Voice States intent (part of the defaults, not privileged). No Server Members or Presences intent is needed.
+- Sessions are stored in `activity.sqlite3`; see [Data and storage](#data-and-storage).
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
@@ -342,6 +353,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **One download at a time**, bot-wide, with no persistent queue.
+- **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
 
 ## Development
 
@@ -352,12 +364,12 @@ src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
-  activity/       activity logic: periods (months), formatting, store (SQLite voice sessions)
+  activity/       activity logic: periods (months), formatting, store (SQLite voice sessions), tracker (voice transitions)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/ and tests/fixtures/steam/
 docs/             deployment.md, manual-checks.md

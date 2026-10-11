@@ -64,6 +64,18 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] Wrong channel ID or missing Embed Links: one warning in the log, no crash
 - [ ] Leetify rate limit: one skipped cycle (see the log), then posting resumes. If it can't be triggered, note it as unverifiable (covered by unit tests)
 
+## Activity tracking
+
+Check the `voice_sessions` table in `data/activity.sqlite3` after each step (for example `sqlite3 data/activity.sqlite3 'SELECT * FROM voice_sessions ORDER BY id DESC LIMIT 5'`).
+
+- [ ] Join a voice channel: a new row with an empty `end_ts`; `last_seen` advances about once a minute
+- [ ] Mute, deafen and start/stop a stream: no new row
+- [ ] Move to another voice channel: the old row gets an `end_ts`, a new row opens for the new channel
+- [ ] Move to the server's AFK channel: the row is closed and no new one opens; moving back opens a new one
+- [ ] Leave voice: the row gets an `end_ts`
+- [ ] Restart (or kill) the bot while in voice and wait a few minutes before starting it again: the old row ends at its last heartbeat (not at the restart time), and a new row opens for you on start
+- [ ] A bot joining voice gets no row
+
 ## /help
 
 - [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats and Utility groups, and a footer hint
