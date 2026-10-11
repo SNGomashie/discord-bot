@@ -49,6 +49,7 @@
 - CS2 table names: `format_team_table(players, max_chars, names=)` maps Steam ID -> display name (falls back to the Steam name, always through `clean_name`); `build_match_embed(..., identities=)` builds `{steam_id: display_name}` once and passes it to every table incl. `Other players`. cs2/embed.py imports `Identity` from cs2/identities.py (no cycle: identities only imports models/store).
 - Partial matches in tests: `dataclasses.replace(match, players=...)`; cog `FakeStats(by_id=[full])` makes `get_match` return a different match than the history entry.
 - CS2 friends field (cs2/embed.py): `format_friends(match, identities, focus)` -> `<@id> as SteamName (Your team|Team A|Team B|No team)` lines in `teams()` order then unassigned, rating desc (None last), max `MAX_FRIEND_LINES` 10; `_fit_lines` drops whole lines (+N more) to fit `FIELD_VALUE_LIMIT` (read at call time; tests monkeypatch it). Requester detail field value starts with `<@id> · SteamName` when they have an identity. The scoreboard `followup.send` passes `allowed_mentions=discord.AllowedMentions.none()`.
+- CS2 /scoreboard identities: `_scoreboard_deferred` calls `_match_identities_or_empty` after the fetch (any exception -> logged, `{}`). Cog test `make_interaction()` has `guild = None` (a MagicMock guild would yield MagicMock display names); attach `FakeGuild(members)` via `guild_interaction(...)` in tests/test_cs2_cog.py for member lookups.
 
 ## 2026-10-11 - US-001
 - Added `summarize_documents` (+ `_describe_match`, `_compare`, `COMPARE_*` verdicts) to scripts/capture_leetify.py; `main` prints the summary of the anonymized documents after writing them.
@@ -100,4 +101,10 @@
 - Tests: tests/test_cs2_embed.py (no friends, one friend, requester + friends incl. order/labels/no extra detail fields, focus unchanged without identity, mention without stats, escaped names, ten friends with hostile long names + max snowflakes within limits, 10-line cap, whole-line dropping over the limit); tests/test_cs2_cog.py (allowed_mentions on the scoreboard send).
 - Needs manual check: mentions render (not ping) in Discord after US-008.
 - Learnings: ten escaped 32-char names + max-length snowflakes stay under 1024 (~900 chars), so the drop path only triggers with a monkeypatched limit.
+---
+
+## 2026-10-11 - US-008
+- cogs/cs2.py: `_scoreboard_deferred` resolves identities after `_fetch_match_and_profile` via new `_match_identities_or_empty` (exceptions logged as "Posting scoreboard without Discord names", scoreboard still posted) and passes them to `build_match_embed(..., identities=)`. `/profile` unchanged.
+- tests/test_cs2_cog.py: `make_interaction` defaults to `guild = None`; new `FakeGuild`, `FailingLinkStore`, `guild_interaction`, `field_value`. Tests: ten-player match with two linked friends (one not in the server), requester-only details, identity failure, no guild, one-player history entry + full refetch with friend names; no extra Leetify calls asserted.
+- Needs manual check: `/scoreboard` in the test server shows friends by Discord name, the friends field with non-pinging mentions, and the requester mention in their detail field.
 ---

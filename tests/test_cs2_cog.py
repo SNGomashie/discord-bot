@@ -30,7 +30,15 @@ from ninja_bot.cogs.cs2 import (
 from ninja_bot.config import load_config
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.client import FetchResponse, LeetifyClient
-from ninja_bot.cs2.embed import BREAKDOWN_FIELD, RATINGS_FIELD, build_match_embed
+from ninja_bot.cs2.embed import (
+    BREAKDOWN_FIELD,
+    FRIENDS_FIELD,
+    RATINGS_FIELD,
+    TEAM_NAMES,
+    YOUR_TEAM,
+    build_match_embed,
+)
+from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
@@ -152,6 +160,8 @@ def make_interaction(user_id: int = USER_ID) -> MagicMock:
     interaction = MagicMock()
     interaction.user.id = user_id
     interaction.user.display_name = "Caller"
+    # No server by default; scoreboard tests that need members attach a `FakeGuild`.
+    interaction.guild = None
     interaction.response.send_message = AsyncMock()
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
@@ -1307,3 +1317,149 @@ def test_profile_option_metadata() -> None:
     assert set(params) == {"player"}
     assert not params["player"].required
     assert str(params["player"].description)
+
+
+# --- /scoreboard with Discord identities ---
+
+GOLF_STEAM_ID = "76561198000000006"  # Team B in the fixture match
+FRIEND_ID = 7
+ABSENT_ID = 8  # linked, but not a member of the server
+
+
+class FakeGuild:
+    """Members by ID; `fetch_member` raises NotFound for anyone else (like Discord)."""
+
+    def __init__(self, members: Mapping[int, str]) -> None:
+        self.members = dict(members)
+        self.fetch_calls: list[int] = []
+
+    def get_member(self, user_id: int) -> discord.Member | None:
+        return None  # nothing cached, so every lookup goes through REST
+
+    async def fetch_member(self, user_id: int) -> MagicMock:
+        self.fetch_calls.append(user_id)
+        if user_id not in self.members:
+            raise discord.NotFound(MagicMock(status=404, reason="Not Found"), "Unknown Member")
+        return make_member(user_id, self.members[user_id])
+
+
+class FailingLinkStore(MemoryLinkStore):
+    async def discord_ids_for(self, steam64_ids: Collection[str]) -> dict[str, int]:
+        raise RuntimeError("database is locked")
+
+
+def guild_interaction(members: Mapping[int, str]) -> MagicMock:
+    interaction = make_interaction()
+    interaction.guild = FakeGuild(members)
+    return interaction
+
+
+def field_value(embed: discord.Embed, name: str) -> str:
+    return next(field.value or "" for field in embed.fields if field.name == name)
+
+
+FRIEND_LINKS = {USER_ID: FIXTURE_STEAM_ID, FRIEND_ID: GOLF_STEAM_ID, ABSENT_ID: STEAM_ID}
+MEMBERS = {USER_ID: "Sena", FRIEND_ID: "Gizmo"}
+
+
+async def test_scoreboard_shows_friends_by_discord_name(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, stats, _ = scoreboard_cog(match, fixture_profile, links=FRIEND_LINKS)
+    interaction = guild_interaction(MEMBERS)
+    await cog.handle_scoreboard(interaction)
+
+    embed = posted_embed(interaction)
+    assert len(match.players) == 10
+    own_table = field_value(embed, YOUR_TEAM)
+    assert "Sena" in own_table
+    assert "alpha" not in own_table
+    assert "bravo" in own_table  # linked, but not in the server
+    other_table = field_value(embed, TEAM_NAMES[1])
+    assert "Gizmo" in other_table
+    assert "golf" not in other_table
+    friends = field_value(embed, FRIENDS_FIELD)
+    assert f"<@{FRIEND_ID}> as golf ({TEAM_NAMES[1]})" in friends
+    assert f"<@{ABSENT_ID}>" not in friends
+    assert field_value(embed, "alpha").startswith(f"<@{USER_ID}> · alpha\n")
+    allowed = interaction.followup.send.call_args.kwargs["allowed_mentions"]
+    assert allowed.to_dict() == discord.AllowedMentions.none().to_dict()
+    # Identities come from the store and Discord only: no extra Leetify requests.
+    assert stats.recent_calls == [FIXTURE_STEAM_ID]
+    assert stats.match_calls == []
+    assert stats.profile_calls == [FIXTURE_STEAM_ID]
+
+    identities = {
+        FIXTURE_STEAM_ID: Identity(FIXTURE_STEAM_ID, USER_ID, "Sena"),
+        GOLF_STEAM_ID: Identity(GOLF_STEAM_ID, FRIEND_ID, "Gizmo"),
+    }
+    expected = build_match_embed(
+        match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile, identities=identities
+    )
+    assert embed.to_dict() == expected.to_dict()
+
+
+async def test_scoreboard_requester_only_gets_details(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, _, _ = scoreboard_cog(match, fixture_profile)
+    interaction = guild_interaction({USER_ID: "Sena"})
+    await cog.handle_scoreboard(interaction)
+
+    embed = posted_embed(interaction)
+    assert field_value(embed, "alpha").startswith(f"<@{USER_ID}> · alpha\n")
+    assert "Sena" in field_value(embed, YOUR_TEAM)
+    identities = {FIXTURE_STEAM_ID: Identity(FIXTURE_STEAM_ID, USER_ID, "Sena")}
+    expected = build_match_embed(
+        match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile, identities=identities
+    )
+    assert embed.to_dict() == expected.to_dict()
+
+
+async def test_scoreboard_identity_failure_posts_without_identities(
+    match: Match, fixture_profile: Profile, caplog: pytest.LogCaptureFixture
+) -> None:
+    stats = FakeStats(fixture_profile, matches=[match])
+    cooldown = UserCooldown(COOLDOWN_SECONDS, FakeClock())
+    cog, _, _ = make_cog(stats, FailingLinkStore(FRIEND_LINKS), cooldown)
+    interaction = guild_interaction(MEMBERS)
+    await cog.handle_scoreboard(interaction)
+
+    expected = build_match_embed(match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile)
+    assert posted_embed(interaction).to_dict() == expected.to_dict()
+    assert "Posting scoreboard without Discord names" in caplog.text
+    assert cooldown.try_acquire(USER_ID) > 0  # posted, so the cooldown is kept
+
+
+async def test_scoreboard_without_guild_has_no_identities(
+    match: Match, fixture_profile: Profile
+) -> None:
+    cog, _, _ = scoreboard_cog(match, fixture_profile, links=FRIEND_LINKS)
+    interaction = make_interaction()  # guild is None
+    await cog.handle_scoreboard(interaction)
+
+    embed = posted_embed(interaction)
+    assert FRIENDS_FIELD not in field_names(embed)
+    expected = build_match_embed(match, compute_awards(match), FIXTURE_STEAM_ID, fixture_profile)
+    assert embed.to_dict() == expected.to_dict()
+
+
+async def test_scoreboard_one_player_history_entry_shows_friend_names(
+    match: Match, fixture_profile: Profile
+) -> None:
+    focus = next(p for p in match.players if p.steam64_id == FIXTURE_STEAM_ID)
+    history_entry = dataclasses.replace(match, players=(focus,))
+    cog, stats, _ = scoreboard_cog(
+        history_entry, fixture_profile, links=FRIEND_LINKS, by_id=[match]
+    )
+    interaction = guild_interaction(MEMBERS)
+    await cog.handle_scoreboard(interaction)
+
+    assert stats.match_calls == [match.id]
+    embed = posted_embed(interaction)
+    tables = field_value(embed, YOUR_TEAM) + field_value(embed, TEAM_NAMES[1])
+    shown = {"alpha": "Sena", "golf": "Gizmo"}
+    for player in match.players:
+        assert shown.get(player.name or "", player.name or "") in tables
+    assert "Gizmo" in field_value(embed, TEAM_NAMES[1])
+    assert f"<@{FRIEND_ID}> as golf" in field_value(embed, FRIENDS_FIELD)

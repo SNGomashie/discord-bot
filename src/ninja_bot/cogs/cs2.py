@@ -291,7 +291,10 @@ class Cs2(commands.Cog):
         """Fetch and post the scoreboard; True only if the embed was posted."""
         try:
             match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
-            embed = build_match_embed(match, compute_awards(match), steam64_id, profile)
+            identities = await self._match_identities_or_empty(interaction, match)
+            embed = build_match_embed(
+                match, compute_awards(match), steam64_id, profile, identities=identities
+            )
         except Cs2Error as exc:
             await _send_safely(interaction.followup.send(exc.message))
             return False
@@ -348,6 +351,16 @@ class Cs2(commands.Cog):
         if guild is None:
             return {}
         return await resolve_identities(match.players, self.links, member_lookup(guild))
+
+    async def _match_identities_or_empty(
+        self, interaction: discord.Interaction, match: Match
+    ) -> dict[str, Identity]:
+        """Names and mentions are extras, so a failure here never stops the scoreboard."""
+        try:
+            return await self._match_identities(interaction, match)
+        except Exception:
+            log.exception("Posting scoreboard without Discord names")
+            return {}
 
     async def _fetch_profile_or_none(self, steam64_id: str) -> Profile | None:
         """The profile only adds the breakdown, so its CS2 errors don't stop the scoreboard."""
