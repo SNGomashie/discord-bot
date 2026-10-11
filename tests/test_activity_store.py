@@ -171,6 +171,14 @@ async def test_known_users(tmp_path: Path) -> None:
     assert await store.known_users() == {USER_A, USER_B}
 
 
+async def test_first_session_start(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert await store.first_session_start() is None
+    await store.open_session(USER_A, CHANNEL_X, 2000.0)
+    await store.open_session(USER_B, CHANNEL_X, 1500.0)
+    assert await store.first_session_start() == 1500.0
+
+
 async def test_reports_posted(tmp_path: Path) -> None:
     store = _store(tmp_path)
     assert await store.report_posted("2026-09") is False

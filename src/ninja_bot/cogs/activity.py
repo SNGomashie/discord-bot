@@ -16,8 +16,16 @@ from ninja_bot.activity.embed import build_monthly_embed, build_profile_embed
 from ninja_bot.activity.formatting import month_label
 from ninja_bot.activity.periods import InvalidMonthError, Month, resolve_month
 from ninja_bot.activity.report import MonthlyReport, build_monthly_report, user_profile
+from ninja_bot.activity.reporter import MonthlyReporter
 from ninja_bot.activity.store import ActivityStore, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
+from ninja_bot.cs2.channels import (
+    CHANNEL_MISSING,
+    CHANNEL_NOT_TEXT,
+    PostChannel,
+    channel_problem,
+    is_post_channel,
+)
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.media.cooldown import UserCooldown
 
@@ -27,6 +35,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 HEARTBEAT_SECONDS = 60.0
+# How often the monthly auto-post checks for an ended, unposted month.
+REPORT_CHECK_SECONDS = 3600.0
 COOLDOWN_SECONDS = 10.0
 # Longer than any `YYYY-MM` (with spaces); longer input is rejected by Discord.
 MAX_MONTH_LENGTH = 20
@@ -93,6 +103,7 @@ class Activity(commands.Cog):
         clock: Callable[[], float] = time.time,
         timezone: str = "UTC",
         cooldown: UserCooldown | None = None,
+        channel_id: int | None = None,
     ) -> None:
         self.bot = bot
         self.store = store
@@ -103,9 +114,21 @@ class Activity(commands.Cog):
         # Shared by /activity and /myactivity; refunded unless an embed with data was posted.
         self.cooldown = cooldown if cooldown is not None else UserCooldown(COOLDOWN_SECONDS)
         self._reconciled = False
+        # Monthly auto-post (ACTIVITY_CHANNEL_ID); off when None.
+        self.channel_id = channel_id
+        self.reporter = MonthlyReporter(store, self.tz, clock)
+        # Channel problems already logged, so a broken setup warns once instead of every hour.
+        self._channel_warnings: set[str] = set()
+
+    async def cog_load(self) -> None:
+        if self.channel_id is None:
+            log.debug("ACTIVITY_CHANNEL_ID is not set; monthly activity posts are off")
+            return
+        self.report_loop.start()
 
     async def cog_unload(self) -> None:
         self.heartbeat_loop.cancel()
+        self.report_loop.cancel()
 
     def tracked_guilds(self) -> list[discord.Guild]:
         """The `GUILD_ID` guild when set, else every guild the bot is in."""
@@ -170,6 +193,71 @@ class Activity(commands.Cog):
     @heartbeat_loop.before_loop
     async def _before_heartbeat(self) -> None:
         await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=REPORT_CHECK_SECONDS)
+    async def report_loop(self) -> None:
+        await self.run_report_cycle()
+
+    @report_loop.before_loop
+    async def _before_report_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def run_report_cycle(self) -> None:
+        """Post at most one ended month's overview; never raises, so the loop keeps running."""
+        if self.channel_id is None:
+            return
+        try:
+            month = await self.reporter.due_month()
+            if month is None:
+                return
+            channel = await self._post_channel(self.channel_id)
+            if channel is None:
+                return
+            await self._post_report(channel, month)
+        except Exception:
+            log.exception("Unexpected error in a monthly activity post cycle")
+
+    async def _post_report(self, channel: PostChannel, month: Month) -> None:
+        """Send one overview; the month is confirmed even if the send failed."""
+        try:
+            report = await self.monthly_report(month)
+            embed = build_monthly_embed(report)
+            # Leaderboard lines are mentions; render them, but never ping anyone.
+            sent = await _send_safely(
+                channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            )
+            if sent:
+                log.info("Posted the activity overview for %s", month.key)
+        finally:
+            await self.reporter.confirm(month)
+
+    async def _post_channel(self, channel_id: int) -> PostChannel | None:
+        """The auto-post channel, or None (warned once per cause) if it can't be used."""
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden):
+                self._warn_channel(CHANNEL_MISSING)
+                return None
+        if not is_post_channel(channel):
+            self._warn_channel(CHANNEL_NOT_TEXT)
+            return None
+        problem = channel_problem(channel, channel.guild.me)
+        if problem is not None:
+            self._warn_channel(problem)
+            return None
+        self._channel_warnings.clear()
+        return channel
+
+    def _warn_channel(self, cause: str) -> None:
+        if cause in self._channel_warnings:
+            return
+        self._channel_warnings.add(cause)
+        log.warning(
+            "Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is %s",
+            cause,
+        )
 
     @app_commands.command(name="activity", description="Show the server's voice activity")
     @app_commands.describe(month="Which month, as YYYY-MM (defaults to this month)")
@@ -320,5 +408,6 @@ async def setup(bot: NinjaBot) -> None:
             bot.config.guild_id,
             timezone=bot.config.activity_timezone,
             cooldown=UserCooldown(COOLDOWN_SECONDS),
+            channel_id=bot.config.activity_channel_id,
         )
     )

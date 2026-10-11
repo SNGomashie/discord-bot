@@ -73,6 +73,10 @@ class ActivityStore(Protocol):
         """Every user ever seen."""
         ...
 
+    async def first_session_start(self) -> float | None:
+        """Start of the oldest recorded session, or None without any."""
+        ...
+
     async def mark_report_posted(self, month_key: str, now: float) -> None: ...
 
     async def report_posted(self, month_key: str) -> bool: ...
@@ -153,6 +157,11 @@ class SqliteActivityStore:
             rows = conn.execute("SELECT DISTINCT user_id FROM voice_sessions").fetchall()
         return {int(user_id) for (user_id,) in rows}
 
+    def _first_session_start(self) -> float | None:
+        with closing(self._connect()) as conn:
+            (start_ts,) = conn.execute("SELECT MIN(start_ts) FROM voice_sessions").fetchone()
+        return None if start_ts is None else float(start_ts)
+
     def _mark_report_posted(self, month_key: str, now: float) -> None:
         with closing(self._connect()) as conn, conn:
             conn.execute(
@@ -187,6 +196,9 @@ class SqliteActivityStore:
 
     async def known_users(self) -> set[int]:
         return await asyncio.to_thread(self._known_users)
+
+    async def first_session_start(self) -> float | None:
+        return await asyncio.to_thread(self._first_session_start)
 
     async def mark_report_posted(self, month_key: str, now: float) -> None:
         await asyncio.to_thread(self._mark_report_posted, month_key, now)

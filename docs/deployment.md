@@ -49,6 +49,8 @@ Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator,
 
 **Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel` or `missing View Channel, Send Messages or Embed Links`, and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
 
+**Activity channel (`ACTIVITY_CHANNEL_ID`):** the monthly activity overview is a normal message too, with the same requirements: **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread) in that channel. Otherwise the bot logs one warning, `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>` (same causes as above), and posts nothing until the channel works. See the [README](../README.md#monthly-auto-post).
+
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
 - The upload size limit comes from the server (`guild.filesize_limit`): 10 MiB by default, higher with server boosts. The bot picks the best quality that fits. A boosted server gives better quality downloads.
@@ -261,7 +263,7 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | `CS2_CHANNEL_ID` | optional | optional | Channel for automatic CS2 match posts (new matches of linked players). Unset = no auto-posts. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `CS2_POLL_SECONDS` | optional | optional | How often (seconds) to check Leetify for new matches when `CS2_CHANNEL_ID` is set. Default `300`. Each cycle makes one Leetify request per linked player, so don't set it very low |
 | `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log; `activity.sqlite3`: voice sessions and posted monthly reports). Default `data` (relative to `WorkingDirectory`) |
-| `ACTIVITY_CHANNEL_ID` | optional | optional | Channel for the automatic monthly activity report. Unset = no monthly auto-post |
+| `ACTIVITY_CHANNEL_ID` | optional | optional | Channel for the automatic monthly activity report (previous month, posted once after the month ends in `ACTIVITY_TIMEZONE`). Unset = no monthly auto-post. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `ACTIVITY_TIMEZONE` | optional | optional | IANA time zone name for activity month boundaries. Default `UTC`; an unknown name is a `ConfigError` at startup |
 | `TOASTY_BOT_ID` | optional | optional | User ID of the Toasty bot. Set = track `;pokemon` catches and request the Message Content intent, which must also be enabled in the Developer Portal. Unset = no Toasty tracking |
 

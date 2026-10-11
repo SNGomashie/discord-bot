@@ -86,6 +86,22 @@ Check the `voice_sessions` table in `data/activity.sqlite3` after each step (for
 - [ ] A second `/activity` or `/myactivity` within 10 s gives a private "Slow down!" reply
 - [ ] The embeds render cleanly on the phone app
 
+### Monthly auto-post (with `ACTIVITY_CHANNEL_ID` set)
+
+To force a post on the dev bot, give a past month some voice time and make sure it isn't marked posted, then restart (the check runs right after start):
+
+```sh
+sqlite3 data/activity.sqlite3 "INSERT INTO voice_sessions (user_id, channel_id, start_ts, end_ts, last_seen) VALUES (<your user id>, 1, strftime('%s','2026-01-10 20:00'), strftime('%s','2026-01-10 22:00'), strftime('%s','2026-01-10 22:00'))"
+sqlite3 data/activity.sqlite3 "DELETE FROM reports_posted WHERE month_key >= '2026-01'"
+```
+
+The inserted session makes January the first month with data, so every ended month from January on that has voice time is posted, one per hour (oldest first). Delete the row again afterwards (`DELETE FROM voice_sessions WHERE channel_id = 1`).
+
+- [ ] After the restart the overview for the oldest such month appears in the channel within a minute; nobody is pinged
+- [ ] `SELECT * FROM reports_posted` now lists that month; another restart does not post it again
+- [ ] Remove the bot's Send Messages (or Embed Links) in the channel and repeat: one warning `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is missing ...` in the log, nothing posted, and the month is not in `reports_posted`; restoring the permission posts it within an hour (or on restart)
+- [ ] Without `ACTIVITY_CHANNEL_ID` nothing is posted
+
 ## /help
 
 - [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint

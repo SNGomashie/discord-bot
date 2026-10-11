@@ -72,7 +72,7 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
 | `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions and posted monthly reports). A relative path is relative to the process's working directory. |
-| `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report. Unset means no monthly auto-post. Positive integer. |
+| `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report (see [Monthly auto-post](#monthly-auto-post)). Unset means no monthly auto-post. Positive integer. |
 | `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
 | `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
 
@@ -319,6 +319,20 @@ The bot records how long each member spends in voice channels. It always runs; t
 - **Errors** are private replies: a month that isn't `YYYY-MM` ("Use a month like `2026-09` (YYYY-MM).") or hasn't started yet ("That month hasn't started yet."), a member without voice time that month ("You weren't in voice in <month>." / "**Name** wasn't in voice in <month>."), and "Something went wrong while loading voice activity. Please try again later." for anything unexpected.
 - Members appear as mentions, but nobody is pinged.
 
+### Monthly auto-post
+
+With `ACTIVITY_CHANNEL_ID` set, the bot posts the `/activity` overview of the previous month in that channel automatically, once per month. Without it there is no auto-post (the commands still work).
+
+- **When:** the bot checks once an hour (and right after it starts) whether a month has ended at midnight in `ACTIVITY_TIMEZONE`. The post for September arrives within an hour after 1 October 00:00 local time.
+- **One post per month:** a posted month is recorded in `reports_posted` (see [Data and storage](#data-and-storage)) and never posted again. A month is also recorded when the send fails (for example Discord refuses it), so a broken post is not retried every hour.
+- **Catching up:** if the bot was offline when a month ended, it posts the missed months oldest first, one per hourly check. Months before the first recorded voice session and months without any voice time are skipped.
+- **Channel:** the bot needs **View Channel, Send Messages and Embed Links** there (Send Messages in Threads for a thread); a text channel, a thread or a voice channel's text chat. If the channel can't be used, nothing is sent and the month stays unposted, so it is posted once the channel works. The bot logs one warning per cause:
+
+  `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>`
+
+  where the cause is `missing`, `not a text channel`, or `missing View Channel, Send Messages or Embed Links`.
+- Members appear as mentions, but nobody is pinged.
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
@@ -378,6 +392,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **One download at a time**, bot-wide, with no persistent queue.
 - **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
+- **Monthly post after a crash:** a month is recorded as posted right after the send. If the bot stops between the two, that month's overview is posted again after the restart.
 
 ## Development
 
@@ -388,12 +403,12 @@ src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
-  activity/       activity logic: periods (months), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions), tracker (voice transitions)
+  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions), tracker (voice transitions)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/ and tests/fixtures/steam/
 docs/             deployment.md, manual-checks.md
