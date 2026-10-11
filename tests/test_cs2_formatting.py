@@ -378,3 +378,68 @@ def test_rating_bar_custom_width() -> None:
 def test_rating_bar_rejects_bad_bounds(max_value: float, width: int) -> None:
     with pytest.raises(ValueError):
         rating_bar(1.0, max_value, width=width)
+
+
+def _steam_id(index: int) -> str:
+    return f"7656119{index:010d}"
+
+
+@pytest.mark.parametrize("names", [None, {}])
+def test_team_table_without_names_is_unchanged(names: dict[str, str] | None) -> None:
+    players = [_player(i, name=name) for i, name in enumerate(_ODD_NAMES)]
+    assert format_team_table(players, names=names) == format_team_table(players)
+
+
+def test_team_table_uses_names_for_mapped_players_only() -> None:
+    players = [_player(i) for i in range(4)]
+    rows = _rows(format_team_table(players, names={_steam_id(1): "Sena", _steam_id(3): "Bob"}))
+
+    assert rows[1][1:].startswith("player0 ")
+    assert rows[2][1:].startswith("Sena ")
+    assert rows[3][1:].startswith("player2 ")
+    assert rows[4][1:].startswith("Bob ")
+    assert "player1" not in "\n".join(rows)
+    assert "player3" not in "\n".join(rows)
+
+
+def test_team_table_ignores_names_for_other_players() -> None:
+    players = [_player(i) for i in range(3)]
+    names = {_steam_id(42): "Stranger", "not-an-id": "Nobody"}
+    assert format_team_table(players, names=names) == format_team_table(players)
+
+
+def test_team_table_cleans_hostile_display_names() -> None:
+    hostile = {
+        _steam_id(0): "```\n@everyone\n```",
+        _steam_id(1): "x" * 40,
+        _steam_id(2): "日本語の名前です",
+        _steam_id(3): "ab😀😀😀😀😀",
+        _steam_id(4): "`\n\t",
+    }
+    players = [_player(i) for i in range(6)]
+    table = format_team_table(players, names=hostile)
+    rows = _rows(table)
+
+    assert table.count("```") == 2
+    assert len(rows) == 1 + len(players)
+    assert "@everyone" in rows[1]
+    assert "xxxxxxxxxxx…" in rows[2]
+    assert rows[5][1:].startswith("? ")
+    assert rows[6][1:].startswith("player5 ")
+    for steam_id, name in hostile.items():
+        index = int(steam_id[-10:])
+        assert clean_name(name) in rows[1 + index]
+    assert {display_width(row) for row in rows} == {display_width(rows[0])}
+
+
+def test_team_table_names_keep_star_and_cap() -> None:
+    players = [_player(i, name="z" * 32) for i in range(10)]
+    names = {_steam_id(i): "日" * 20 for i in range(10)}
+    plain = _rows(format_team_table(players))
+    named = _rows(format_team_table(players, names=names))
+
+    assert [row[0] for row in named] == [row[0] for row in plain]
+    assert named[0] == plain[0]
+    assert {display_width(row) for row in named} == {display_width(plain[0])}
+    for max_chars in (100, 300, FIELD_VALUE_LIMIT):
+        assert len(format_team_table(players, max_chars=max_chars, names=names)) <= max_chars

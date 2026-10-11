@@ -33,6 +33,7 @@ from ninja_bot.cs2.formatting import (
     form_strip,
     rating_bar,
 )
+from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import (
     Match,
     PlayerMatchStats,
@@ -512,3 +513,35 @@ def test_profile_embed_limits() -> None:
         assert len(field.value or "") <= 1024
     assert len(embed) <= 6000
     _assert_no_empty_fields(embed)
+
+
+def _identity(player: PlayerMatchStats, display_name: str) -> Identity:
+    return Identity(player.steam64_id, 1000 + int(player.steam64_id[-10:]), display_name)
+
+
+@pytest.mark.parametrize("identities", [None, {}])
+def test_match_embed_without_identities_is_unchanged(
+    match: Match, profile: Profile, identities: dict[str, Identity] | None
+) -> None:
+    focus = match.players[0].steam64_id
+    plain = build_match_embed(match, compute_awards(match), focus, profile)
+    embed = build_match_embed(match, compute_awards(match), focus, profile, identities)
+    assert embed.to_dict() == plain.to_dict()
+
+
+def test_identities_name_players_in_every_table() -> None:
+    players = (_player(1, 2), _player(2, 3), _player(3, None), _player(4, 2))
+    match = _unassigned_match(*players)
+    identities = {
+        p.steam64_id: _identity(p, name)
+        for p, name in zip(players[:3], ("Alice", "Bob", "Carol"), strict=True)
+    }
+
+    fields = _fields(build_match_embed(match, [], identities=identities))
+
+    assert "Alice" in fields["Team A"]
+    assert "player4" in fields["Team A"]
+    assert "Bob" in fields["Team B"]
+    assert "Carol" in fields[OTHER_PLAYERS_FIELD]
+    tables = "".join(fields.values())
+    assert not any(f"player{i}" in tables for i in (1, 2, 3))

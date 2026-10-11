@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import discord
 
@@ -12,6 +12,7 @@ from ninja_bot.cs2.formatting import (
     format_team_table,
     rating_bar,
 )
+from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile, Ranks
 
 # Discord embed limits.
@@ -49,8 +50,11 @@ def build_match_embed(
     awards: Sequence[Award],
     focus_steam_id: str | None = None,
     profile: Profile | None = None,
+    identities: Mapping[str, Identity] | None = None,
 ) -> discord.Embed:
     """One embed for a whole match: score, team tables, awards and the focus player.
+
+    Players in `identities` (linked server members) show by display name in the tables.
 
     Players without a usable team number get their own `Other players` table, so nobody
     is dropped.
@@ -64,18 +68,19 @@ def build_match_embed(
         colour=OUTCOME_COLOURS[match_outcome(match, focus)],
         timestamp=match.finished_at,
     )
+    names = {steam_id: i.display_name for steam_id, i in (identities or {}).items()}
     for name, team in zip(TEAM_NAMES, match.teams(), strict=True):
         is_focus_team = focus is not None and focus in team
         embed.add_field(
             name=YOUR_TEAM if is_focus_team else name,
-            value=format_team_table(team, max_chars=FIELD_VALUE_LIMIT),
+            value=format_team_table(team, max_chars=FIELD_VALUE_LIMIT, names=names),
             inline=False,
         )
     unassigned = match.unassigned()
     if unassigned:
         embed.add_field(
             name=OTHER_PLAYERS_FIELD,
-            value=format_team_table(unassigned, max_chars=FIELD_VALUE_LIMIT),
+            value=format_team_table(unassigned, max_chars=FIELD_VALUE_LIMIT, names=names),
             inline=False,
         )
     if awards:
