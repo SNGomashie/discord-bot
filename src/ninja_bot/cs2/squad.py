@@ -113,6 +113,14 @@ _SCORE_METRICS = frozenset({Metric.AIM, Metric.POSITIONING, Metric.UTILITY})
 
 
 @dataclass(frozen=True)
+class SquadMember:
+    """A linked server member who played in an announced match."""
+
+    discord_id: int
+    steam64_id: str
+
+
+@dataclass(frozen=True)
 class SquadEntry:
     discord_id: int
     profile: Profile

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Collection, Mapping, Sequence
 
 import discord
 
@@ -17,6 +18,7 @@ from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile,
 from ninja_bot.cs2.squad import (
     LeaderboardRow,
     Metric,
+    SquadMember,
     format_metric_value,
     format_trend,
     metric_label,
@@ -34,6 +36,8 @@ OTHER_PLAYERS_FIELD = "Other players"
 NO_TEAM = "No team"
 FRIENDS_FIELD = "Friends in this match"
 MAX_FRIEND_LINES = 10
+SQUAD_FIELD = "Squad"
+MAX_SQUAD_LINES = 10
 AWARDS_FIELD = "Awards"
 BREAKDOWN_FIELD = "Leetify breakdown"
 FORM_FIELD = "Recent form"
@@ -87,24 +91,7 @@ def build_match_embed(
         colour=OUTCOME_COLOURS[match_outcome(match, focus)],
         timestamp=match.finished_at,
     )
-    names = {steam_id: i.display_name for steam_id, i in (identities or {}).items()}
-    for name, team in zip(TEAM_NAMES, match.teams(), strict=True):
-        is_focus_team = focus is not None and focus in team
-        embed.add_field(
-            name=YOUR_TEAM if is_focus_team else name,
-            value=format_team_table(team, max_chars=FIELD_VALUE_LIMIT, names=names),
-            inline=False,
-        )
-    unassigned = match.unassigned()
-    if unassigned:
-        embed.add_field(
-            name=OTHER_PLAYERS_FIELD,
-            value=format_team_table(unassigned, max_chars=FIELD_VALUE_LIMIT, names=names),
-            inline=False,
-        )
-    if awards:
-        lines = [f"**{a.title}**: {escape_name(a.name)} ({a.detail})" for a in awards]
-        _add_field(embed, AWARDS_FIELD, "\n".join(lines), inline=False)
+    _add_tables_and_awards(embed, match, awards, identities or {}, focus)
     friends = format_friends(match, identities or {}, focus)
     if friends:
         _add_field(embed, FRIENDS_FIELD, friends, inline=False)
@@ -121,6 +108,101 @@ def build_match_embed(
             if profile.recent_matches:
                 _add_field(embed, FORM_FIELD, form_strip(profile.recent_matches))
     return embed
+
+
+def build_announcement_embed(
+    match: Match,
+    awards: Sequence[Award],
+    squad: Sequence[SquadMember],
+    identities: Mapping[str, Identity] | None = None,
+) -> discord.Embed:
+    """An auto-posted scoreboard: like `build_match_embed`, but for the whole squad.
+
+    Squad members who played are highlighted in the tables and listed in a `Squad` field
+    (members not in the match are ignored). The colour follows the team most of the squad
+    played on; a squad split evenly across teams, or a tie, is grey. There is no
+    per-player breakdown. Mentions are built only from stored numeric Discord IDs; send
+    with `AllowedMentions.none()`.
+    """
+    in_match = {p.steam64_id: p for p in match.players}
+    members = [m for m in squad if m.steam64_id in in_match]
+    players = [in_match[steam_id] for steam_id in dict.fromkeys(m.steam64_id for m in members)]
+    embed = discord.Embed(
+        title=_truncate(_title(match), TITLE_LIMIT),
+        colour=OUTCOME_COLOURS[squad_outcome(match, players)],
+        timestamp=match.finished_at,
+    )
+    highlight = {p.steam64_id for p in players}
+    _add_tables_and_awards(embed, match, awards, identities or {}, highlight=highlight)
+    _add_field(embed, SQUAD_FIELD, format_squad(members, in_match), inline=False)
+    return embed
+
+
+def squad_outcome(match: Match, players: Sequence[PlayerMatchStats]) -> MatchOutcome | None:
+    """The result of the team most of `players` played on; None if split evenly or unknown."""
+    counts = Counter(p.team_number for p in players if p.team_number is not None).most_common()
+    if not counts or (len(counts) > 1 and counts[0][1] == counts[1][1]):
+        return None
+    team = counts[0][0]
+    return match_outcome(match, next(p for p in players if p.team_number == team))
+
+
+def format_squad(members: Sequence[SquadMember], players: Mapping[str, PlayerMatchStats]) -> str:
+    """One `<@id> K/D/A · ADR · rating` line per member, best rating first (max 10)."""
+    ranked = sorted(
+        dict.fromkeys(members),
+        key=lambda m: (
+            players[m.steam64_id].leetify_rating is None,
+            -(players[m.steam64_id].leetify_rating or 0),
+        ),
+    )
+    lines = [
+        f"<@{m.discord_id}> {format_squad_stats(players[m.steam64_id])}"
+        for m in ranked[:MAX_SQUAD_LINES]
+    ]
+    return _fit_lines(lines, FIELD_VALUE_LIMIT)
+
+
+def format_squad_stats(player: PlayerMatchStats) -> str:
+    """`20/15/4 · 83 ADR · +0.05`, with `-` for unknown values."""
+    kda = "/".join(
+        "-" if v is None else str(v) for v in (player.kills, player.deaths, player.assists)
+    )
+    adr = "-" if player.adr is None else f"{player.adr:.0f}"
+    return f"{kda} · {adr} ADR · {format_rating(player.leetify_rating)}"
+
+
+def _add_tables_and_awards(
+    embed: discord.Embed,
+    match: Match,
+    awards: Sequence[Award],
+    identities: Mapping[str, Identity],
+    focus: PlayerMatchStats | None = None,
+    highlight: Collection[str] = (),
+) -> None:
+    """Team tables (the focus player's team is `Your team`), `Other players`, then awards."""
+    names = {steam_id: i.display_name for steam_id, i in identities.items()}
+    for name, team in zip(TEAM_NAMES, match.teams(), strict=True):
+        is_focus_team = focus is not None and focus in team
+        embed.add_field(
+            name=YOUR_TEAM if is_focus_team else name,
+            value=format_team_table(
+                team, max_chars=FIELD_VALUE_LIMIT, names=names, highlight=highlight
+            ),
+            inline=False,
+        )
+    unassigned = match.unassigned()
+    if unassigned:
+        embed.add_field(
+            name=OTHER_PLAYERS_FIELD,
+            value=format_team_table(
+                unassigned, max_chars=FIELD_VALUE_LIMIT, names=names, highlight=highlight
+            ),
+            inline=False,
+        )
+    if awards:
+        lines = [f"**{a.title}**: {escape_name(a.name)} ({a.detail})" for a in awards]
+        _add_field(embed, AWARDS_FIELD, "\n".join(lines), inline=False)
 
 
 def format_friends(
