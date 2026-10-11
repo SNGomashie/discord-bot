@@ -161,14 +161,14 @@ async def test_sessions_between_overlap(tmp_path: Path) -> None:
     assert [s.user_id for s in found] == [13, 21, 11, 10, 20, 12]
 
 
-async def test_known_users(tmp_path: Path) -> None:
+async def test_voice_user_ranges(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    assert await store.known_users() == set()
+    assert await store.voice_user_ranges() == {}
     await store.open_session(USER_A, CHANNEL_X, 1000.0)
     await store.close_session(USER_A, 1100.0)
     await store.open_session(USER_A, CHANNEL_Y, 1200.0)
     await store.open_session(USER_B, CHANNEL_X, 1300.0)
-    assert await store.known_users() == {USER_A, USER_B}
+    assert await store.voice_user_ranges() == {USER_A: (1000.0, 1200.0), USER_B: (1300.0, 1300.0)}
 
 
 async def test_first_session_start(tmp_path: Path) -> None:
@@ -195,7 +195,7 @@ async def test_data_survives_new_instance(tmp_path: Path) -> None:
     second = _store(tmp_path)
     assert _spans(await second.open_sessions()) == [(USER_A, CHANNEL_X, 1000.0, None)]
     assert await second.report_posted("2026-09") is True
-    assert await second.known_users() == {USER_A}
+    assert await second.voice_user_ranges() == {USER_A: (1000.0, 1000.0)}
 
 
 async def test_creates_missing_parent_directory_and_index(tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ async def test_blocking_calls_run_in_thread(
     await store.sessions_between(0.0, 2000.0)
     await store.close_session(USER_A, 1200.0)
     await store.close_stale()
-    await store.known_users()
+    await store.voice_user_ranges()
     await store.mark_report_posted("2026-09", 1300.0)
     await store.report_posted("2026-09")
     assert calls == [
@@ -241,7 +241,7 @@ async def test_blocking_calls_run_in_thread(
         "_sessions_between",
         "_close_session",
         "_close_stale",
-        "_known_users",
+        "_voice_user_ranges",
         "_mark_report_posted",
         "_report_posted",
     ]
@@ -270,9 +270,9 @@ async def test_pokemon_events_between_is_half_open(tmp_path: Path) -> None:
     assert [event.message_id for event in events] == [2, 3]
 
 
-async def test_known_users_include_pokemon_only_users(tmp_path: Path) -> None:
+async def test_voice_user_ranges_skip_pokemon_only_users(tmp_path: Path) -> None:
     store = _store(tmp_path)
     await store.open_session(USER_A, CHANNEL_X, 1.0)
     await store.record_pokemon_event(PokemonEvent(1, USER_B, 2.0, "cooldown"))
 
-    assert await store.known_users() == {USER_A, USER_B}
+    assert await store.voice_user_ranges() == {USER_A: (1.0, 1.0)}

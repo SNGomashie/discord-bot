@@ -55,13 +55,18 @@ def session(user_id: int, start: float, hours: float, channel_id: int = 10) -> S
     )
 
 
+def seen(*users: int) -> dict[int, tuple[float, float]]:
+    """Voice ranges for members first and last seen on 1 August (before SEPTEMBER)."""
+    return {user_id: (ts(1, 12, month=8), ts(1, 12, month=8)) for user_id in users}
+
+
 def report(
     sessions: list[Session],
     known: set[int] | None = None,
     previous: list[Session] | None = None,
 ) -> MonthlyReport:
     return build_monthly_report(
-        sessions, previous or [], known or set(), SEPTEMBER, AMSTERDAM, LATER
+        sessions, previous or [], seen(*(known or set())), SEPTEMBER, AMSTERDAM, LATER
     )
 
 
@@ -154,6 +159,33 @@ def test_shame_includes_members_without_voice_time() -> None:
 
     assert shame.splitlines() == ["🐌 <@3> 0m", "🐌 <@4> 0m", "🐌 <@2> 1h 00m"]
     assert len(shame.splitlines()) == SHAME_LIMIT
+
+
+def test_shame_skips_members_first_seen_after_the_month_or_long_gone() -> None:
+    sessions = [session(1, ts(2, 20), 3)]
+    ranges = {
+        1: (ts(2, 20), ts(2, 20)),
+        2: (ts(3, 12, month=10), ts(3, 12, month=10)),  # first seen in October
+        3: (ts(1, 12, month=1), ts(1, 12, month=7)),  # last seen 1 July, > 90 days
+        4: (ts(1, 12, month=1), ts(10, 12, month=7)),  # last seen 10 July, < 90 days
+    }
+    data = build_monthly_report(sessions, [], ranges, SEPTEMBER, AMSTERDAM, LATER)
+
+    assert data.shame == [(4, 0.0), (1, 3 * HOUR)]
+
+
+def test_shame_ignores_pokemon_only_members() -> None:
+    sessions = [session(1, ts(2, 20), 3)]
+    events = [pokemon_event(2, ts(3, 12), "Eevee")]
+    data = build_monthly_report(sessions, [], seen(1), SEPTEMBER, AMSTERDAM, LATER, events)
+
+    assert data.shame == [(1, 3 * HOUR)]
+
+
+def test_shame_includes_members_with_time_this_month_without_ranges() -> None:
+    data = build_monthly_report([session(5, ts(2, 20), 1)], [], {}, SEPTEMBER, AMSTERDAM, LATER)
+
+    assert data.shame == [(5, HOUR)]
 
 
 def test_together_lists_pair_and_busiest_times() -> None:
@@ -255,7 +287,9 @@ def pokemon_event(
 def pokemon_report(
     sessions: list[Session], events: list[PokemonEvent], known: set[int] | None = None
 ) -> MonthlyReport:
-    return build_monthly_report(sessions, [], known or set(), SEPTEMBER, AMSTERDAM, LATER, events)
+    return build_monthly_report(
+        sessions, [], seen(*(known or set())), SEPTEMBER, AMSTERDAM, LATER, events
+    )
 
 
 def test_no_pokemon_field_without_pokemon_data() -> None:

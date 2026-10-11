@@ -13,6 +13,9 @@ from ninja_bot.activity.store import Session
 
 # A local day counts as active with at least this much voice time that day.
 ACTIVE_DAY_MIN_SECONDS = 300
+# The wall of shame only names members whose last voice session started at most this
+# many days before the end of the viewed month.
+SHAME_LOOKBACK_DAYS = 90
 
 
 @dataclass(frozen=True)
@@ -147,3 +150,18 @@ def shame_list(
     entries = [(user_id, totals.get(user_id, 0.0)) for user_id in set(known_users)]
     entries.sort(key=lambda entry: (entry[1], entry[0]))
     return entries[: max(limit, 0)]
+
+
+def shame_candidates(ranges: Mapping[int, tuple[float, float]], month_end_ts: float) -> set[int]:
+    """Users who may appear on the wall of shame for the month ending at `month_end_ts`.
+
+    `ranges` maps a user to the start of their first and last voice session. A candidate
+    was first seen before the month ended and last seen at most SHAME_LOOKBACK_DAYS before
+    its end (later sessions count too).
+    """
+    cutoff = month_end_ts - SHAME_LOOKBACK_DAYS * 86400
+    return {
+        user_id
+        for user_id, (first, last) in ranges.items()
+        if first < month_end_ts and last >= cutoff
+    }

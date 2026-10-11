@@ -14,7 +14,14 @@ from ninja_bot.activity.pokemon_stats import (
     impatient_awards,
     pokemon_stats,
 )
-from ninja_bot.activity.stats import RankedRow, UserStats, monthly_stats, rank, shame_list
+from ninja_bot.activity.stats import (
+    RankedRow,
+    UserStats,
+    monthly_stats,
+    rank,
+    shame_candidates,
+    shame_list,
+)
 from ninja_bot.activity.store import PokemonEvent, Session
 
 # How many members the wall of shame names.
@@ -51,7 +58,7 @@ class UserProfile:
 def build_monthly_report(
     sessions: Iterable[Session],
     previous_sessions: Iterable[Session],
-    known_users: Iterable[int],
+    voice_user_ranges: Mapping[int, tuple[float, float]],
     month: Month,
     tz: ZoneInfo,
     now: float,
@@ -60,7 +67,8 @@ def build_monthly_report(
     """Everything the overview shows for `month`; open sessions end at `now`.
 
     `previous_sessions` cover the month before (for the climber/drop awards);
-    `pokemon_events` outside `month` are ignored.
+    `voice_user_ranges` (first and last session start per user) pick the wall of shame
+    candidates (see `shame_candidates`); `pokemon_events` outside `month` are ignored.
     """
     session_list = list(sessions)
     pokemon = pokemon_stats(pokemon_events, month, tz)
@@ -73,7 +81,11 @@ def build_monthly_report(
         days_in_month=month.days(tz),
         stats=stats,
         leaderboard=rank(list(totals.items())),
-        shame=shame_list(totals, set(known_users) | set(totals), SHAME_LIMIT),
+        shame=shame_list(
+            totals,
+            shame_candidates(voice_user_ranges, month.end(tz).timestamp()) | set(totals),
+            SHAME_LIMIT,
+        ),
         awards=compute_awards(stats, previous_stats, session_list, month, tz, now)
         + impatient_awards(pokemon),
         social=social_stats(session_list, month, tz, now),

@@ -139,3 +139,12 @@
 
 ---
 # Review follow-ups (tasks/prd-activity-tracking-review.md): first run archived in scripts/ralph/archive/2026-10-11-activity-tracking/
+
+# Review follow-ups (tasks/prd-activity-tracking-review.md) — story IDs restart at US-001
+
+## 2026-10-11 - Review US-001
+- `known_users()` replaced by `voice_user_ranges()` (store Protocol + Sqlite: MIN/MAX start_ts per voice user; Pokémon-only users not included). `shame_candidates(ranges, month_end_ts)` + `SHAME_LOOKBACK_DAYS` 90 in activity/stats.py; `build_monthly_report` takes `voice_user_ranges` and shames candidates | users with time that month.
+- Sessions after the viewed month count as "last seen" (someone back since is still a candidate).
+- Files: src/ninja_bot/activity/{store,stats,report}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{store,stats,embed,commands}.py, README.md (Wall of shame bullet, Toasty storage note), CLAUDE.md, docs/manual-checks.md.
+- Needs manual check: docs/manual-checks.md wall of shame item (old month with a later-joined member).
+---

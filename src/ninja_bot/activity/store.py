@@ -100,8 +100,8 @@ class ActivityStore(Protocol):
         """Sessions overlapping [start_ts, end_ts), open ones included, oldest first."""
         ...
 
-    async def known_users(self) -> set[int]:
-        """Every user ever seen (in voice or with a `;pokemon` event)."""
+    async def voice_user_ranges(self) -> dict[int, tuple[float, float]]:
+        """Per user ever seen in voice: (start of their first session, start of their last)."""
         ...
 
     async def record_pokemon_event(self, event: PokemonEvent) -> None:
@@ -191,12 +191,12 @@ class SqliteActivityStore:
             ).fetchall()
         return [_session(row) for row in rows]
 
-    def _known_users(self) -> set[int]:
+    def _voice_user_ranges(self) -> dict[int, tuple[float, float]]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT user_id FROM voice_sessions UNION SELECT user_id FROM pokemon_events"
+                "SELECT user_id, MIN(start_ts), MAX(start_ts) FROM voice_sessions GROUP BY user_id"
             ).fetchall()
-        return {int(user_id) for (user_id,) in rows}
+        return {int(user_id): (float(first), float(last)) for user_id, first, last in rows}
 
     def _record_pokemon_event(self, event: PokemonEvent) -> None:
         with closing(self._connect()) as conn, conn:
@@ -259,8 +259,8 @@ class SqliteActivityStore:
     async def sessions_between(self, start_ts: float, end_ts: float) -> list[Session]:
         return await asyncio.to_thread(self._sessions_between, start_ts, end_ts)
 
-    async def known_users(self) -> set[int]:
-        return await asyncio.to_thread(self._known_users)
+    async def voice_user_ranges(self) -> dict[int, tuple[float, float]]:
+        return await asyncio.to_thread(self._voice_user_ranges)
 
     async def record_pokemon_event(self, event: PokemonEvent) -> None:
         await asyncio.to_thread(self._record_pokemon_event, event)

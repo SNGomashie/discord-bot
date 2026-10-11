@@ -60,8 +60,12 @@ class FakeStore:
     async def pokemon_events_between(self, start_ts: float, end_ts: float) -> list[PokemonEvent]:
         return [e for e in self.events if start_ts <= e.ts < end_ts]
 
-    async def known_users(self) -> set[int]:
-        return {s.user_id for s in self.sessions} | {e.user_id for e in self.events}
+    async def voice_user_ranges(self) -> dict[int, tuple[float, float]]:
+        ranges: dict[int, tuple[float, float]] = {}
+        for s in self.sessions:
+            first, last = ranges.get(s.user_id, (s.start_ts, s.start_ts))
+            ranges[s.user_id] = (min(first, s.start_ts), max(last, s.start_ts))
+        return ranges
 
 
 def ts(day: int, hour: int, month: int = 10) -> float:

@@ -8,10 +8,12 @@ import pytest
 from ninja_bot.activity.periods import Month
 from ninja_bot.activity.stats import (
     ACTIVE_DAY_MIN_SECONDS,
+    SHAME_LOOKBACK_DAYS,
     RankedRow,
     clip,
     monthly_stats,
     rank,
+    shame_candidates,
     shame_list,
 )
 from ninja_bot.activity.store import Session
@@ -252,3 +254,37 @@ def test_shame_list_does_not_invent_users() -> None:
 def test_shame_list_ties_by_user_id_and_limit() -> None:
     assert shame_list({}, known_users=[5, 2, 9], limit=2) == [(2, 0.0), (5, 0.0)]
     assert shame_list({}, known_users=[5], limit=0) == []
+
+
+# --- shame_candidates ---
+
+DAY = 86400.0
+OCTOBER_END = ts(2026, 11, 1)
+
+
+def test_shame_lookback_is_90_days() -> None:
+    assert SHAME_LOOKBACK_DAYS == 90
+
+
+def test_shame_candidates_skip_users_first_seen_after_the_month() -> None:
+    ranges = {1: (ts(2026, 9, 1), ts(2026, 9, 1)), 2: (OCTOBER_END, OCTOBER_END + DAY)}
+    assert shame_candidates(ranges, OCTOBER_END) == {1}
+
+
+def test_shame_candidates_lookback_boundary() -> None:
+    ranges = {
+        1: (0.0, OCTOBER_END - 91 * DAY),  # gone for too long
+        2: (0.0, OCTOBER_END - 89 * DAY),
+        3: (0.0, OCTOBER_END - 90 * DAY),  # exactly at the limit
+    }
+    assert shame_candidates(ranges, OCTOBER_END) == {2, 3}
+
+
+def test_shame_candidates_count_sessions_after_the_month() -> None:
+    # Absent around October but back since: still a member of the crowd.
+    ranges = {1: (0.0, OCTOBER_END + 30 * DAY)}
+    assert shame_candidates(ranges, OCTOBER_END) == {1}
+
+
+def test_shame_candidates_empty() -> None:
+    assert shame_candidates({}, OCTOBER_END) == set()

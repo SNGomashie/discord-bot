@@ -388,9 +388,9 @@ class Activity(commands.Cog):
         pokemon_events = await self.store.pokemon_events_between(
             month.start(self.tz).timestamp(), month.end(self.tz).timestamp()
         )
-        known_users = await self.store.known_users()
+        voice_user_ranges = await self.store.voice_user_ranges()
         return build_monthly_report(
-            sessions, previous_sessions, known_users, month, self.tz, now, pokemon_events
+            sessions, previous_sessions, voice_user_ranges, month, self.tz, now, pokemon_events
         )
 
     async def cog_app_command_error(
