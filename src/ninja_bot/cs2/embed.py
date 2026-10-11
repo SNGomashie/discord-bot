@@ -350,7 +350,7 @@ def build_leaderboard_embed(rows: Sequence[LeaderboardRow], metric: Metric) -> d
         embed.description = NOBODY_LINKED_MESSAGE
         return embed
     lines = [format_leaderboard_row(row, metric) for row in rows[:MAX_LEADERBOARD_ROWS]]
-    for index, chunk in enumerate(_pack_lines(lines, FIELD_VALUE_LIMIT)):
+    for index, chunk in enumerate(pack_lines(lines, FIELD_VALUE_LIMIT)):
         name = LEADERBOARD_FIELD if index == 0 else LEADERBOARD_CONTINUED_FIELD
         embed.add_field(name=name, value=chunk, inline=False)
     hidden = len(rows) - MAX_LEADERBOARD_ROWS
@@ -373,7 +373,7 @@ def format_leaderboard_row(row: LeaderboardRow, metric: Metric) -> str:
     return f"{text} {trend}" if trend else text
 
 
-def _pack_lines(lines: Sequence[str], limit: int) -> list[str]:
+def pack_lines(lines: Sequence[str], limit: int) -> list[str]:
     """Join lines into chunks of at most `limit` characters, never splitting a line.
 
     A single line longer than `limit` is truncated on its own.
