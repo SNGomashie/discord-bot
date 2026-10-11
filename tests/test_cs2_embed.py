@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from ninja_bot.cs2.embed import (
     BREAKDOWN_FIELD,
     FORM_FIELD,
     MATCHES_FIELD,
+    OTHER_PLAYERS_FIELD,
     PROFILE_COLOUR,
     RANKS_FIELD,
     RATINGS_FIELD,
@@ -55,7 +57,7 @@ def profile() -> Profile:
     return parse_profile(json.loads((FIXTURES / "profile.json").read_text()))
 
 
-def _player(index: int, team: int, **kwargs: object) -> PlayerMatchStats:
+def _player(index: int, team: int | None, **kwargs: object) -> PlayerMatchStats:
     defaults: dict[str, object] = {"name": f"player{index}", "team_number": team}
     defaults.update(kwargs)
     return PlayerMatchStats(steam64_id=f"7656119{index:010d}", **defaults)  # type: ignore[arg-type]
@@ -291,6 +293,113 @@ def test_limits_full_match_with_long_names(profile: Profile) -> None:
     embed = build_match_embed(match, awards, players[0].steam64_id, long_profile)
 
     assert len(embed.fields) == 6
+    assert len(embed.fields) <= 25
+    assert len(embed.title or "") <= 256
+    for field in embed.fields:
+        assert len(field.name or "") <= 256
+        assert len(field.value or "") <= 1024
+    assert len(embed) <= 6000
+    _assert_no_empty_fields(embed)
+
+
+def _unassigned_match(*players: PlayerMatchStats) -> Match:
+    return Match(
+        id="m2",
+        map_name="de_inferno",
+        finished_at=None,
+        team_scores=(TeamScore(2, 13), TeamScore(3, 9)),
+        players=players,
+    )
+
+
+def test_all_players_assigned_has_no_other_players_field(match: Match) -> None:
+    embed = build_match_embed(match, [])
+    assert OTHER_PLAYERS_FIELD not in _fields(embed)
+
+
+def test_players_without_team_number_get_other_players_field() -> None:
+    match = _unassigned_match(_player(1, 2), _player(2, 3), _player(3, None))
+    embed = build_match_embed(match, [])
+    assert [f.name for f in embed.fields] == ["Team A", "Team B", OTHER_PLAYERS_FIELD]
+    other = embed.fields[2]
+    assert not other.inline
+    assert "player3" in (other.value or "")
+    assert "player3" not in (embed.fields[0].value or "") + (embed.fields[1].value or "")
+    _assert_no_empty_fields(embed)
+
+
+def test_third_team_number_goes_to_other_players() -> None:
+    match = _unassigned_match(_player(1, 2), _player(2, 3), _player(3, 4), _player(4, None))
+    fields = _fields(build_match_embed(match, [Award("Top", "7656119", "player1", "x")]))
+    assert list(fields)[:4] == ["Team A", "Team B", OTHER_PLAYERS_FIELD, AWARDS_FIELD]
+    assert "player3" in fields[OTHER_PLAYERS_FIELD]
+    assert "player4" in fields[OTHER_PLAYERS_FIELD]
+
+
+def test_no_team_numbers_lists_everyone_with_neutral_colour() -> None:
+    match = _unassigned_match(*(_player(i, None) for i in range(4)))
+    embed = build_match_embed(match, [], match.players[0].steam64_id)
+    assert embed.colour == discord.Colour.light_grey()
+    names = [f.name for f in embed.fields]
+    assert names[:3] == ["Team A", "Team B", OTHER_PLAYERS_FIELD]
+    other = embed.fields[2].value or ""
+    assert all(f"player{i}" in other for i in range(4))
+    _assert_no_empty_fields(embed)
+
+
+def test_unassigned_focus_player_still_gets_details(profile: Profile) -> None:
+    focus = _player(3, None, kills=20, deaths=10, assists=4)
+    match = _unassigned_match(_player(1, 2), _player(2, 3), focus)
+    embed = build_match_embed(match, [], focus.steam64_id, profile)
+    assert embed.colour == discord.Colour.light_grey()
+    names = [f.name for f in embed.fields]
+    assert names[:3] == ["Team A", "Team B", OTHER_PLAYERS_FIELD]
+    assert YOUR_TEAM not in names
+    fields = _fields(embed)
+    assert fields["player3"].startswith("K/D/A: 20/10/4")
+    assert BREAKDOWN_FIELD in fields
+    assert FORM_FIELD in fields
+    _assert_no_empty_fields(embed)
+
+
+def test_limits_ten_unassigned_players_with_long_names(profile: Profile) -> None:
+    long_name = "W" * 32
+    players = tuple(
+        _player(
+            i,
+            None,
+            name=f"{long_name[:-2]}{i:02d}",
+            kills=99,
+            deaths=99,
+            assists=99,
+            hs_kills=99,
+            damage=99999,
+            rounds=30,
+            mvps=i,
+            leetify_rating=-0.123,
+            multi2k=9,
+            multi3k=9,
+            multi4k=9,
+            multi5k=9,
+            reaction_time_ms=999.0,
+            preaim=99.9,
+        )
+        for i in range(10)
+    )
+    match = Match(
+        id="m",
+        map_name="de_" + "x" * 300,
+        finished_at=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        team_scores=(TeamScore(2, 16), TeamScore(3, 14)),
+        players=players,
+    )
+    awards = compute_awards(match, limit=25)
+    long_profile = dataclasses.replace(profile, steam64_id=players[0].steam64_id, name=long_name)
+
+    embed = build_match_embed(match, awards, players[0].steam64_id, long_profile)
+
+    fields = _fields(embed)
+    assert OTHER_PLAYERS_FIELD in fields
     assert len(embed.fields) <= 25
     assert len(embed.title or "") <= 256
     for field in embed.fields:

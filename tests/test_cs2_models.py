@@ -120,6 +120,37 @@ def test_teams_skips_players_without_team() -> None:
     assert team_b == ()
 
 
+def test_unassigned_empty_when_all_players_have_a_team() -> None:
+    match = _match(_player("a", team=2), _player("b", team=3))
+    assert match.unassigned() == ()
+    assert _match().unassigned() == ()
+
+
+def test_unassigned_collects_missing_and_third_team_numbers_sorted() -> None:
+    match = _match(
+        _player("t2", team=2),
+        _player("none-low", team=None, leetify_rating=-0.05),
+        _player("t3", team=3),
+        _player("t4-high", team=4, leetify_rating=0.07),
+        _player("none-kills", team=None, kills=20),
+        _player("none-mid", team=None, leetify_rating=0.01, kills=5),
+    )
+    assert [p.steam64_id for p in match.unassigned()] == [
+        "t4-high",
+        "none-mid",
+        "none-low",
+        "none-kills",
+    ]
+    shown = [p for team in match.teams() for p in team] + list(match.unassigned())
+    assert sorted(p.steam64_id for p in shown) == sorted(p.steam64_id for p in match.players)
+
+
+def test_unassigned_without_any_team_numbers() -> None:
+    match = _match(_player("a", team=None, kills=3), _player("b", team=None, kills=9))
+    assert match.teams() == ((), ())
+    assert [p.steam64_id for p in match.unassigned()] == ["b", "a"]
+
+
 def _at(hour: int) -> datetime.datetime:
     return datetime.datetime(2026, 10, 1, hour, tzinfo=datetime.UTC)
 

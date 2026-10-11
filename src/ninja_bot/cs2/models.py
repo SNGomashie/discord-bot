@@ -141,9 +141,17 @@ class Match:
         Players are sorted by Leetify rating, then kills, descending; unknown values
         sort last. Players without a team number (or on a third team) are left out.
         """
-        numbers = sorted({p.team_number for p in self.players if p.team_number is not None})
-        first, second = (numbers + [None, None])[:2]
+        first, second = (self._team_numbers() + [None, None])[:2]
         return (self._team(first), self._team(second))
+
+    def unassigned(self) -> tuple[PlayerMatchStats, ...]:
+        """The players `teams()` leaves out (no team number or a third team), sorted like a team."""
+        numbers = self._team_numbers()[:2]
+        members = [p for p in self.players if p.team_number not in numbers]
+        return tuple(sorted(members, key=_player_sort_key))
+
+    def _team_numbers(self) -> list[int]:
+        return sorted({p.team_number for p in self.players if p.team_number is not None})
 
     def _team(self, number: int | None) -> tuple[PlayerMatchStats, ...]:
         if number is None:

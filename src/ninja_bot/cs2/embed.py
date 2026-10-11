@@ -22,6 +22,7 @@ FIELD_VALUE_LIMIT = 1024
 UNKNOWN_MAP = "Unknown map"
 TEAM_NAMES = ("Team A", "Team B")
 YOUR_TEAM = "Your team"
+OTHER_PLAYERS_FIELD = "Other players"
 AWARDS_FIELD = "Awards"
 BREAKDOWN_FIELD = "Leetify breakdown"
 FORM_FIELD = "Recent form"
@@ -49,7 +50,10 @@ def build_match_embed(
     focus_steam_id: str | None = None,
     profile: Profile | None = None,
 ) -> discord.Embed:
-    """One embed for a whole match: score, both team tables, awards and the focus player.
+    """One embed for a whole match: score, team tables, awards and the focus player.
+
+    Players without a usable team number get their own `Other players` table, so nobody
+    is dropped.
 
     The focus player's stats (and, with a profile, their Leetify breakdown and recent
     form) are only shown when they played in the match. Missing data is left out.
@@ -65,6 +69,13 @@ def build_match_embed(
         embed.add_field(
             name=YOUR_TEAM if is_focus_team else name,
             value=format_team_table(team, max_chars=FIELD_VALUE_LIMIT),
+            inline=False,
+        )
+    unassigned = match.unassigned()
+    if unassigned:
+        embed.add_field(
+            name=OTHER_PLAYERS_FIELD,
+            value=format_team_table(unassigned, max_chars=FIELD_VALUE_LIMIT),
             inline=False,
         )
     if awards:
