@@ -94,5 +94,58 @@ async def test_blocking_calls_run_in_thread(
     await store.set(1, STEAM_A)
     await store.get(1)
     await store.all_links()
+    await store.discord_ids_for([STEAM_A])
     await store.remove(1)
-    assert calls == ["_set", "_get", "_all_links", "_remove"]
+    assert calls == ["_set", "_get", "_all_links", "_discord_ids_for", "_remove"]
+
+
+async def test_discord_ids_for_found_and_not_found(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.set(1, STEAM_A)
+    await store.set(2, STEAM_B)
+    assert await store.discord_ids_for([STEAM_A, "76561198999999999"]) == {STEAM_A: 1}
+    assert await store.discord_ids_for({STEAM_A, STEAM_B}) == {STEAM_A: 1, STEAM_B: 2}
+    assert await store.discord_ids_for(["76561198999999999"]) == {}
+
+
+async def test_discord_ids_for_empty_input_runs_no_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    async def recorder(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        calls.append(func.__name__)
+        raise AssertionError("no query expected")
+
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    path = tmp_path / "links.sqlite3"
+    assert await SqliteLinkStore(path).discord_ids_for([]) == {}
+    assert calls == []
+    assert not _exists(path)
+
+
+async def test_discord_ids_for_duplicate_links_returns_lowest_id(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.set(30, STEAM_A)
+    await store.set(5, STEAM_A)
+    await store.set(17, STEAM_A)
+    assert await store.discord_ids_for([STEAM_A, STEAM_A]) == {STEAM_A: 5}
+
+
+async def test_discord_ids_for_more_than_one_chunk(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    ids = [str(76561198000000000 + n) for n in range(1200)]
+    for n in (0, 499, 500, 501, 1199):
+        await store.set(n + 1, ids[n])
+    result = await store.discord_ids_for(ids)
+    assert result == {ids[n]: n + 1 for n in (0, 499, 500, 501, 1199)}
+
+
+async def test_discord_ids_for_binds_hostile_ids_as_parameters(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    hostile = "1' OR '1'='1\"; DROP TABLE links; --"
+    await store.set(1, STEAM_A)
+    await store.set(2, hostile)
+    assert await store.discord_ids_for(["1' OR '1'='1"]) == {}
+    assert await store.discord_ids_for([hostile, '") OR 1=1 --']) == {hostile: 2}
+    assert await store.all_links() == {1: STEAM_A, 2: hostile}

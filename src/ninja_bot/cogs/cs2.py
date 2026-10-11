@@ -12,9 +12,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from ninja_bot.cs2.awards import compute_awards
-from ninja_bot.cs2.client import LeetifyClient, StatsProvider
+from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
 from ninja_bot.cs2.formatting import escape_name
+from ninja_bot.cs2.identities import Identity, MemberLookup, resolve_identities
 from ninja_bot.cs2.models import Cs2Error, Match, NoMatchesError, NotLinkedError, Profile
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
 from ninja_bot.cs2.steam import (
@@ -69,6 +70,24 @@ def clean_match_id(match: str | None) -> str | None:
     if len(match) > MAX_MATCH_ID_LENGTH:
         raise Cs2Error(INVALID_MATCH_ID_MESSAGE)
     return match.strip() or None
+
+
+def member_lookup(guild: discord.Guild) -> MemberLookup:
+    """Display name of a guild member: cache first, then REST (no Server Members intent)."""
+
+    async def lookup(discord_id: int) -> str | None:
+        member = guild.get_member(discord_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(discord_id)
+            except discord.NotFound:
+                return None
+            except discord.HTTPException as exc:
+                log.warning("Could not fetch a Discord member: HTTP %s", exc.status)
+                return None
+        return member.display_name
+
+    return lookup
 
 
 async def _send_safely(send: Awaitable[object]) -> bool:
@@ -272,7 +291,10 @@ class Cs2(commands.Cog):
         """Fetch and post the scoreboard; True only if the embed was posted."""
         try:
             match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
-            embed = build_match_embed(match, compute_awards(match), steam64_id, profile)
+            identities = await self._match_identities_or_empty(interaction, match)
+            embed = build_match_embed(
+                match, compute_awards(match), steam64_id, profile, identities=identities
+            )
         except Cs2Error as exc:
             await _send_safely(interaction.followup.send(exc.message))
             return False
@@ -280,7 +302,10 @@ class Cs2(commands.Cog):
             log.exception("Unexpected error building a CS2 scoreboard")
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
             return False
-        return await _send_safely(interaction.followup.send(embed=embed))
+        # Friends are shown as mentions; render them, but never ping anyone.
+        return await _send_safely(
+            interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        )
 
     async def _profile_deferred(self, interaction: discord.Interaction, steam64_id: str) -> bool:
         """Fetch and post the profile; True only if the embed was posted."""
@@ -316,7 +341,26 @@ class Cs2(commands.Cog):
         matches = await self.stats.get_recent_matches(steam64_id)
         if not matches:
             raise NoMatchesError()
-        return matches[0]
+        return await full_match(self.stats, matches[0])
+
+    async def _match_identities(
+        self, interaction: discord.Interaction, match: Match
+    ) -> dict[str, Identity]:
+        """Linked server members among the match players; empty outside a server."""
+        guild = interaction.guild
+        if guild is None:
+            return {}
+        return await resolve_identities(match.players, self.links, member_lookup(guild))
+
+    async def _match_identities_or_empty(
+        self, interaction: discord.Interaction, match: Match
+    ) -> dict[str, Identity]:
+        """Names and mentions are extras, so a failure here never stops the scoreboard."""
+        try:
+            return await self._match_identities(interaction, match)
+        except Exception:
+            log.exception("Posting scoreboard without Discord names")
+            return {}
 
     async def _fetch_profile_or_none(self, steam64_id: str) -> Profile | None:
         """The profile only adds the breakdown, so its CS2 errors don't stop the scoreboard."""

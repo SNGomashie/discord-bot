@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import discord
 
@@ -12,6 +12,7 @@ from ninja_bot.cs2.formatting import (
     format_team_table,
     rating_bar,
 )
+from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile, Ranks
 
 # Discord embed limits.
@@ -22,6 +23,10 @@ FIELD_VALUE_LIMIT = 1024
 UNKNOWN_MAP = "Unknown map"
 TEAM_NAMES = ("Team A", "Team B")
 YOUR_TEAM = "Your team"
+OTHER_PLAYERS_FIELD = "Other players"
+NO_TEAM = "No team"
+FRIENDS_FIELD = "Friends in this match"
+MAX_FRIEND_LINES = 10
 AWARDS_FIELD = "Awards"
 BREAKDOWN_FIELD = "Leetify breakdown"
 FORM_FIELD = "Recent form"
@@ -48,8 +53,16 @@ def build_match_embed(
     awards: Sequence[Award],
     focus_steam_id: str | None = None,
     profile: Profile | None = None,
+    identities: Mapping[str, Identity] | None = None,
 ) -> discord.Embed:
-    """One embed for a whole match: score, both team tables, awards and the focus player.
+    """One embed for a whole match: score, team tables, awards and the focus player.
+
+    Players in `identities` (linked server members) show by display name in the tables,
+    and get a `Friends in this match` line with their mention (mentions are built only
+    from stored numeric Discord IDs; the cog must send with `AllowedMentions.none()`).
+
+    Players without a usable team number get their own `Other players` table, so nobody
+    is dropped.
 
     The focus player's stats (and, with a profile, their Leetify breakdown and recent
     form) are only shown when they played in the match. Missing data is left out.
@@ -60,23 +73,75 @@ def build_match_embed(
         colour=OUTCOME_COLOURS[match_outcome(match, focus)],
         timestamp=match.finished_at,
     )
+    names = {steam_id: i.display_name for steam_id, i in (identities or {}).items()}
     for name, team in zip(TEAM_NAMES, match.teams(), strict=True):
         is_focus_team = focus is not None and focus in team
         embed.add_field(
             name=YOUR_TEAM if is_focus_team else name,
-            value=format_team_table(team, max_chars=FIELD_VALUE_LIMIT),
+            value=format_team_table(team, max_chars=FIELD_VALUE_LIMIT, names=names),
+            inline=False,
+        )
+    unassigned = match.unassigned()
+    if unassigned:
+        embed.add_field(
+            name=OTHER_PLAYERS_FIELD,
+            value=format_team_table(unassigned, max_chars=FIELD_VALUE_LIMIT, names=names),
             inline=False,
         )
     if awards:
         lines = [f"**{a.title}**: {escape_name(a.name)} ({a.detail})" for a in awards]
         _add_field(embed, AWARDS_FIELD, "\n".join(lines), inline=False)
+    friends = format_friends(match, identities or {}, focus)
+    if friends:
+        _add_field(embed, FRIENDS_FIELD, friends, inline=False)
     if focus is not None:
-        _add_field(embed, escape_name(focus.name or focus.steam64_id), format_player_stats(focus))
+        focus_name = escape_name(focus.name or focus.steam64_id)
+        stats = format_player_stats(focus)
+        focus_identity = (identities or {}).get(focus.steam64_id)
+        if focus_identity is not None:
+            mention = f"<@{focus_identity.discord_id}> · {focus_name}"
+            stats = f"{mention}\n{stats}" if stats else mention
+        _add_field(embed, focus_name, stats)
         if profile is not None:
             _add_field(embed, BREAKDOWN_FIELD, format_breakdown(profile))
             if profile.recent_matches:
                 _add_field(embed, FORM_FIELD, form_strip(profile.recent_matches))
     return embed
+
+
+def format_friends(
+    match: Match, identities: Mapping[str, Identity], focus: PlayerMatchStats | None = None
+) -> str:
+    """One `<@id> as SteamName (team)` line per linked member, by team then rating.
+
+    At most `MAX_FRIEND_LINES` lines; lines that don't fit the field are dropped from the
+    bottom (with a `+N more` line) so a mention is never cut in half.
+    """
+    groups = [*match.teams(), match.unassigned()]
+    labels = [
+        YOUR_TEAM if focus is not None and focus in team else name
+        for name, team in zip(TEAM_NAMES, groups, strict=False)
+    ] + [NO_TEAM]
+    lines: list[str] = []
+    for label, group in zip(labels, groups, strict=True):
+        ranked = sorted(group, key=lambda p: (p.leetify_rating is None, -(p.leetify_rating or 0)))
+        for player in ranked:
+            identity = identities.get(player.steam64_id)
+            if identity is None:
+                continue
+            name = escape_name(player.name or player.steam64_id)
+            lines.append(f"<@{identity.discord_id}> as {name} ({label})")
+    return _fit_lines(lines[:MAX_FRIEND_LINES], FIELD_VALUE_LIMIT)
+
+
+def _fit_lines(lines: list[str], limit: int) -> str:
+    """Join whole lines, dropping them from the bottom (+N more) until they fit."""
+    for keep in range(len(lines), -1, -1):
+        dropped = len(lines) - keep
+        text = "\n".join(lines[:keep] + ([f"+{dropped} more"] if dropped else []))
+        if len(text) <= limit:
+            return text
+    return ""
 
 
 def match_outcome(match: Match, player: PlayerMatchStats | None) -> MatchOutcome | None:

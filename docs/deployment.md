@@ -32,7 +32,7 @@ Do this once for dev and once for prod.
 
 ### Intents
 
-The bot uses `discord.Intents.default()`, which only needs the non-privileged intents. It does not read message content, member lists or presences, so **no privileged intent has to be enabled**. If you ever add a feature that needs one (for example Message Content), enable it in the portal *and* add it in [bot.py](../src/ninja_bot/bot.py). Request only what a feature needs.
+The bot uses `discord.Intents.default()`, which only needs the non-privileged intents. It does not read message content, member lists or presences, so **no privileged intent has to be enabled**. `/scoreboard` shows linked friends by their server name by looking each one up over REST (`fetch_member`, at most ten per scoreboard), which needs neither the Server Members intent nor an extra permission. If you ever add a feature that needs one (for example Message Content), enable it in the portal *and* add it in [bot.py](../src/ninja_bot/bot.py). Request only what a feature needs.
 
 ### Permissions
 

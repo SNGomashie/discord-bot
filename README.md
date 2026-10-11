@@ -38,6 +38,10 @@ Full walkthrough in **[docs/deployment.md](docs/deployment.md)**: creating the D
 CS2 stats from the [Leetify](https://leetify.com) public API:
 - `/link steam:<id, link or name>` links your Discord account to a Steam account. It accepts your SteamID64 (17 digits), a `steamcommunity.com/profiles/<id>` URL, a `steamcommunity.com/id/<name>` URL, or just your custom URL name. Custom URL names are resolved to a SteamID64 through Steam's public profile page (no API key needed); the reply then shows the resolved ID so you can check it is yours. `/unlink` removes the link. Both replies are only visible to you.
 - `/scoreboard [player] [match]` posts the full scoreboard of your (or `player`'s) latest match, or of a specific Leetify match id: both team tables, fun awards, the focus player's stats, Leetify breakdown and recent form.
+  - Every player in the match is listed: if Leetify's match history only returns your own entry, the bot fetches the full match by id, and players without a team number go into an `Other players` table.
+  - Friends who `/link`ed their Steam account and are members of this server show up by their Discord name in the tables, and in a `Friends in this match` line as an `@mention` next to their Steam name. Mentions never ping anyone.
+  - Detailed stats, the Leetify breakdown and recent form are only shown for the focus player (you, or `player`), not for every friend in the match.
+  - No extra Discord intent or permission is needed: members are looked up through the REST API (`fetch_member`), not the privileged Server Members intent.
 - `/profile [player]` posts ranks, winrate, Leetify rating bars and recent form.
 
 `/scoreboard` and `/profile` share a 10-second per-user cooldown; it is refunded when the lookup fails. `/link` has its own 15-second cooldown that only applies after a valid request (an invalid Steam ID doesn't count) and is not refunded; linking the account you're already linked to by SteamID64 or `/profiles/` URL just says so, without a Leetify lookup or cooldown (by custom URL name, the name has to be looked up first, so the cooldown applies). A wrong `match:` id gets a "match not found" reply instead of the "player not found" one. Player names from Leetify are escaped, so markdown in a name is shown as plain text. Players need a public Leetify profile.
@@ -57,6 +61,10 @@ CS2 stats from the [Leetify](https://leetify.com) public API:
 - [ ] `/link` by name for the account you're already linked to → "already linked" reply
 - [ ] `/scoreboard` → embed of your latest match (team tables, awards, your stats, breakdown, form)
 - [ ] `/scoreboard player:@friend` and `/scoreboard match:<id>` → that player's / that match's scoreboard
+- [ ] `/scoreboard` → all ten players show up in the team tables (not just you)
+- [ ] Match with two linked friends → their Discord names in the tables and a `Friends in this match` line with mentions that don't ping
+- [ ] Linked friend who left the server → falls back to their Steam name, not in the friends line
+- [ ] Player with no team in the Leetify data (if one turns up) → listed under `Other players`
 - [ ] `/profile` and `/profile player:@friend` → ranks, winrate, rating bars, form
 - [ ] Private Leetify profile → friendly "private profile" reply
 - [ ] Unlinked user (`/scoreboard player:@someone-unlinked`) → "not linked" reply

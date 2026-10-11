@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import discord
 
@@ -57,8 +57,15 @@ def rating_bar(value: float | None, max_value: float, width: int = BAR_WIDTH) ->
     return BAR_FILLED * filled + BAR_EMPTY * (width - filled)
 
 
-def format_team_table(players: Sequence[PlayerMatchStats], max_chars: int = 1000) -> str:
+def format_team_table(
+    players: Sequence[PlayerMatchStats],
+    max_chars: int = 1000,
+    names: Mapping[str, str] | None = None,
+) -> str:
     """One team as a monospace code block: name, K/D/A, ADR, HS% and rating per player.
+
+    `names` maps Steam IDs to a display name (e.g. a linked Discord member) shown instead
+    of the Steam name; it goes through `clean_name` like any other name.
 
     The player with the most MVPs (ties: best rating) gets a star. Rows are dropped from
     the bottom with a `+N more` line so the result never exceeds `max_chars`; raises
@@ -70,7 +77,8 @@ def format_team_table(players: Sequence[PlayerMatchStats], max_chars: int = 1000
     if not players:
         return _code_block([header, NO_PLAYERS], max_chars)
     star = _star_player(players)
-    rows = [_row(player, player is star) for player in players]
+    names = names or {}
+    rows = [_row(player, player is star, names.get(player.steam64_id)) for player in players]
     for shown in range(len(rows), -1, -1):
         lines = [header, *rows[:shown]]
         if shown < len(rows):
@@ -132,11 +140,11 @@ def escape_name(name: str | None) -> str:
     return _UNESCAPED_LINK_CHAR.sub(r"\1\\\2", escaped)
 
 
-def _row(player: PlayerMatchStats, starred: bool) -> str:
+def _row(player: PlayerMatchStats, starred: bool, name: str | None = None) -> str:
     kda = "/".join(_int(v) for v in (player.kills, player.deaths, player.assists))
     return _ROW_FORMAT.format(
         star=STAR if starred else " ",
-        name=_pad_name(clean_name(player.name)),
+        name=_pad_name(clean_name(player.name if name is None else name)),
         kda=kda,
         adr=_int(player.adr),
         hs=_int(player.hs_percent),

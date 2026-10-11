@@ -18,11 +18,12 @@ Personal Discord bot (discord.py 2.x, Python 3.12+) for ONE private server of fr
 - `src/ninja_bot/cs2/`: CS2 feature logic (Leetify API):
   - `models.py`: Cs2Error types, Match/PlayerMatchStats/Profile dataclasses, `parse_match`, `parse_profile`, `newest_first` (the one newest-first sort).
   - `steam.py`: `parse_steam_target` (`SteamId` | `VanityName` from a SteamID64, `/profiles/` or `/id/` URL, or bare custom URL name; `is_vanity_name` is the one vanity check), `parse_steam_id` (ID-only wrapper for scripts).
-  - `client.py`: `StatsProvider` Protocol (includes `aclose`; wrappers must delegate it), `LeetifyClient` (the only module talking to Leetify; injectable fetch).
+  - `client.py`: `StatsProvider` Protocol (includes `aclose`; wrappers must delegate it), `LeetifyClient` (the only module talking to Leetify; injectable fetch), `full_match` (re-fetches a history entry by id when it lacks players; use it before showing/announcing any history match).
   - `resolver.py`: `SteamResolver` Protocol, `SteamCommunityResolver` (custom URL name -> SteamID64 via `steamcommunity.com/id/<name>/?xml=1`, no API key, regex only; the only module talking to Steam).
   - `store.py`: `LinkStore` Protocol, `SqliteLinkStore` (`<DATA_DIR>/cs2.sqlite3`).
   - `formatting.py`: team tables, `form_strip`, `format_rating`, `rating_bar`, `clean_name` (names in code blocks), `escape_name` (names in embed text), `display_width` (table alignment).
   - `awards.py`: `compute_awards` (fun match awards).
+  - `identities.py`: `Identity`, `resolve_identities` (match players -> linked server members via an injected `lookup`; never imports discord). The cog's `member_lookup(guild)` provides it (cache, then REST `fetch_member`).
   - `embed.py`: `build_match_embed`, `build_profile_embed`.
 - `scripts/capture_leetify.py`: manual, dev-only capture of real (anonymized) Leetify responses into `data/leetify-capture/` to check the hand-written fixtures in `tests/fixtures/leetify/`.
 - `tests/`: pytest (asyncio_mode=auto).
