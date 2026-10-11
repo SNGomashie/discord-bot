@@ -35,6 +35,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
 | `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
+| `/help` | `command` (a command name, default: overview of every command) | private | none |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private "Slow down!" reply with the seconds left.
 
@@ -314,7 +315,6 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **One download at a time**, bot-wide, with no persistent queue.
-- **No help command:** command descriptions in Discord and this README are the only documentation.
 
 ## Development
 
@@ -324,7 +324,9 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
-  cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop)
+  cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
+                  help.py (/help)
+  help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
