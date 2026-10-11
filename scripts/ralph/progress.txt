@@ -200,3 +200,7 @@
 - Added `split_local` to activity/periods.py (hour/day boundaries, DST guard); `stats._seconds_per_day` and `awards._hour_pieces` use it; removed `_next_midnight`. `awards._clipped` already used `stats.clip`.
 - Tests: tests/test_activity_periods.py (one hour, midnight, several days, Amsterdam spring-forward/fall-back, zero length). Existing stats/awards tests unchanged.
 - Learning: fall-back hour split merges the repeated 02:00 hour into one 7200 s piece (kept as-is: no behaviour change).
+
+## 2026-10-11 - US-010
+- Removed the ignored `tz` parameter from `Month.days()` (periods.py); updated callers in activity/report.py, activity/stats.py and tests/test_activity_periods.py. No behaviour change, no docs (internal).
+---

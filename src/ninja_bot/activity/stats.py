@@ -108,7 +108,7 @@ def monthly_stats(
     if ongoing:
         streak_end = datetime.fromtimestamp(now, tz).day
     else:
-        streak_end = month.days(tz)
+        streak_end = month.days()
     stats: dict[int, UserStats] = {}
     for user_id, user_durations in durations.items():
         active = frozenset(

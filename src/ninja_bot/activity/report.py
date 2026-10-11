@@ -83,7 +83,7 @@ def build_monthly_report(
     return MonthlyReport(
         month=month,
         timezone=tz.key,
-        days_in_month=month.days(tz),
+        days_in_month=month.days(),
         stats=stats,
         leaderboard=rank(list(totals.items())),
         shame=pool[:SHAME_LIMIT],

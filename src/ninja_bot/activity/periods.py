@@ -50,9 +50,8 @@ class Month:
         """First local instant of the next month (exclusive)."""
         return self.next().start(tz)
 
-    def days(self, tz: ZoneInfo) -> int:
-        """Number of local calendar days in the month."""
-        del tz  # calendar days are the same in every timezone
+    def days(self) -> int:
+        """Number of calendar days in the month (the same in every timezone)."""
         return calendar.monthrange(self.year, self.month)[1]
 
     def previous(self) -> Month:

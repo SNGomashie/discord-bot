@@ -57,7 +57,7 @@ def test_previous_and_next_within_year() -> None:
     ],
 )
 def test_days(month: Month, days: int) -> None:
-    assert month.days(AMSTERDAM) == days
+    assert month.days() == days
 
 
 def test_march_in_amsterdam_crosses_dst_start() -> None:
