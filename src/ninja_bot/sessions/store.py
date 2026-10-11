@@ -24,6 +24,8 @@ POLL_STATUSES = frozenset(
 )
 # Polls that still need votes or a GM decision.
 OPEN_STATUSES = (STATUS_VOTING, STATUS_AWAITING_CONFIRM)
+# Seconds before the session start: 24 hours and 1 hour (re-exported by reminders.py).
+REMINDER_OFFSETS = (86_400, 3_600)
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS polls (id INTEGER PRIMARY KEY,"
@@ -300,8 +302,14 @@ class SessionStore(Protocol):
         """
         ...
 
-    async def confirm(self, poll_id: int, slot_id: int, roster: Sequence[int]) -> Session:
-        """Mark the poll `confirmed` and insert its session at the slot's time, atomically."""
+    async def confirm(
+        self, poll_id: int, slot_id: int, roster: Sequence[int], now: float
+    ) -> Session:
+        """Mark the poll `confirmed` and insert its session at the slot's time, atomically.
+
+        Reminder offsets whose time has passed at `now` are marked handled in the same
+        transaction, so a late confirmation never posts them (the announcement covers them).
+        """
         ...
 
     async def cancel_poll(self, poll_id: int) -> None:
@@ -540,7 +548,7 @@ class SqliteSessionStore:
             )
         return poll
 
-    def _confirm(self, poll_id: int, slot_id: int, roster: Sequence[int]) -> Session:
+    def _confirm(self, poll_id: int, slot_id: int, roster: Sequence[int], now: float) -> Session:
         with closing(self._connect()) as conn, conn:
             poll_row = conn.execute(
                 f"SELECT {_POLL_COLUMNS} FROM polls WHERE id = ?", (poll_id,)
@@ -570,6 +578,11 @@ class SqliteSessionStore:
             )
             session_id = cursor.lastrowid
             assert session_id is not None
+            conn.executemany(
+                "INSERT OR IGNORE INTO session_reminders (session_id, offset_seconds)"
+                " VALUES (?, ?)",
+                [(session_id, offset) for offset in REMINDER_OFFSETS if slot.start - offset <= now],
+            )
         return Session(
             id=session_id,
             poll_id=poll.id,
@@ -724,8 +737,10 @@ class SqliteSessionStore:
             self._advance_round, poll_id, tuple(slots), window_start, now, message_id
         )
 
-    async def confirm(self, poll_id: int, slot_id: int, roster: Sequence[int]) -> Session:
-        return await asyncio.to_thread(self._confirm, poll_id, slot_id, tuple(roster))
+    async def confirm(
+        self, poll_id: int, slot_id: int, roster: Sequence[int], now: float
+    ) -> Session:
+        return await asyncio.to_thread(self._confirm, poll_id, slot_id, tuple(roster), now)
 
     async def cancel_poll(self, poll_id: int) -> None:
         await asyncio.to_thread(self._set_status, poll_id, STATUS_CANCELLED)

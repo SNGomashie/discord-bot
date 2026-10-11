@@ -403,6 +403,20 @@ async def test_manual_close_permissions(tmp_path: Path) -> None:
     assert isinstance(await svc.close_round(poll.id, PLAYER, False, "all_voted"), RoundAdvanced)
 
 
+async def test_confirm_uses_the_clock_for_passed_reminders(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    a, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], ())
+    outcome = await svc.close_round(poll.id, GM, False, "manual")
+    assert isinstance(outcome, RoundFits)
+    [start] = [slot.start for slot in outcome.slots if slot.id == a]
+    assert isinstance(svc.clock, FakeClock)
+    svc.clock.now = start - 5 * 3600
+    session = await svc.confirm(poll.id, a, GM, False)
+    assert await svc.store.reminders_sent(session.id) == {86_400}
+
+
 async def test_confirm_builds_roster_from_yes_and_if_needed(tmp_path: Path) -> None:
     svc = _service(tmp_path)
     poll = await _create(svc, min_players=2)

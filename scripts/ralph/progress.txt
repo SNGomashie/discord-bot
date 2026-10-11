@@ -108,3 +108,11 @@
 - Tests: a player joining between the unlocked check and the locked close (`JoiningStore` hooks `get_poll`), an early `"deadline"` close, the cog posting nothing for `NotReady`. Existing tests that used `"all_voted"`/`"deadline"` as a shortcut for "skip the permission check" now use `"manual"` by the GM (or really vote everyone).
 - Files: sessions/service.py, cogs/sessions.py, tests/test_session_service.py, tests/test_session_cog.py, CLAUDE.md (close_round outcomes). No user-visible/doc change.
 - Learnings: in service tests, don't pass an automatic reason to `close_round` unless it is really true at the fake clock time; it now returns `NotReady`.
+
+## 2026-10-11 - US-004
+- `SessionStore.confirm(poll, slot, roster, now)` marks every `REMINDER_OFFSETS` offset with `start - offset <= now` in `session_reminders` in the same transaction; `SessionService.confirm` passes `self.clock()`. Downtime catch-up in reminders.py is unchanged.
+- `REMINDER_OFFSETS` moved to sessions/store.py (reminders.py imports store, so the reverse would be a cycle); reminders.py re-exports it (`import ... as REMINDER_OFFSETS`).
+- Tests: store (5 h before start), notifier minute-by-minute run for 3 days / 5 h / 30 min, service clock wiring. Store tests confirm with `BEFORE_REMINDERS` (their slots start at 5000-9000 s, so `now=0` is already past the 24 h mark).
+- Docs: README reminders bullet, docs/manual-checks.md late-confirmation check, CLAUDE.md reminders entry.
+- Needs manual check: late confirmation in Discord (docs/manual-checks.md).
+- Learning: re-exports for mypy strict use `from x import NAME as NAME`.

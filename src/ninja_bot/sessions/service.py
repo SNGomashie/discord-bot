@@ -467,7 +467,7 @@ class SessionService:
                 for player in players
                 if votes.get((player, slot_id)) in (Vote.YES, Vote.IF_NEEDED)
             ]
-            return await self.store.confirm(poll.id, slot_id, roster)
+            return await self.store.confirm(poll.id, slot_id, roster, self.clock())
 
     async def cancel_poll(
         self, poll_id: int, by_user_id: int, is_manager: bool, guild_id: int | None = None

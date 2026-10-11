@@ -4,6 +4,8 @@ import ast
 from datetime import date, time
 from pathlib import Path
 
+import pytest
+
 from ninja_bot.sessions import reminders
 from ninja_bot.sessions.reminders import (
     MAX_NUDGES,
@@ -185,7 +187,7 @@ async def test_notifier_reminders_persist_across_restart(tmp_path: Path) -> None
     store = SqliteSessionStore(path)
     poll = await _poll_in_store(store, 0.0)
     [slot, _] = await store.poll_slots(poll.id, 1)
-    session = await store.confirm(poll.id, slot.id, [GM])
+    session = await store.confirm(poll.id, slot.id, [GM], 0.0)
     clock = FakeClock(START - DAY)
     notifier = SessionNotifier(store, clock)
 
@@ -206,7 +208,7 @@ async def test_notifier_marks_skipped_reminders(tmp_path: Path) -> None:
     store = SqliteSessionStore(tmp_path / "sessions.sqlite3")
     poll = await _poll_in_store(store, 0.0)
     [slot, _] = await store.poll_slots(poll.id, 1)
-    session = await store.confirm(poll.id, slot.id, [GM])
+    session = await store.confirm(poll.id, slot.id, [GM], 0.0)
     notifier = SessionNotifier(store, FakeClock(START - 30 * 60))
 
     assert await notifier.due_reminders() == [(session, HOUR)]
@@ -217,7 +219,7 @@ async def test_notifier_skips_cancelled_sessions(tmp_path: Path) -> None:
     store = SqliteSessionStore(tmp_path / "sessions.sqlite3")
     poll = await _poll_in_store(store, 0.0)
     [slot, _] = await store.poll_slots(poll.id, 1)
-    session = await store.confirm(poll.id, slot.id, [GM])
+    session = await store.confirm(poll.id, slot.id, [GM], 0.0)
     await store.cancel_session(session.id)
     assert await SessionNotifier(store, FakeClock(START - HOUR)).due_reminders() == []
 
@@ -269,3 +271,33 @@ async def test_notifier_nothing_when_everyone_voted(tmp_path: Path) -> None:
     [slot, _] = await store.poll_slots(poll.id, 1)
     await store.record_votes(poll.id, GM, {slot.id: Vote.NO})
     assert await SessionNotifier(store, FakeClock(5 * DAY)).due_nudges() == []
+
+
+@pytest.mark.parametrize(
+    ("confirmed_at", "handled", "posted"),
+    [
+        (START - 3 * DAY, set(), [DAY, HOUR]),
+        (START - 5 * HOUR, {DAY}, [HOUR]),
+        (START - 30 * 60, {DAY, HOUR}, []),
+    ],
+)
+async def test_late_confirmation_skips_passed_reminders(
+    tmp_path: Path, confirmed_at: float, handled: set[int], posted: list[int]
+) -> None:
+    store = SqliteSessionStore(tmp_path / "sessions.sqlite3")
+    poll = await _poll_in_store(store, 0.0)
+    [slot, _] = await store.poll_slots(poll.id, 1)
+    session = await store.confirm(poll.id, slot.id, [GM], confirmed_at)
+    assert await store.reminders_sent(session.id) == handled
+
+    clock = FakeClock(confirmed_at)
+    notifier = SessionNotifier(store, clock)
+    sent: list[int] = []
+    # Run the notify cycle every minute until the session starts.
+    while clock.now < START + 60:
+        for due_session, offset in await notifier.due_reminders():
+            assert due_session == session
+            sent.append(offset)
+            await notifier.confirm_reminder(session.id, offset)
+        clock.now += 60
+    assert sent == posted

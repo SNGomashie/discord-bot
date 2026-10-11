@@ -6,10 +6,16 @@ import time
 from collections.abc import Callable, Collection, Sequence
 
 from ninja_bot.sessions.scoring import pending_players
-from ninja_bot.sessions.store import STATUS_VOTING, Poll, Session, SessionStore
+from ninja_bot.sessions.store import (
+    REMINDER_OFFSETS as REMINDER_OFFSETS,  # re-exported; lives in store.py for `confirm`
+)
+from ninja_bot.sessions.store import (
+    STATUS_VOTING,
+    Poll,
+    Session,
+    SessionStore,
+)
 
-# Seconds before the session start: 24 hours and 1 hour.
-REMINDER_OFFSETS = (86_400, 3_600)
 NUDGE_INTERVAL_SECONDS = 86_400
 MAX_NUDGES = 3
 

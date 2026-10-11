@@ -25,6 +25,8 @@ CHANNEL = 100
 GM = 1
 PLAYER = 2
 HOUR = 3600.0
+# Confirmation time before every reminder offset of the test slots.
+BEFORE_REMINDERS = -2 * 86_400.0
 
 
 def _store(tmp_path: Path) -> SqliteSessionStore:
@@ -191,7 +193,7 @@ async def test_second_store_sees_data(tmp_path: Path) -> None:
     await store.record_nudge(poll.id, 1, 1500.0)
     other = await _create(store)
     [other_slot, _] = await store.poll_slots(other.id, 1)
-    session = await store.confirm(other.id, other_slot.id, [GM])
+    session = await store.confirm(other.id, other_slot.id, [GM], BEFORE_REMINDERS)
     await store.mark_reminder(session.id, 3600)
 
     restarted = _store(tmp_path)
@@ -287,7 +289,7 @@ async def test_confirm_stores_roster_and_flips_status(tmp_path: Path) -> None:
     await store.set_poll_message(poll.id, 555)
     [_, later] = await store.poll_slots(poll.id, 1)
 
-    session = await store.confirm(poll.id, later.id, [PLAYER, GM])
+    session = await store.confirm(poll.id, later.id, [PLAYER, GM], BEFORE_REMINDERS)
 
     assert session == Session(
         id=session.id,
@@ -317,12 +319,12 @@ async def test_confirm_empty_roster_and_unknown_slot(tmp_path: Path) -> None:
     [other_slot, _] = await store.poll_slots(other.id, 1)
 
     with pytest.raises(ValueError):
-        await store.confirm(poll.id, other_slot.id, [GM])
+        await store.confirm(poll.id, other_slot.id, [GM], BEFORE_REMINDERS)
     fetched = await store.get_poll(poll.id)
     assert fetched is not None
     assert fetched.status == STATUS_VOTING
 
-    session = await store.confirm(poll.id, slot.id, [])
+    session = await store.confirm(poll.id, slot.id, [], BEFORE_REMINDERS)
     assert session.roster == ()
     assert await store.get_session(session.id) == session
 
@@ -341,11 +343,11 @@ async def test_upcoming_and_active_sessions(tmp_path: Path) -> None:
     store = _store(tmp_path)
     poll = await _create(store)
     [early, late] = await store.poll_slots(poll.id, 1)
-    later = await store.confirm(poll.id, late.id, [GM])
-    sooner = await store.confirm(poll.id, early.id, [GM])
+    later = await store.confirm(poll.id, late.id, [GM], BEFORE_REMINDERS)
+    sooner = await store.confirm(poll.id, early.id, [GM], BEFORE_REMINDERS)
     other_poll = await _create(store, guild_id=OTHER_GUILD)
     [other_slot, _] = await store.poll_slots(other_poll.id, 1)
-    elsewhere = await store.confirm(other_poll.id, other_slot.id, [GM])
+    elsewhere = await store.confirm(other_poll.id, other_slot.id, [GM], BEFORE_REMINDERS)
 
     assert await store.upcoming_sessions(GUILD, 0.0) == [sooner, later]
     # `early` (5000-19400) has started but not ended.
@@ -359,8 +361,8 @@ async def test_cancel_session_hides_it(tmp_path: Path) -> None:
     store = _store(tmp_path)
     poll = await _create(store)
     [slot, other_slot] = await store.poll_slots(poll.id, 1)
-    session = await store.confirm(poll.id, slot.id, [GM])
-    kept = await store.confirm(poll.id, other_slot.id, [GM])
+    session = await store.confirm(poll.id, slot.id, [GM], BEFORE_REMINDERS)
+    kept = await store.confirm(poll.id, other_slot.id, [GM], BEFORE_REMINDERS)
 
     await store.cancel_session(session.id)
 
@@ -375,8 +377,8 @@ async def test_mark_reminder_is_idempotent(tmp_path: Path) -> None:
     store = _store(tmp_path)
     poll = await _create(store)
     [slot, other_slot] = await store.poll_slots(poll.id, 1)
-    session = await store.confirm(poll.id, slot.id, [GM])
-    other = await store.confirm(poll.id, other_slot.id, [GM])
+    session = await store.confirm(poll.id, slot.id, [GM], BEFORE_REMINDERS)
+    other = await store.confirm(poll.id, other_slot.id, [GM], BEFORE_REMINDERS)
 
     assert await store.reminders_sent(session.id) == set()
     await store.mark_reminder(session.id, 86_400)
@@ -404,3 +406,11 @@ async def test_nudge_counters_per_round(tmp_path: Path) -> None:
     assert await store.nudge_count(poll.id, 2) == 1
     assert await store.last_nudge(poll.id, 2) == 9000.0
     assert await store.nudge_count(other.id, 1) == 1
+
+
+async def test_confirm_marks_passed_reminders_handled(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    poll = await _create(store)
+    [slot, _] = await store.poll_slots(poll.id, 1)
+    session = await store.confirm(poll.id, slot.id, [GM], slot.start - 5 * HOUR)
+    assert await store.reminders_sent(session.id) == {86_400}
