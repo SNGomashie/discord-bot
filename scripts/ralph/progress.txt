@@ -108,3 +108,10 @@
 - tests/test_cs2_cog.py: `make_interaction` defaults to `guild = None`; new `FakeGuild`, `FailingLinkStore`, `guild_interaction`, `field_value`. Tests: ten-player match with two linked friends (one not in the server), requester-only details, identity failure, no guild, one-player history entry + full refetch with friend names; no extra Leetify calls asserted.
 - Needs manual check: `/scoreboard` in the test server shows friends by Discord name, the friends field with non-pinging mentions, and the requester mention in their detail field.
 ---
+
+## 2026-10-11 - US-009
+- README `/scoreboard` section: all players listed (full-match refetch, `Other players`), friends by Discord name + non-pinging `@mention` in `Friends in this match`, details only for the focus player, no extra intent/permission (REST `fetch_member`); manual checklist gained the four new checks.
+- docs/deployment.md Intents section: member lookups use REST, no Server Members intent or extra permission.
+- CLAUDE.md already listed `cs2/identities.py` and `full_match`; tasks/prd-cs2-squad.md already requires `full_match` (US-008) and `resolve_identities` table names (US-007) — no change needed.
+- Needs manual check: the README checklist items for this feature (all ten players, two linked friends, friend who left the server, `Other players`).
+---
