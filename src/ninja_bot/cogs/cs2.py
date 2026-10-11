@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,11 +15,19 @@ from discord.ext import commands
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.cache import CachedStatsProvider
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
-from ninja_bot.cs2.embed import build_match_embed, build_profile_embed
+from ninja_bot.cs2.embed import build_leaderboard_embed, build_match_embed, build_profile_embed
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.identities import Identity, MemberLookup, resolve_identities
-from ninja_bot.cs2.models import Cs2Error, Match, NoMatchesError, NotLinkedError, Profile
+from ninja_bot.cs2.models import (
+    Cs2Error,
+    Match,
+    NoMatchesError,
+    NotLinkedError,
+    Profile,
+    RateLimitedError,
+)
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
+from ninja_bot.cs2.squad import Metric, SquadEntry, metric_label, rank_squad
 from ninja_bot.cs2.steam import (
     MAX_STEAM_INPUT_LENGTH,
     SteamId,
@@ -41,6 +50,34 @@ UNLINKED_MESSAGE = "Your Steam account is no longer linked."
 NOTHING_TO_UNLINK_MESSAGE = "You don't have a linked Steam account."
 MAX_MATCH_ID_LENGTH = 64
 INVALID_MATCH_ID_MESSAGE = "That doesn't look like a Leetify match id."
+LEADERBOARD_COOLDOWN_SECONDS = 30.0
+# Profiles are fetched one by one, so this bounds the requests per /leaderboard.
+MAX_LEADERBOARD_LINKS = 25
+ALL_PROFILES_FAILED_MESSAGE = (
+    "Couldn't load any linked player's Leetify profile. Please try again later."
+)
+
+
+@dataclass(frozen=True)
+class SquadFetch:
+    entries: list[SquadEntry]
+    # Profiles that failed with a CS2 error (private, unknown, API error).
+    skipped: int
+    # Links never fetched because Leetify rate limited us (0 if not rate limited).
+    not_loaded: int
+    rate_limited: bool
+
+
+def leaderboard_notes(fetch: SquadFetch, total_links: int) -> list[str]:
+    """Footer notes for players missing from the leaderboard."""
+    notes: list[str] = []
+    if fetch.skipped:
+        notes.append(f"Skipped: {fetch.skipped} (private or unavailable)")
+    if fetch.rate_limited:
+        notes.append(f"Stopped early, Leetify is rate limiting us: {fetch.not_loaded} not loaded")
+    if total_links > MAX_LEADERBOARD_LINKS:
+        notes.append(f"Only the first {MAX_LEADERBOARD_LINKS} linked players are checked")
+    return notes
 
 
 def linked_message(name: str, steam64_id: str | None = None) -> str:
@@ -109,6 +146,7 @@ class Cs2(commands.Cog):
         cooldown: UserCooldown | None = None,
         link_cooldown: UserCooldown | None = None,
         resolver: SteamResolver | None = None,
+        leaderboard_cooldown: UserCooldown | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -119,6 +157,12 @@ class Cs2(commands.Cog):
         # Separate from the stats cooldown; never refunded once Leetify was called.
         self.link_cooldown = (
             link_cooldown if link_cooldown is not None else UserCooldown(LINK_COOLDOWN_SECONDS)
+        )
+        # One /leaderboard costs a profile request per link, so it gets a longer cooldown.
+        self.leaderboard_cooldown = (
+            leaderboard_cooldown
+            if leaderboard_cooldown is not None
+            else UserCooldown(LEADERBOARD_COOLDOWN_SECONDS)
         )
 
     async def cog_unload(self) -> None:
@@ -157,6 +201,19 @@ class Cs2(commands.Cog):
         self, interaction: discord.Interaction, player: discord.Member | None = None
     ) -> None:
         await self.handle_profile(interaction, player)
+
+    @app_commands.command(name="leaderboard", description="Rank everyone who linked CS2 stats")
+    @app_commands.describe(metric="What to rank by (defaults to Leetify rating)")
+    @app_commands.choices(
+        metric=[app_commands.Choice(name=metric_label(m), value=m.value) for m in Metric]
+    )
+    async def leaderboard(
+        self,
+        interaction: discord.Interaction,
+        metric: app_commands.Choice[str] | None = None,
+    ) -> None:
+        chosen = Metric(metric.value) if metric is not None else Metric.RATING
+        await self.handle_leaderboard(interaction, chosen)
 
     @app_commands.command(name="unlink", description="Remove your linked Steam account")
     async def unlink(self, interaction: discord.Interaction) -> None:
@@ -250,6 +307,15 @@ class Cs2(commands.Cog):
             interaction, lambda: self._profile_deferred(interaction, steam64_id)
         )
 
+    async def handle_leaderboard(
+        self, interaction: discord.Interaction, metric: Metric = Metric.RATING
+    ) -> None:
+        await self._run_with_cooldown(
+            interaction,
+            lambda: self._leaderboard_deferred(interaction, metric),
+            self.leaderboard_cooldown,
+        )
+
     async def _reply_lookup_error(self, interaction: discord.Interaction, exc: Exception) -> None:
         """Ephemeral reply for a failed input check or link lookup (before the defer)."""
         if isinstance(exc, Cs2Error):
@@ -259,11 +325,18 @@ class Cs2(commands.Cog):
         await interaction.response.send_message(GENERIC_ERROR_MESSAGE, ephemeral=True)
 
     async def _run_with_cooldown(
-        self, interaction: discord.Interaction, work: Callable[[], Awaitable[bool]]
+        self,
+        interaction: discord.Interaction,
+        work: Callable[[], Awaitable[bool]],
+        cooldown: UserCooldown | None = None,
     ) -> None:
-        """Take the caller's cooldown, defer and run `work`; refund unless it posted."""
+        """Take the caller's cooldown, defer and run `work`; refund unless it posted.
+
+        `cooldown` defaults to the shared stats cooldown.
+        """
+        cooldown = cooldown if cooldown is not None else self.cooldown
         user_id = interaction.user.id
-        retry_after = self.cooldown.try_acquire(user_id)
+        retry_after = cooldown.try_acquire(user_id)
         if retry_after > 0:
             await interaction.response.send_message(cooldown_message(retry_after), ephemeral=True)
             return
@@ -274,7 +347,7 @@ class Cs2(commands.Cog):
             posted = await work()
         finally:
             if not posted:
-                self.cooldown.refund(user_id)
+                cooldown.refund(user_id)
 
     async def _linked_steam_id(
         self, interaction: discord.Interaction, target: discord.User | discord.Member
@@ -321,6 +394,59 @@ class Cs2(commands.Cog):
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
             return False
         return await _send_safely(interaction.followup.send(embed=embed))
+
+    async def _leaderboard_deferred(self, interaction: discord.Interaction, metric: Metric) -> bool:
+        """Fetch every linked profile and post the ranking; True only if players were shown."""
+        try:
+            links = await self.links.all_links()
+            if not links:
+                # The empty state is a valid reply, but it shouldn't cost the cooldown.
+                await _send_safely(
+                    interaction.followup.send(embed=build_leaderboard_embed([], metric))
+                )
+                return False
+            fetch = await self._fetch_squad(links)
+            if not fetch.entries:
+                message = (
+                    RateLimitedError.default_message
+                    if fetch.rate_limited and not fetch.skipped
+                    else ALL_PROFILES_FAILED_MESSAGE
+                )
+                await _send_safely(interaction.followup.send(message))
+                return False
+            embed = build_leaderboard_embed(rank_squad(fetch.entries, metric), metric)
+            notes = leaderboard_notes(fetch, len(links))
+            if notes:
+                footer = [embed.footer.text] if embed.footer.text else []
+                embed.set_footer(text=" · ".join([*footer, *notes]))
+        except Exception:
+            log.exception("Unexpected error building a CS2 leaderboard")
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
+            return False
+        return await _send_safely(
+            interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        )
+
+    async def _fetch_squad(self, links: Mapping[int, str]) -> SquadFetch:
+        """Fetch linked profiles one by one (lowest Discord ID first, capped).
+
+        CS2 errors skip the player; a rate limit stops fetching and keeps what was collected.
+        """
+        wanted = sorted(links.items())[:MAX_LEADERBOARD_LINKS]
+        entries: list[SquadEntry] = []
+        skipped = 0
+        for index, (discord_id, steam64_id) in enumerate(wanted):
+            try:
+                profile = await self.stats.get_profile(steam64_id)
+            except RateLimitedError:
+                log.info("Leaderboard stopped early: Leetify rate limit")
+                return SquadFetch(entries, skipped, len(wanted) - index, rate_limited=True)
+            except Cs2Error as exc:
+                log.info("Leaderboard skipped a player: %s", type(exc).__name__)
+                skipped += 1
+                continue
+            entries.append(SquadEntry(discord_id, profile))
+        return SquadFetch(entries, skipped, 0, rate_limited=False)
 
     async def _fetch_match_and_profile(
         self, steam64_id: str, game_id: str | None
@@ -392,5 +518,6 @@ async def setup(bot: NinjaBot) -> None:
             UserCooldown(COOLDOWN_SECONDS),
             UserCooldown(LINK_COOLDOWN_SECONDS),
             SteamCommunityResolver(),
+            UserCooldown(LEADERBOARD_COOLDOWN_SECONDS),
         )
     )

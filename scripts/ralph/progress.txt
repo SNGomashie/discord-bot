@@ -56,6 +56,7 @@
 - CS2 trends (cs2/squad.py): `compute_trend(recent)` windows are by match position (`recent[:5]` vs `recent[5:10]`), unrated matches are dropped per window (need `MIN_WINDOW_RATINGS` 3). Direction thresholds compare with a 1e-9 epsilon so float noise at exactly ±0.01 still counts. Streak: ties/unknown break it; newest tie/unknown -> (None, 0). `format_trend` reuses `format_rating` for the delta; flat shows only `→`.
 - CS2 ranking (cs2/squad.py): `Metric` is a `StrEnum` (values usable directly as app_commands choices). `metric_value(profile, metric)` treats None/NaN/inf as missing; `rating` = average of rated `recent_matches`. `rank_squad` gives missing rows `rank=None` (last, name order); ties share rank (1, 1, 3), ordered by casefolded name then discord_id. Row name = Leetify name, falling back to steam64_id. `format_metric_value`: signed ratings for rating/clutch/opening, 0-100 ints for aim/positioning/utility, `62%` winrate, `-` when missing.
 - CS2 leaderboard embed (cs2/embed.py): `build_leaderboard_embed(rows, metric)` -> lines from `format_leaderboard_row` (`🥇 <@id> Name · **value** trend`; medals by `rank` so ties share them; `rank=None` -> `UNRANKED` `-`), packed whole into `Ranking`/`Ranking (cont.)` fields by `_pack_lines` (reads `FIELD_VALUE_LIMIT` at call time); max `MAX_LEADERBOARD_ROWS` 25 + `+N more` footer; empty -> `NOBODY_LINKED_MESSAGE` description. embed.py imports from squad.py (no cycle). Send with `AllowedMentions.none()`.
+- CS2 /leaderboard (cogs/cs2.py): `Cs2(..., leaderboard_cooldown=)` (`LEADERBOARD_COOLDOWN_SECONDS` 30, separate from the 10 s stats cooldown); `_run_with_cooldown(interaction, work, cooldown=None)` takes any cooldown. `_fetch_squad(links)` fetches sequentially, lowest Discord ID first, capped at `MAX_LEADERBOARD_LINKS` (25) -> `SquadFetch(entries, skipped, not_loaded, rate_limited)`; `leaderboard_notes` builds footer notes joined with ` · ` after any `+N more`. Empty links -> empty-state embed + refund; no entries -> rate-limit or `ALL_PROFILES_FAILED_MESSAGE` + refund. Tests: `SquadStats` (per-Steam-ID profile/error), `leaderboard_cog(results)` and `squad(...)` in tests/test_cs2_cog.py.
 
 ## 2026-10-11 - US-001
 - Added `MatchLog` Protocol + `SqliteLinkStore` implementation (`is_seeded`, `mark_seeded`, `filter_unposted`, `mark_posted` with pruning to `MAX_POSTED_MATCHES` = 500).
@@ -84,4 +85,10 @@
 - `setup` in cogs/cs2.py wraps `LeetifyClient` in `CachedStatsProvider`; updated `test_setup_registers_cog`.
 - Tests: tests/test_cs2_cache.py (fake clock).
 - **Learnings:** Python 3.12 generic class syntax (`class TtlCache[K: Hashable, V]`) passes ruff + mypy strict here.
+---
+
+## 2026-10-11 - US-006
+- Added `/leaderboard [metric]` (choices from `Metric`, default rating) -> `handle_leaderboard`: 30 s own cooldown, defer, `all_links()`, sequential profile fetches (max 25), `rank_squad` + `build_leaderboard_embed`, `AllowedMentions.none()`. CS2 errors skip players (footer `Skipped: N (private or unavailable)`); a rate limit stops fetching and posts what was collected with a note. No links -> empty-state embed and refund; all failed -> error message and refund; unexpected errors -> generic message, logged.
+- Files: src/ninja_bot/cogs/cs2.py, tests/test_cs2_cog.py
+- Needs manual check: `/leaderboard` in Discord with 2+ linked accounts for each metric, the choice list, a private profile shows the skipped note, mentions render without pinging.
 ---

@@ -13,11 +13,14 @@ from discord import app_commands
 from ninja_bot.bot import EXTENSIONS
 from ninja_bot.cogs import cs2 as cs2_cog
 from ninja_bot.cogs.cs2 import (
+    ALL_PROFILES_FAILED_MESSAGE,
     ALREADY_LINKED_MESSAGE,
     COOLDOWN_SECONDS,
     GENERIC_ERROR_MESSAGE,
     INVALID_MATCH_ID_MESSAGE,
+    LEADERBOARD_COOLDOWN_SECONDS,
     LINK_COOLDOWN_SECONDS,
+    MAX_LEADERBOARD_LINKS,
     MAX_MATCH_ID_LENGTH,
     NOTHING_TO_UNLINK_MESSAGE,
     UNLINKED_MESSAGE,
@@ -34,6 +37,8 @@ from ninja_bot.cs2.client import FetchResponse, LeetifyClient
 from ninja_bot.cs2.embed import (
     BREAKDOWN_FIELD,
     FRIENDS_FIELD,
+    LEADERBOARD_FIELD,
+    NOBODY_LINKED_MESSAGE,
     RATINGS_FIELD,
     TEAM_NAMES,
     YOUR_TEAM,
@@ -58,6 +63,7 @@ from ninja_bot.cs2.models import (
     parse_profile,
 )
 from ninja_bot.cs2.resolver import SteamCommunityResolver
+from ninja_bot.cs2.squad import Metric, metric_label
 from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH
 from ninja_bot.cs2.store import SqliteLinkStore
 from ninja_bot.media.cooldown import UserCooldown
@@ -717,6 +723,8 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     assert cog.link_cooldown.per_seconds == LINK_COOLDOWN_SECONDS == 15
     assert cog.link_cooldown is not cog.cooldown
     assert isinstance(cog.resolver, SteamCommunityResolver)
+    assert cog.leaderboard_cooldown.per_seconds == LEADERBOARD_COOLDOWN_SECONDS == 30
+    assert cog.leaderboard_cooldown is not cog.cooldown
 
 
 async def test_cog_unload_closes_client() -> None:
@@ -1466,3 +1474,285 @@ async def test_scoreboard_one_player_history_entry_shows_friend_names(
         assert shown.get(player.name or "", player.name or "") in tables
     assert "Gizmo" in field_value(embed, TEAM_NAMES[1])
     assert f"<@{FRIEND_ID}> as golf" in field_value(embed, FRIENDS_FIELD)
+
+
+# --- /leaderboard ---
+
+
+def squad_profile(steam64_id: str, name: str, aim: float | None = None) -> Profile:
+    return dataclasses.replace(make_profile(steam64_id, name), aim=aim, winrate=0.5)
+
+
+def squad_steam_id(discord_id: int) -> str:
+    return f"7656119800000{discord_id:04d}"
+
+
+class SquadStats(FakeStats):
+    """Profiles and errors per Steam ID."""
+
+    def __init__(self, results: Mapping[str, Profile | Exception]) -> None:
+        super().__init__()
+        self.results = dict(results)
+
+    async def get_profile(self, steam64_id: str) -> Profile:
+        self.profile_calls.append(steam64_id)
+        result = self.results[steam64_id]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def leaderboard_cog(
+    results: Mapping[int, Profile | Exception],
+) -> tuple[Cs2, SquadStats, UserCooldown]:
+    """`results` maps Discord ID -> profile or error; Steam IDs come from `squad_steam_id`."""
+    stats = SquadStats({squad_steam_id(d): r for d, r in results.items()})
+    store = MemoryLinkStore({d: squad_steam_id(d) for d in results})
+    cooldown = UserCooldown(LEADERBOARD_COOLDOWN_SECONDS, FakeClock())
+    cog = Cs2(stats, store, UserCooldown(COOLDOWN_SECONDS), leaderboard_cooldown=cooldown)
+    return cog, stats, cooldown
+
+
+def squad(*entries: tuple[int, str, float | None]) -> dict[int, Profile | Exception]:
+    return {d: squad_profile(squad_steam_id(d), name, aim) for d, name, aim in entries}
+
+
+def leaderboard_lines(embed: discord.Embed) -> list[str]:
+    return field_value(embed, LEADERBOARD_FIELD).split("\n")
+
+
+async def test_leaderboard_ranks_linked_players() -> None:
+    cog, stats, cooldown = leaderboard_cog(squad((1, "Alice", 50), (2, "Bob", 80), (3, "Cy", 65)))
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, Metric.AIM)
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    assert stats.profile_calls == [squad_steam_id(1), squad_steam_id(2), squad_steam_id(3)]
+    _, kwargs = followup_reply(interaction)
+    assert kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    embed = kwargs["embed"]
+    assert metric_label(Metric.AIM) in (embed.title or "")
+    lines = leaderboard_lines(embed)
+    assert [line.split()[1] for line in lines] == ["<@2>", "<@3>", "<@1>"]
+    assert embed.footer.text is None
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_leaderboard_fetches_sequentially() -> None:
+    active = 0
+    peak = 0
+    cog, stats, _ = leaderboard_cog(squad((1, "A", 1), (2, "B", 2), (3, "C", 3)))
+    original = stats.get_profile
+
+    async def get_profile(steam64_id: str) -> Profile:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return await original(steam64_id)
+
+    stats.get_profile = get_profile  # type: ignore[method-assign]
+    await cog.handle_leaderboard(make_interaction(), Metric.AIM)
+    assert peak == 1
+    assert len(stats.profile_calls) == 3
+
+
+async def test_leaderboard_defers_before_loading_links() -> None:
+    calls: list[str] = []
+    cog, _, _ = leaderboard_cog(squad((1, "A", 1)))
+    original = cog.links.all_links
+
+    async def all_links() -> dict[int, str]:
+        calls.append("all_links")
+        return await original()
+
+    cog.links.all_links = all_links  # type: ignore[method-assign]
+    interaction = make_interaction()
+    interaction.response.defer = AsyncMock(side_effect=lambda **_: calls.append("defer"))
+    await cog.handle_leaderboard(interaction)
+    assert calls == ["defer", "all_links"]
+
+
+@pytest.mark.parametrize("metric", list(Metric))
+async def test_leaderboard_command_passes_each_metric(metric: Metric) -> None:
+    cog, _, _ = leaderboard_cog(squad((1, "A", 1)))
+    cog.handle_leaderboard = AsyncMock()  # type: ignore[method-assign]
+    interaction = make_interaction()
+    choice = app_commands.Choice(name=metric_label(metric), value=metric.value)
+    await Cs2.leaderboard.callback(cog, interaction, choice)
+    cog.handle_leaderboard.assert_awaited_once_with(interaction, metric)
+
+
+async def test_leaderboard_command_defaults_to_rating() -> None:
+    cog, _, _ = leaderboard_cog(squad((1, "A", 1)))
+    cog.handle_leaderboard = AsyncMock()  # type: ignore[method-assign]
+    interaction = make_interaction()
+    await Cs2.leaderboard.callback(cog, interaction, None)
+    cog.handle_leaderboard.assert_awaited_once_with(interaction, Metric.RATING)
+
+
+@pytest.mark.parametrize("metric", list(Metric))
+async def test_leaderboard_posts_each_metric(metric: Metric) -> None:
+    cog, _, _ = leaderboard_cog(squad((1, "Alice", 50)))
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, metric)
+    embed = posted_embed(interaction)
+    assert embed.title == f"CS2 leaderboard: {metric_label(metric)}"
+    assert "<@1>" in leaderboard_lines(embed)[0]
+
+
+@pytest.mark.parametrize(
+    "error", [PrivateProfileError(), PlayerNotFoundError(), ApiError()], ids=type
+)
+async def test_leaderboard_skips_failed_profiles(error: Cs2Error) -> None:
+    results = squad((1, "Alice", 50), (3, "Cy", 60))
+    results[2] = error
+    results[4] = ApiError()
+    cog, stats, cooldown = leaderboard_cog(results)
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, Metric.AIM)
+    assert len(stats.profile_calls) == 4
+    embed = posted_embed(interaction)
+    lines = leaderboard_lines(embed)
+    assert len(lines) == 2
+    assert "<@3>" in lines[0]
+    assert embed.footer.text == "Skipped: 2 (private or unavailable)"
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_leaderboard_rate_limit_posts_collected_players() -> None:
+    results = squad((1, "Alice", 50), (2, "Bob", 60), (4, "Dee", 70))
+    results[3] = RateLimitedError()
+    cog, stats, cooldown = leaderboard_cog(results)
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, Metric.AIM)
+    assert stats.profile_calls == [squad_steam_id(1), squad_steam_id(2), squad_steam_id(3)]
+    embed = posted_embed(interaction)
+    assert len(leaderboard_lines(embed)) == 2
+    assert embed.footer.text == "Stopped early, Leetify is rate limiting us: 2 not loaded"
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_leaderboard_rate_limit_and_skips_share_the_footer() -> None:
+    results = squad((1, "Alice", 50))
+    results[2] = PrivateProfileError()
+    results[3] = RateLimitedError()
+    cog, _, _ = leaderboard_cog(results)
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, Metric.AIM)
+    assert posted_embed(interaction).footer.text == (
+        "Skipped: 1 (private or unavailable)"
+        " · Stopped early, Leetify is rate limiting us: 1 not loaded"
+    )
+
+
+async def test_leaderboard_rate_limited_first_replies_and_refunds() -> None:
+    results = squad((2, "Bob", 60))
+    results[1] = RateLimitedError()
+    cog, stats, cooldown = leaderboard_cog(results)
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, Metric.AIM)
+    assert stats.profile_calls == [squad_steam_id(1)]
+    assert followup_reply(interaction) == ((RateLimitedError.default_message,), {})
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_leaderboard_no_links_posts_empty_state_and_refunds() -> None:
+    cog, stats, cooldown = leaderboard_cog({})
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction)
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    assert stats.profile_calls == []
+    assert posted_embed(interaction).description == NOBODY_LINKED_MESSAGE
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_leaderboard_all_failures_reply_error_and_refund() -> None:
+    cog, _, cooldown = leaderboard_cog({1: PrivateProfileError(), 2: ApiError()})
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction)
+    assert followup_reply(interaction) == ((ALL_PROFILES_FAILED_MESSAGE,), {})
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_leaderboard_fetches_at_most_the_link_cap() -> None:
+    count = MAX_LEADERBOARD_LINKS + 5
+    cog, stats, _ = leaderboard_cog(squad(*((d, f"P{d}", float(d)) for d in range(1, count + 1))))
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction, Metric.AIM)
+    assert MAX_LEADERBOARD_LINKS == 25
+    assert stats.profile_calls == [squad_steam_id(d) for d in range(1, MAX_LEADERBOARD_LINKS + 1)]
+    embed = posted_embed(interaction)
+    shown = "\n".join(f.value or "" for f in embed.fields).split("\n")
+    assert len(shown) == MAX_LEADERBOARD_LINKS
+    assert embed.footer.text == "Only the first 25 linked players are checked"
+
+
+async def test_leaderboard_cooldown_blocks_second_use() -> None:
+    cog, stats, _ = leaderboard_cog(squad((1, "A", 1)))
+    await cog.handle_leaderboard(make_interaction())
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction)
+    assert len(stats.profile_calls) == 1
+    assert reply(interaction) == (
+        (cooldown_message(LEADERBOARD_COOLDOWN_SECONDS),),
+        {"ephemeral": True},
+    )
+    interaction.response.defer.assert_not_awaited()
+
+
+async def test_leaderboard_cooldown_is_separate_from_stats_cooldown() -> None:
+    cog, _, _ = leaderboard_cog(squad((1, "A", 1)))
+    await cog.handle_leaderboard(make_interaction())
+    assert cog.cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_leaderboard_unexpected_error_is_generic(caplog: pytest.LogCaptureFixture) -> None:
+    cog, _, cooldown = leaderboard_cog({1: RuntimeError("boom")})
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction)
+    assert followup_reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {})
+    assert "Unexpected error building a CS2 leaderboard" in caplog.text
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_leaderboard_store_error_is_generic(caplog: pytest.LogCaptureFixture) -> None:
+    cog, _, _ = leaderboard_cog({})
+    cog.links.all_links = AsyncMock(side_effect=OSError("disk"))  # type: ignore[method-assign]
+    interaction = make_interaction()
+    await cog.handle_leaderboard(interaction)
+    assert followup_reply(interaction) == ((GENERIC_ERROR_MESSAGE,), {})
+    assert "Unexpected error building a CS2 leaderboard" in caplog.text
+
+
+async def test_leaderboard_send_failure_is_swallowed_and_refunds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cog, _, cooldown = leaderboard_cog(squad((1, "A", 1)))
+    interaction = make_interaction()
+    response = MagicMock(status=404, reason="Not Found")
+    interaction.followup.send = AsyncMock(side_effect=discord.NotFound(response, "expired"))
+    await cog.handle_leaderboard(interaction)
+    assert "Could not send CS2 response" in caplog.text
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_leaderboard_error_send_failure_is_swallowed() -> None:
+    cog, _, _ = leaderboard_cog({1: ApiError()})
+    interaction = make_interaction()
+    response = MagicMock(status=500, reason="Server Error")
+    interaction.followup.send = AsyncMock(side_effect=discord.HTTPException(response, "x"))
+    await cog.handle_leaderboard(interaction)
+    interaction.followup.send.assert_awaited_once()
+
+
+def test_leaderboard_option_metadata() -> None:
+    assert Cs2.leaderboard.description == "Rank everyone who linked CS2 stats"
+    params = Cs2.leaderboard._params
+    assert set(params) == {"metric"}
+    metric = params["metric"]
+    assert not metric.required
+    assert str(metric.description)
+    assert [(c.name, c.value) for c in metric.choices] == [
+        (metric_label(m), m.value) for m in Metric
+    ]
