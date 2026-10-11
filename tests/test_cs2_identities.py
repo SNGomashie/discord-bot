@@ -350,3 +350,22 @@ async def test_cog_identities_in_guild() -> None:
     interaction.guild.get_member.return_value = make_member("Alice")
     result = await cog._match_identities(interaction.guild, make_match(STEAM_A, STEAM_B))
     assert result == {STEAM_A: Identity(STEAM_A, 1, "Alice")}
+
+
+class BrokenLinks(FakeLinks):
+    async def discord_ids_for(self, steam64_ids: Collection[str]) -> dict[str, int]:
+        raise RuntimeError("db down")
+
+
+async def test_cog_identities_or_none_on_failure(caplog: pytest.LogCaptureFixture) -> None:
+    cog = Cs2(MagicMock(), BrokenLinks())
+    assert await cog._match_identities_or_none(make_guild(), make_match(STEAM_A)) is None
+    assert "Posting scoreboard without Discord names" in caplog.text
+
+
+async def test_cog_identities_or_none_returns_dict() -> None:
+    cog = Cs2(MagicMock(), FakeLinks({STEAM_A: 1}))
+    guild = make_guild()
+    assert await cog._match_identities_or_none(guild, make_match(STEAM_B)) == {}
+    result = await cog._match_identities_or_none(guild, make_match(STEAM_A))
+    assert result == {STEAM_A: Identity(STEAM_A, 1, "Fetched")}

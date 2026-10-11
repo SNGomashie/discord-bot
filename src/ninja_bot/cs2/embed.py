@@ -123,6 +123,10 @@ def build_announcement_embed(
     played on; a squad split evenly across teams, or a tie, is grey. There is no
     per-player breakdown. Mentions are built only from stored numeric Discord IDs; send
     with `AllowedMentions.none()`.
+
+    `identities` is authoritative when given: squad members without one (e.g. they left
+    the server) are listed by Steam name without a mention. With `identities=None`
+    (resolution failed) every squad member keeps a mention.
     """
     in_match = {p.steam64_id: p for p in match.players}
     members = [m for m in squad if m.steam64_id in in_match]
@@ -134,7 +138,7 @@ def build_announcement_embed(
     )
     highlight = {p.steam64_id for p in players}
     _add_tables_and_awards(embed, match, awards, identities or {}, highlight=highlight)
-    _add_field(embed, SQUAD_FIELD, format_squad(members, in_match), inline=False)
+    _add_field(embed, SQUAD_FIELD, format_squad(members, in_match, identities), inline=False)
     return embed
 
 
@@ -147,8 +151,16 @@ def squad_outcome(match: Match, players: Sequence[PlayerMatchStats]) -> MatchOut
     return match_outcome(match, next(p for p in players if p.team_number == team))
 
 
-def format_squad(members: Sequence[SquadMember], players: Mapping[str, PlayerMatchStats]) -> str:
-    """One `<@id> K/D/A · ADR · rating` line per member, best rating first (max 10)."""
+def format_squad(
+    members: Sequence[SquadMember],
+    players: Mapping[str, PlayerMatchStats],
+    identities: Mapping[str, Identity] | None = None,
+) -> str:
+    """One `K/D/A · ADR · rating` line per member, best rating first (max 10).
+
+    Without `identities` every line starts with `<@id>`. With them, members who have an
+    identity get `<@id> as SteamName · `, the others just `SteamName · ` (no dead mention).
+    """
     ranked = sorted(
         dict.fromkeys(members),
         key=lambda m: (
@@ -156,11 +168,21 @@ def format_squad(members: Sequence[SquadMember], players: Mapping[str, PlayerMat
             -(players[m.steam64_id].leetify_rating or 0),
         ),
     )
-    lines = [
-        f"<@{m.discord_id}> {format_squad_stats(players[m.steam64_id])}"
-        for m in ranked[:MAX_SQUAD_LINES]
-    ]
+    lines = [_squad_line(m, players[m.steam64_id], identities) for m in ranked[:MAX_SQUAD_LINES]]
     return _fit_lines(lines, FIELD_VALUE_LIMIT)
+
+
+def _squad_line(
+    member: SquadMember, player: PlayerMatchStats, identities: Mapping[str, Identity] | None
+) -> str:
+    stats = format_squad_stats(player)
+    if identities is None:
+        return f"<@{member.discord_id}> {stats}"
+    name = escape_name(player.name or player.steam64_id)
+    identity = identities.get(member.steam64_id)
+    if identity is None:
+        return f"{name} · {stats}"
+    return f"<@{identity.discord_id}> as {name} · {stats}"
 
 
 def format_squad_stats(player: PlayerMatchStats) -> str:

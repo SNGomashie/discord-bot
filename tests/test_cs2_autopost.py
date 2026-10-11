@@ -86,6 +86,11 @@ class MemoryLinks:
         return {s: d for d, s in sorted(self.links.items(), reverse=True) if s in wanted}
 
 
+class BrokenLinks(MemoryLinks):
+    async def discord_ids_for(self, steam64_ids: Any) -> dict[str, int]:
+        raise RuntimeError("db down")
+
+
 ALL_PERMISSIONS = discord.Permissions(view_channel=True, send_messages=True, embed_links=True)
 
 
@@ -151,6 +156,40 @@ async def test_posts_one_match_then_confirms() -> None:
     assert embed.to_dict() == expected.to_dict()
     assert poller.confirmed == ["m1"]
     assert events == [f"send {embed.title}", "confirm m1"]
+
+
+async def test_announcement_gets_none_when_identity_lookup_fails() -> None:
+    events: list[str] = []
+    channel = make_channel(events)
+    match = new_match("m1")
+    cog = make_cog(FakePoller(events, [match]), make_bot(channel))
+    cog.links = BrokenLinks()  # type: ignore[assignment]
+    await cog.run_poll_cycle()
+    expected = build_announcement_embed(
+        match.match, compute_awards(match.match), match.squad, identities=None
+    )
+    [embed] = sent_embeds(channel)
+    assert embed.to_dict() == expected.to_dict()
+    assert "<@1>" in embed.to_dict()["fields"][-1]["value"]
+
+
+async def test_announcement_without_members_has_no_mentions() -> None:
+    events: list[str] = []
+    channel = make_channel(events)
+    channel.guild.get_member.side_effect = None
+    channel.guild.get_member.return_value = None
+    channel.guild.fetch_member = AsyncMock(
+        side_effect=discord.NotFound(MagicMock(status=404), "gone")
+    )
+    match = new_match("m1")
+    cog = make_cog(FakePoller(events, [match]), make_bot(channel))
+    await cog.run_poll_cycle()
+    expected = build_announcement_embed(
+        match.match, compute_awards(match.match), match.squad, identities={}
+    )
+    [embed] = sent_embeds(channel)
+    assert embed.to_dict() == expected.to_dict()
+    assert "<@" not in embed.to_dict()["fields"][-1]["value"]
 
 
 async def test_posts_two_matches_in_order() -> None:

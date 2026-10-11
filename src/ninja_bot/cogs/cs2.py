@@ -294,7 +294,7 @@ class Cs2(commands.Cog):
         """Send one announcement; the match is confirmed even if the send failed."""
         try:
             match = new_match.match
-            identities = await self._match_identities_or_empty(channel.guild, match)
+            identities = await self._match_identities_or_none(channel.guild, match)
             embed = build_announcement_embed(
                 match, compute_awards(match), new_match.squad, identities=identities
             )
@@ -529,7 +529,7 @@ class Cs2(commands.Cog):
         """Fetch and post the scoreboard; True only if the embed was posted."""
         try:
             match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
-            identities = await self._match_identities_or_empty(interaction.guild, match)
+            identities = await self._match_identities_or_none(interaction.guild, match)
             embed = build_match_embed(
                 match, compute_awards(match), steam64_id, profile, identities=identities
             )
@@ -644,15 +644,19 @@ class Cs2(commands.Cog):
             match.players, self.links, member_lookup(guild, self.members)
         )
 
-    async def _match_identities_or_empty(
+    async def _match_identities_or_none(
         self, guild: discord.Guild | None, match: Match
-    ) -> dict[str, Identity]:
-        """Names and mentions are extras, so a failure here never stops the scoreboard."""
+    ) -> dict[str, Identity] | None:
+        """The linked members in the match, or None if the lookup failed.
+
+        Names and mentions are extras, so a failure here never stops the scoreboard; None
+        (lookup broke) is kept apart from `{}` (nobody in the match is a member).
+        """
         try:
             return await self._match_identities(guild, match)
         except Exception:
             log.exception("Posting scoreboard without Discord names")
-            return {}
+            return None
 
     async def _fetch_profile_or_none(self, steam64_id: str) -> Profile | None:
         """The profile only adds the breakdown, so its CS2 errors don't stop the scoreboard."""

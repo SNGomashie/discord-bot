@@ -959,6 +959,119 @@ def test_squad_field_lines_by_rating() -> None:
     ]
 
 
+def test_squad_field_all_members_resolved() -> None:
+    players = (
+        _player(1, 2, leetify_rating=0.09, kills=20, deaths=5, assists=0),
+        _player(2, 3, leetify_rating=0.01, kills=10, deaths=10, assists=2),
+    )
+    squad = [_member(p) for p in players]
+    identities = {p.steam64_id: _identity(p, f"Member{i}") for i, p in enumerate(players)}
+
+    embed = build_announcement_embed(_squad_match(*players), [], squad, identities)
+
+    assert _fields(embed)[SQUAD_FIELD].splitlines() == [
+        f"<@{squad[0].discord_id}> as player1 · 20/5/0 · - ADR · +0.09",
+        f"<@{squad[1].discord_id}> as player2 · 10/10/2 · - ADR · +0.01",
+    ]
+
+
+def test_squad_field_member_without_identity_has_no_mention() -> None:
+    players = (
+        _player(1, 2, leetify_rating=0.09, kills=20, deaths=5, assists=0),
+        _player(2, 3, name="*left*", leetify_rating=0.01, kills=10, deaths=10, assists=2),
+    )
+    squad = [_member(p) for p in players]
+    identities = {players[0].steam64_id: _identity(players[0], "Alice")}
+
+    embed = build_announcement_embed(_squad_match(*players), [], squad, identities)
+
+    lines = _fields(embed)[SQUAD_FIELD].splitlines()
+    assert lines == [
+        f"<@{squad[0].discord_id}> as player1 · 20/5/0 · - ADR · +0.09",
+        "\\*left\\* · 10/10/2 · - ADR · +0.01",
+    ]
+    assert f"<@{squad[1].discord_id}>" not in _fields(embed)[SQUAD_FIELD]
+
+
+def test_squad_field_with_empty_identities_has_no_mentions() -> None:
+    players = (_player(1, 2, kills=5, deaths=3, assists=1), _player(2, 3))
+    squad = [_member(p) for p in players]
+
+    embed = build_announcement_embed(_squad_match(*players), [], squad, {})
+
+    fields = _fields(embed)
+    assert "<@" not in fields[SQUAD_FIELD]
+    assert fields[SQUAD_FIELD].splitlines() == [
+        "player1 · 5/3/1 · - ADR · -",
+        "player2 · -/-/- · - ADR · -",
+    ]
+    tables = fields["Team A"] + fields["Team B"]
+    assert len(_highlighted(tables)) == 2
+
+
+def test_squad_field_without_identities_keeps_all_mentions() -> None:
+    players = (_player(1, 2, kills=5, deaths=3, assists=1), _player(2, 3))
+    squad = [_member(p) for p in players]
+
+    embed = build_announcement_embed(_squad_match(*players), [], squad, None)
+
+    assert _fields(embed)[SQUAD_FIELD].splitlines() == [
+        f"<@{squad[0].discord_id}> 5/3/1 · - ADR · -",
+        f"<@{squad[1].discord_id}> -/-/- · - ADR · -",
+    ]
+
+
+def test_squad_field_mixed_identities_highlights_every_member() -> None:
+    players = tuple(_player(i, 2 + i % 2, leetify_rating=0.1 - i / 100) for i in range(4))
+    squad = [_member(p) for p in players]
+    identities = {p.steam64_id: _identity(p, f"M{p.steam64_id[-1]}") for p in players[::2]}
+
+    embed = build_announcement_embed(_squad_match(*players), [], squad, identities)
+
+    fields = _fields(embed)
+    lines = fields[SQUAD_FIELD].splitlines()
+    assert [line.startswith("<@") for line in lines] == [True, False, True, False]
+    assert lines[1].startswith("player1 · ")
+    assert lines[3].startswith("player3 · ")
+    assert len(_highlighted(fields["Team A"] + fields["Team B"])) == 4
+
+
+@pytest.mark.parametrize("resolved", [0, 5, 10])
+def test_squad_of_ten_with_long_names_fits_limits(resolved: int) -> None:
+    hostile = "*_~`|[]()" * 4
+    players = tuple(
+        _player(
+            i,
+            2 if i < 5 else 3,
+            name=hostile[:30] + f"{i:02d}",
+            kills=99,
+            deaths=99,
+            assists=99,
+            damage=99999,
+            rounds=30,
+            leetify_rating=-0.123,
+            multi5k=9,
+        )
+        for i in range(10)
+    )
+    match = dataclasses.replace(_squad_match(*players), map_name="de_" + "x" * 300)
+    squad = [SquadMember(18446744073709551615 - i, p.steam64_id) for i, p in enumerate(players)]
+    identities = {
+        m.steam64_id: Identity(m.steam64_id, m.discord_id, "日" * 32) for m in squad[:resolved]
+    }
+
+    embed = build_announcement_embed(match, compute_awards(match, limit=25), squad, identities)
+
+    assert len(embed.fields) <= 25
+    assert len(embed.title or "") <= 256
+    for field in embed.fields:
+        assert len(field.name or "") <= 256
+        assert len(field.value or "") <= 1024
+    assert len(embed) <= 6000
+    _assert_no_empty_fields(embed)
+    assert SQUAD_FIELD in _fields(embed)
+
+
 def test_squad_field_capped_at_ten_lines() -> None:
     players = tuple(_player(i, 2 + i % 2) for i in range(12))
     embed = build_announcement_embed(_squad_match(*players), [], [_member(p) for p in players])

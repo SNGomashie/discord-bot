@@ -87,3 +87,11 @@
 - Tests: tests/test_cs2_identities.py (repeat lookup, member-cache hit, 404 TTL + retry, 429/403 not cached, name TTL, two guilds, 10 concurrent lookups -> 5 REST calls, cog keeps one cache). `FakeGuild` got an `id`.
 - Needs manual check: run /scoreboard twice in the test server; names still appear.
 ---
+
+## 2026-10-11 - US-005
+- `build_announcement_embed`/`format_squad` treat `identities` as authoritative when not None: members with an identity get `<@id> as SteamName · stats`, members without one get `SteamName · stats` (no mention). `identities=None` keeps `<@id> stats` for everyone. Table highlighting unchanged.
+- Cog: `_match_identities_or_empty` -> `_match_identities_or_none` (None on exception, dict otherwise); both the auto-post and `/scoreboard` paths use it (`build_match_embed` already treats None like `{}`).
+- Files: src/ninja_bot/cs2/embed.py, src/ninja_bot/cogs/cs2.py, tests/test_cs2_embed.py, tests/test_cs2_identities.py, tests/test_cs2_autopost.py
+- **Learnings:** In announcement embeds, `None` (lookup broke) and `{}` (nobody is a member) are different; keep them apart in new code.
+- Needs manual check: an auto-post where a linked player has left the server shows their Steam name without a mention.
+---
