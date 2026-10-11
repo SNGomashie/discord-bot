@@ -900,8 +900,8 @@ async def test_failed_edit_or_send_does_not_abort(cog: Sessions, store: SqliteSe
     send.assert_awaited_once()
     poll = await store.get_poll(poll_id)
     assert poll is not None
-    # The round still advanced; the old message id is kept when the new post failed.
-    assert (poll.round_number, poll.message_id) == (2, MESSAGE_ID)
+    # The round still advanced; no message id marks the new round's message as unposted.
+    assert (poll.round_number, poll.message_id) == (2, None)
 
 
 async def fitted_poll(cog: Sessions, store: SqliteSessionStore) -> tuple[int, list[int]]:

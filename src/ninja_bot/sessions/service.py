@@ -122,7 +122,9 @@ class RoundFits:
 class RoundAdvanced:
     """Nothing fit; `poll` is in its next round with the new `slots`.
 
-    `pending` are the players who didn't vote in the closed round.
+    `pending` are the players who didn't vote in the closed round. `poll.message_id` is
+    still the closed round's message (the store already cleared it until the new round's
+    message is posted), so the cog can mark it closed.
     """
 
     poll: Poll
@@ -439,7 +441,7 @@ class SessionService:
             return RoundFailed(await self._reload(poll), FailReason.NO_SLOTS, pending)
         advanced = await self.store.advance_round(poll.id, new_slots, window_start, self.clock())
         slots = await self.store.poll_slots(poll.id, advanced.round_number)
-        return RoundAdvanced(advanced, tuple(slots), pending)
+        return RoundAdvanced(replace(advanced, message_id=poll.message_id), tuple(slots), pending)
 
     async def confirm(
         self, poll_id: int, slot_id: int, by_user_id: int, is_manager: bool

@@ -33,7 +33,8 @@ _SCHEMA = (
     " name TEXT NOT NULL, gm_id INTEGER NOT NULL, days TEXT NOT NULL, times TEXT NOT NULL,"
     " weeks INTEGER NOT NULL, duration_hours REAL NOT NULL, min_players INTEGER NOT NULL,"
     " round_hours REAL NOT NULL, round_number INTEGER NOT NULL, window_start TEXT NOT NULL,"
-    " status TEXT NOT NULL, created_at REAL NOT NULL, round_started_at REAL NOT NULL)",
+    " status TEXT NOT NULL, created_at REAL NOT NULL, round_started_at REAL NOT NULL,"
+    " result_message_id INTEGER NULL)",
     "CREATE INDEX IF NOT EXISTS polls_guild_status ON polls (guild_id, status)",
     "CREATE TABLE IF NOT EXISTS poll_slots (id INTEGER PRIMARY KEY,"
     " poll_id INTEGER NOT NULL, round_number INTEGER NOT NULL,"
@@ -59,7 +60,8 @@ _SCHEMA = (
 
 _POLL_COLUMNS = (
     "id, guild_id, channel_id, message_id, name, gm_id, days, times, weeks, duration_hours,"
-    " min_players, round_hours, round_number, window_start, status, created_at, round_started_at"
+    " min_players, round_hours, round_number, window_start, status, created_at, round_started_at,"
+    " result_message_id"
 )
 _SLOT_COLUMNS = 'id, poll_id, round_number, start, "end"'
 _SESSION_COLUMNS = (
@@ -69,7 +71,11 @@ _SESSION_COLUMNS = (
 
 @dataclass(frozen=True)
 class Poll:
-    """A session poll; `message_id` is None until the poll message is sent."""
+    """A session poll.
+
+    `message_id` is the current round's poll message (None until it is sent);
+    `result_message_id` is the result message with the Confirm buttons (None until sent).
+    """
 
     id: int
     guild_id: int
@@ -88,6 +94,7 @@ class Poll:
     status: str
     created_at: float
     round_started_at: float
+    result_message_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +160,7 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         status,
         created_at,
         round_started_at,
+        result_message_id,
     ) = row
     return Poll(
         id=int(poll_id),
@@ -172,6 +180,7 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         status=str(status),
         created_at=float(created_at),
         round_started_at=float(round_started_at),
+        result_message_id=None if result_message_id is None else int(result_message_id),
     )
 
 
@@ -252,6 +261,19 @@ class SessionStore(Protocol):
         """Remember the Discord message that shows the poll."""
         ...
 
+    async def set_result_message(self, poll_id: int, message_id: int) -> None:
+        """Remember the result message (the one with the Confirm buttons)."""
+        ...
+
+    async def polls_missing_messages(self) -> list[Poll]:
+        """Polls whose outcome message was never posted, oldest first.
+
+        Voting polls past round 1 without `message_id` (the next-round message failed) and
+        `awaiting_confirm` polls without `result_message_id` (the result failed). Round 1 is
+        excluded: a failed first post is discarded when the poll is created.
+        """
+        ...
+
     async def poll_slots(self, poll_id: int, round_number: int) -> list[PollSlot]:
         """The slots of one round, oldest start first."""
         ...
@@ -277,7 +299,10 @@ class SessionStore(Protocol):
         ...
 
     async def set_status(self, poll_id: int, status: str) -> None:
-        """Set the poll's status (one of `POLL_STATUSES`; anything else raises ValueError)."""
+        """Set the poll's status (one of `POLL_STATUSES`; anything else raises ValueError).
+
+        Entering `awaiting_confirm` clears `result_message_id` (no result posted yet).
+        """
         ...
 
     async def record_votes(self, poll_id: int, user_id: int, votes: Mapping[int, Vote]) -> None:
@@ -298,7 +323,8 @@ class SessionStore(Protocol):
     ) -> Poll:
         """Start the next round: new slots, `voting`, `round_started_at = now`, zero nudges.
 
-        `message_id` replaces the poll message when given; otherwise it is kept.
+        `message_id` always replaces the poll message (None = the new round's message is not
+        posted yet, so a voting poll past round 1 without one was never posted).
         """
         ...
 
@@ -435,6 +461,23 @@ class SqliteSessionStore:
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE polls SET message_id = ? WHERE id = ?", (message_id, poll_id))
 
+    def _set_result_message(self, poll_id: int, message_id: int) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE polls SET result_message_id = ? WHERE id = ?", (message_id, poll_id)
+            )
+
+    def _polls_missing_messages(self) -> list[Poll]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT {_POLL_COLUMNS} FROM polls"
+                " WHERE (status = ? AND round_number > 1 AND message_id IS NULL)"
+                " OR (status = ? AND result_message_id IS NULL)"
+                " ORDER BY created_at, id",
+                (STATUS_VOTING, STATUS_AWAITING_CONFIRM),
+            ).fetchall()
+        return [_poll(row) for row in rows]
+
     def _poll_slots(self, poll_id: int, round_number: int) -> list[PollSlot]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
@@ -494,7 +537,13 @@ class SqliteSessionStore:
         if status not in POLL_STATUSES:
             raise ValueError(f"unknown poll status: {status!r}")
         with closing(self._connect()) as conn, conn:
-            conn.execute("UPDATE polls SET status = ? WHERE id = ?", (status, poll_id))
+            if status == STATUS_AWAITING_CONFIRM:
+                conn.execute(
+                    "UPDATE polls SET status = ?, result_message_id = NULL WHERE id = ?",
+                    (status, poll_id),
+                )
+            else:
+                conn.execute("UPDATE polls SET status = ? WHERE id = ?", (status, poll_id))
 
     def _record_votes(self, poll_id: int, user_id: int, votes: Mapping[int, Vote]) -> None:
         if not votes:
@@ -527,7 +576,7 @@ class SqliteSessionStore:
         with closing(self._connect()) as conn, conn:
             conn.execute(
                 "UPDATE polls SET round_number = round_number + 1, round_started_at = ?,"
-                " window_start = ?, status = ?, message_id = COALESCE(?, message_id)"
+                " window_start = ?, status = ?, message_id = ?"
                 " WHERE id = ?",
                 (now, window_start.isoformat(), STATUS_VOTING, message_id, poll_id),
             )
@@ -697,6 +746,12 @@ class SqliteSessionStore:
 
     async def set_poll_message(self, poll_id: int, message_id: int) -> None:
         await asyncio.to_thread(self._set_poll_message, poll_id, message_id)
+
+    async def set_result_message(self, poll_id: int, message_id: int) -> None:
+        await asyncio.to_thread(self._set_result_message, poll_id, message_id)
+
+    async def polls_missing_messages(self) -> list[Poll]:
+        return await asyncio.to_thread(self._polls_missing_messages)
 
     async def poll_slots(self, poll_id: int, round_number: int) -> list[PollSlot]:
         return await asyncio.to_thread(self._poll_slots, poll_id, round_number)

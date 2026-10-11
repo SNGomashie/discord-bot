@@ -261,7 +261,7 @@ async def test_advance_round_increments_and_resets_nudges(tmp_path: Path) -> Non
     assert advanced.round_started_at == 2000.0
     assert advanced.window_start == date(2026, 11, 20)
     assert advanced.status == STATUS_VOTING
-    assert advanced.message_id == 555
+    assert advanced.message_id is None
     assert advanced.created_at == poll.created_at
     assert await store.get_poll(poll.id) == advanced
     assert [(s.round_number, s.start, s.end) for s in await store.poll_slots(poll.id, 2)] == [
@@ -414,3 +414,68 @@ async def test_confirm_marks_passed_reminders_handled(tmp_path: Path) -> None:
     [slot, _] = await store.poll_slots(poll.id, 1)
     session = await store.confirm(poll.id, slot.id, [GM], slot.start - 5 * HOUR)
     assert await store.reminders_sent(session.id) == {86_400}
+
+
+async def test_result_message_is_stored_and_survives_a_restart(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    poll = await _create(store)
+    assert poll.result_message_id is None
+    await store.set_status(poll.id, STATUS_AWAITING_CONFIRM)
+
+    await store.set_result_message(poll.id, 888)
+
+    fetched = await _store(tmp_path).get_poll(poll.id)
+    assert fetched is not None
+    assert fetched.result_message_id == 888
+
+
+async def test_entering_awaiting_confirm_clears_the_result_message(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    poll = await _create(store)
+    await store.set_result_message(poll.id, 888)
+
+    await store.set_status(poll.id, STATUS_AWAITING_CONFIRM)
+
+    fetched = await store.get_poll(poll.id)
+    assert fetched is not None
+    assert fetched.result_message_id is None
+
+
+async def test_advance_round_clears_the_poll_message_until_it_is_set(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    poll = await _create(store)
+    await store.set_poll_message(poll.id, 555)
+
+    advanced = await store.advance_round(
+        poll.id, (Slot(20_000.0, 30_000.0),), date(2026, 11, 20), 2000.0
+    )
+    assert advanced.message_id is None
+    await store.set_poll_message(poll.id, 666)
+
+    fetched = await _store(tmp_path).get_poll(poll.id)
+    assert fetched is not None
+    assert fetched.message_id == 666
+
+
+async def test_polls_missing_messages_finds_unposted_outcomes(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    round_one = await _create(store)  # round 1 without a message: discarded elsewhere
+    posted_round = await _create(store)
+    await store.advance_round(posted_round.id, (), date(2026, 11, 20), 2000.0, message_id=777)
+    missing_round = await _create(store)
+    await store.set_poll_message(missing_round.id, 555)
+    await store.advance_round(missing_round.id, (), date(2026, 11, 20), 2000.0)
+    missing_result = await _create(store)
+    await store.set_poll_message(missing_result.id, 556)
+    await store.set_status(missing_result.id, STATUS_AWAITING_CONFIRM)
+    posted_result = await _create(store)
+    await store.set_status(posted_result.id, STATUS_AWAITING_CONFIRM)
+    await store.set_result_message(posted_result.id, 888)
+    cancelled = await _create(store)
+    await store.advance_round(cancelled.id, (), date(2026, 11, 20), 2000.0)
+    await store.cancel_poll(cancelled.id)
+
+    missing = await _store(tmp_path).polls_missing_messages()
+
+    assert [poll.id for poll in missing] == [missing_round.id, missing_result.id]
+    assert round_one.id not in [poll.id for poll in missing]
