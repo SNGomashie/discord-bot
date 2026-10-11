@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from collections.abc import Collection, Sequence
 
 import pytest
@@ -305,4 +306,90 @@ async def test_poll_does_not_mark_returned_matches_posted() -> None:
     stats.history[STEAM_A] = [make_match("m1", STEAM_A, STRANGER, finished_at=ago(5))]
     poller, _ = make_poller(stats, store)
     await poller.poll()
+    assert store.posted == []
+
+
+async def test_failed_full_match_is_skipped_and_retried() -> None:
+    stats = FakeStats()
+    store = FakeStore({1: STEAM_A})
+    store.seeded = {STEAM_A}
+    partial = make_match("m1", STEAM_A, finished_at=ago(10))
+    other = make_match("m2", STEAM_A, STRANGER, finished_at=ago(5))
+    stats.history[STEAM_A] = [other, partial]
+    poller, _ = make_poller(stats, store)
+
+    result = await poller.poll()
+    assert stats.match_calls == ["m1"]
+    assert [new.match.id for new in result] == ["m2"]
+    assert store.posted == []
+    await confirm_all(poller, result)
+
+    full = make_match("m1", STEAM_A, STRANGER, finished_at=ago(10))
+    stats.by_id["m1"] = full
+    assert await poller.poll() == [NewMatch(full, (SquadMember(1, STEAM_A),))]
+
+
+async def test_failed_full_match_logs_id_and_error_type(caplog: pytest.LogCaptureFixture) -> None:
+    stats = FakeStats()
+    store = FakeStore({1: STEAM_A})
+    store.seeded = {STEAM_A}
+    stats.history[STEAM_A] = [make_match("m1", STEAM_A, finished_at=ago(5))]
+    poller, _ = make_poller(stats, store)
+    caplog.set_level(logging.INFO, logger="ninja_bot.cs2.poller")
+
+    assert await poller.poll() == []
+    assert "m1" in caplog.text
+    assert "ApiError" in caplog.text
+
+
+async def test_permanently_failing_match_is_dropped_by_age_limit() -> None:
+    stats = FakeStats()
+    store = FakeStore({1: STEAM_A})
+    store.seeded = {STEAM_A}
+    stats.history[STEAM_A] = [make_match("m1", STEAM_A, finished_at=ago(5))]
+    poller, clock = make_poller(stats, store)
+
+    assert await poller.poll() == []
+    assert store.posted == []
+    clock.now += 3 * 3600
+    assert await poller.poll() == []
+    assert store.posted == ["m1"]
+    assert stats.match_calls == ["m1"]
+
+
+async def test_max_per_cycle_counts_only_completed_matches() -> None:
+    stats = FakeStats()
+    store = FakeStore({1: STEAM_A})
+    store.seeded = {STEAM_A}
+    failing = make_match("bad", STEAM_A, finished_at=ago(50))
+    good = [
+        make_match(f"m{minutes}", STEAM_A, STRANGER, finished_at=ago(minutes))
+        for minutes in (10, 20, 30)
+    ]
+    stats.history[STEAM_A] = [*good, failing]
+    poller, _ = make_poller(stats, store, max_per_cycle=2)
+
+    result = await poller.poll()
+    assert [new.match.id for new in result] == ["m30", "m20"]
+
+
+async def test_rate_limit_during_full_match_stops_completion() -> None:
+    stats = FakeStats()
+    store = FakeStore({1: STEAM_A})
+    store.seeded = {STEAM_A}
+    done = make_match("m1", STEAM_A, STRANGER, finished_at=ago(30))
+    limited = make_match("m2", STEAM_A, finished_at=ago(20))
+    later = make_match("m3", STEAM_A, finished_at=ago(10))
+    stats.history[STEAM_A] = [later, limited, done]
+
+    async def rate_limited(game_id: str) -> Match:
+        stats.match_calls.append(game_id)
+        raise RateLimitedError()
+
+    stats.get_match = rate_limited  # type: ignore[method-assign]
+    poller, _ = make_poller(stats, store)
+
+    result = await poller.poll()
+    assert [new.match.id for new in result] == ["m1"]
+    assert stats.match_calls == ["m2"]
     assert store.posted == []

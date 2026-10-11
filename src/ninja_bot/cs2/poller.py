@@ -74,10 +74,19 @@ class MatchPoller:
                 candidates.setdefault(match.id, match)
 
         fresh = await self._drop_stale(list(candidates.values()))
-        selected = sorted(fresh, key=_oldest_first_key)[: self._max_per_cycle]
         result: list[NewMatch] = []
-        for match in selected:
-            full = await full_match(self._provider, match)
+        for match in sorted(fresh, key=_oldest_first_key):
+            if len(result) >= self._max_per_cycle:
+                break
+            try:
+                full = await full_match(self._provider, match, strict=True)
+            except RateLimitedError:
+                log.info("Leetify rate limited the match poller; stopping this cycle")
+                break
+            except Cs2Error as exc:
+                # Not marked posted: retried next cycle until the age limit drops it.
+                log.info("Skipping match %s in the match poller (%s)", match.id, type(exc).__name__)
+                continue
             result.append(NewMatch(full, _squad(full, members)))
         return result
 
