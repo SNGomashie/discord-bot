@@ -219,7 +219,9 @@ class SessionService:
         self.tz = tz
         self.clock = clock
         self.prefiller = prefiller
-        # Serialises closing and confirming, so double clicks and the loop can't race.
+        # Serialises joins, leaves, votes, closing, confirming and cancelling, so a vote is
+        # either in the evaluated round or refused, and double clicks and the loop can't
+        # race. Helpers called under it never take it again.
         self._lock = asyncio.Lock()
 
     async def create_poll(
@@ -277,17 +279,19 @@ class SessionService:
         return poll if poll is not None and poll.status == STATUS_VOTING else None
 
     async def join(self, poll_id: int, user_id: int) -> JoinResult:
-        poll = await self._voting_poll(poll_id)
-        if poll is None:
-            return JoinResult.POLL_CLOSED
-        players = await self.store.players(poll_id)
-        if user_id in players:
-            return JoinResult.ALREADY_JOINED
-        if not await self.store.join(poll_id, user_id):
-            # Not joined before, so the store refused because the poll is full.
-            return JoinResult.FULL
-        await self._prefill(poll, user_id)
-        return JoinResult.JOINED
+        async with self._lock:
+            poll = await self._voting_poll(poll_id)
+            if poll is None:
+                return JoinResult.POLL_CLOSED
+            players = await self.store.players(poll_id)
+            if user_id in players:
+                return JoinResult.ALREADY_JOINED
+            if not await self.store.join(poll_id, user_id):
+                # Under the lock nobody else can have joined this user since the check
+                # above, so the store refused because the poll is full.
+                return JoinResult.FULL
+            await self._prefill(poll, user_id)
+            return JoinResult.JOINED
 
     async def _prefill(self, poll: Poll, user_id: int) -> None:
         slots = await self.store.poll_slots(poll.id, poll.round_number)
@@ -304,15 +308,16 @@ class SessionService:
         await self.store.record_votes(poll.id, user_id, votes)
 
     async def leave(self, poll_id: int, user_id: int) -> JoinResult:
-        poll = await self._voting_poll(poll_id)
-        if poll is None:
-            return JoinResult.POLL_CLOSED
-        if user_id == poll.gm_id:
-            return JoinResult.GM_CANNOT_LEAVE
-        if user_id not in await self.store.players(poll_id):
-            return JoinResult.NOT_JOINED
-        await self.store.leave(poll_id, user_id)
-        return JoinResult.LEFT
+        async with self._lock:
+            poll = await self._voting_poll(poll_id)
+            if poll is None:
+                return JoinResult.POLL_CLOSED
+            if user_id == poll.gm_id:
+                return JoinResult.GM_CANNOT_LEAVE
+            if user_id not in await self.store.players(poll_id):
+                return JoinResult.NOT_JOINED
+            await self.store.leave(poll_id, user_id)
+            return JoinResult.LEFT
 
     async def submit_vote(
         self,
@@ -325,24 +330,25 @@ class SessionService:
 
         A slot in both lists counts as `YES`; `((), ())` is "none of these".
         """
-        poll = await self._voting_poll(poll_id)
-        if poll is None:
-            return VoteResult.POLL_CLOSED
-        if user_id not in await self.store.players(poll_id):
-            return VoteResult.NOT_JOINED
-        slot_ids = [slot.id for slot in await self.store.poll_slots(poll_id, poll.round_number)]
-        if not set(yes_ids) | set(maybe_ids) <= set(slot_ids):
-            return VoteResult.UNKNOWN_SLOT
-        votes = {
-            slot_id: Vote.YES
-            if slot_id in yes_ids
-            else Vote.IF_NEEDED
-            if slot_id in maybe_ids
-            else Vote.NO
-            for slot_id in slot_ids
-        }
-        await self.store.record_votes(poll_id, user_id, votes)
-        return VoteResult.RECORDED
+        async with self._lock:
+            poll = await self._voting_poll(poll_id)
+            if poll is None:
+                return VoteResult.POLL_CLOSED
+            if user_id not in await self.store.players(poll_id):
+                return VoteResult.NOT_JOINED
+            slot_ids = [slot.id for slot in await self.store.poll_slots(poll_id, poll.round_number)]
+            if not set(yes_ids) | set(maybe_ids) <= set(slot_ids):
+                return VoteResult.UNKNOWN_SLOT
+            votes = {
+                slot_id: Vote.YES
+                if slot_id in yes_ids
+                else Vote.IF_NEEDED
+                if slot_id in maybe_ids
+                else Vote.NO
+                for slot_id in slot_ids
+            }
+            await self.store.record_votes(poll_id, user_id, votes)
+            return VoteResult.RECORDED
 
     async def round_state(
         self, poll: Poll

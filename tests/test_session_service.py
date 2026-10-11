@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -535,3 +535,91 @@ async def test_lone_gm_vote_does_not_auto_close(tmp_path: Path) -> None:
     assert should_auto_close(poll, players, [a], votes, start) is None
     assert should_auto_close(poll, players, [a], votes, start + 86_400) == "deadline"
     assert isinstance(await svc.close_round(poll.id, GM, False, "manual"), RoundFits)
+
+
+class GatedStore(SqliteSessionStore):
+    """Holds `record_votes` until `release` is set, so a vote can be caught mid-write."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.release.set()
+
+    async def record_votes(self, poll_id: int, user_id: int, votes: Mapping[int, Vote]) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await super().record_votes(poll_id, user_id, votes)
+
+
+def _gated_service(tmp_path: Path) -> tuple[SessionService, GatedStore]:
+    store = GatedStore(tmp_path / "sessions.sqlite3")
+    return SessionService(store, TZ, FakeClock(), NoPrefill()), store
+
+
+async def test_concurrent_joins_by_the_same_user(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    results = await asyncio.gather(svc.join(poll.id, PLAYER), svc.join(poll.id, PLAYER))
+    assert sorted(result.value for result in results) == sorted(
+        [JoinResult.JOINED.value, JoinResult.ALREADY_JOINED.value]
+    )
+    assert await svc.store.players(poll.id) == [GM, PLAYER]
+
+
+async def test_vote_in_flight_is_counted_by_a_concurrent_close(tmp_path: Path) -> None:
+    svc, store = _gated_service(tmp_path)
+    poll = await _create(svc)
+    await svc.join(poll.id, PLAYER)
+    a, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a], ())
+    store.entered.clear()
+    store.release.clear()
+    vote = asyncio.create_task(svc.submit_vote(poll.id, PLAYER, [a], ()))
+    await store.entered.wait()
+    close = asyncio.create_task(svc.close_round(poll.id, GM, False, "manual"))
+    # Unserialised, the close would evaluate the round without the held vote by now.
+    await asyncio.wait({close}, timeout=0.2)
+    assert not close.done()
+    store.release.set()
+    assert await vote == VoteResult.RECORDED
+    outcome = await close
+    assert isinstance(outcome, RoundFits)
+    offered = [slot.id for slot in outcome.slots]
+    assert offered == [a]
+    session = await svc.confirm(poll.id, a, GM, False)
+    assert session.roster == (GM, PLAYER)
+
+
+async def test_vote_after_a_close_is_refused_and_writes_nothing(tmp_path: Path) -> None:
+    svc, store = _gated_service(tmp_path)
+    poll = await _create(svc)
+    await svc.join(poll.id, PLAYER)
+    a, b, *_ = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, [a, b], ())
+    await svc.submit_vote(poll.id, PLAYER, [a], ())
+    close = asyncio.create_task(svc.close_round(poll.id, GM, False, "manual"))
+    await asyncio.sleep(0)
+    vote = asyncio.create_task(svc.submit_vote(poll.id, PLAYER, [b], ()))
+    outcome = await close
+    assert await vote == VoteResult.POLL_CLOSED
+    assert isinstance(outcome, RoundFits)
+    assert [slot.id for slot in outcome.slots] == [a]
+    votes = await svc.store.votes(poll.id, poll.round_number)
+    assert votes[(PLAYER, b)] == Vote.NO
+    with pytest.raises(SessionRefused):
+        await svc.confirm(poll.id, b, GM, False)
+    session = await svc.confirm(poll.id, a, GM, False)
+    assert session.start == outcome.slots[0].start
+
+
+async def test_join_after_a_close_is_refused(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    await svc.submit_vote(poll.id, GM, await _slot_ids(svc, poll), ())
+    close = asyncio.create_task(svc.close_round(poll.id, GM, False, "manual"))
+    await asyncio.sleep(0)
+    join = asyncio.create_task(svc.join(poll.id, PLAYER))
+    assert isinstance(await close, RoundFits)
+    assert await join == JoinResult.POLL_CLOSED
+    assert await svc.store.players(poll.id) == [GM]
