@@ -2,9 +2,9 @@
 
 What shipped in each merged pull request of [SNGomashie/discord-bot](https://github.com/SNGomashie/discord-bot), newest first. The bot has no version numbers, so entries are grouped by PR and merge date. Behaviour is described in the [README](README.md); the PRD of each feature is in [`tasks/`](tasks/). Manual checks that were still open at merge time are collected in [docs/manual-checks.md](docs/manual-checks.md).
 
-## 2026-10-11
+## 2026-10-12
 
-### Session polls: a date picker for tabletop sessions
+### Session polls: a date picker for tabletop sessions (`2026.42.0`)
 - New `/session_poll name days times [weeks] [start] [duration_hours] [min_players] [round_hours]`: the bot generates candidate slots (up to 25) from weekdays, times and a number of weeks and posts a poll with **Join**, **Vote**, **Leave** and **Close round** buttons. Votes are cast in a private form (**Works for me** / **Only if needed**; anything else is a no) and the poll message updates its counts and `Waiting for` list live. The buttons keep working after a restart.
 - A round closes when every joined player has voted (at least two players, so the GM's own vote never closes it), when the GM or someone with Manage Events presses **Close round**, or when the optional `round_hours` deadline passes. A slot fits when enough players can attend (`min_players`, else everyone who joined) and the GM can too. Up to 3 fitting slots come with **Confirm** buttons; with no fit the poll opens the next round (the following weeks, same days and times) and pings only the players who haven't voted, for up to 6 rounds.
 - Confirming creates a session and announces it with Discord timestamps. It gets reminders 24 h and 1 h before the start (reminders already past at confirmation are skipped), and players who haven't voted are nudged in the channel every 24 h, at most 3 times per round. This is the only feature that pings people; everything else keeps mentions off.
@@ -13,6 +13,8 @@ What shipped in each merged pull request of [SNGomashie/discord-bot](https://git
 - README, `.env.example`, `docs/deployment.md`, `docs/manual-checks.md`, `/help` (new Sessions group) and CLAUDE.md updated. 2165 tests in total.
 - Review fixes shipped in the same PR: a lone GM's vote no longer closes a round; joins, leaves and votes are serialised with closing and confirming (no vote lands after evaluation, a double-clicked Join no longer reports "full"); automatic closes are re-checked under the lock; an empty Save is refused instead of counting as a no for everything; a late refresh can't bring buttons back on a closed message; a result or next-round message that could not be sent is retried every minute, and cancelling a poll also removes the Confirm buttons; the notify loop reads each poll's state once per cycle.
 - Follow-ups: saved availability profiles that pre-fill votes (`prd-session-availability.md`, not written yet); a native Discord scheduled event on confirm; campaigns and recurring sessions; departed members are still counted and pinged; the GM is always required to attend.
+
+## 2026-10-11
 
 ### Activity tracking: voice hours, monthly report and Toasty catches
 - The bot now records voice time per member (the AFK channel is excluded). Open sessions are heartbeated every 60 seconds, so a restart or crash closes them at the last heartbeat and reopens the people still in voice. Data goes to `<DATA_DIR>/activity.sqlite3`.
