@@ -498,3 +498,66 @@ async def test_polls_missing_messages_finds_unposted_outcomes(tmp_path: Path) ->
 
     assert [poll.id for poll in missing] == [missing_round.id, missing_result.id]
     assert round_one.id not in [poll.id for poll in missing]
+
+
+async def test_excluded_days_and_fixed_roster_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(path)
+    excluded = ((date(2026, 11, 5), date(2026, 11, 7)), (date(2026, 11, 13), date(2026, 11, 13)))
+    poll = await store.create_poll(
+        guild_id=GUILD,
+        channel_id=CHANNEL,
+        name="Strahd",
+        gm_id=GM,
+        days=(4,),
+        times=(time(19, 0),),
+        weeks=2,
+        duration_hours=4.0,
+        min_players=0,
+        round_hours=0.0,
+        window_start=date(2026, 11, 6),
+        slots=(Slot(5000.0, 6000.0),),
+        now=1000.0,
+        excluded=excluded,
+        player_ids=(PLAYER, 3, PLAYER),
+    )
+    assert poll.excluded == excluded
+    assert poll.fixed_roster
+    assert sorted(await store.players(poll.id)) == [GM, PLAYER, 3]
+    reloaded = await SqliteSessionStore(path).get_poll(poll.id)
+    assert reloaded == poll
+
+
+async def test_default_poll_has_no_exclusions_and_an_open_roster(tmp_path: Path) -> None:
+    store = SqliteSessionStore(tmp_path / "sessions.sqlite3")
+    poll = await _create(store)
+    assert poll.excluded == ()
+    assert not poll.fixed_roster
+    assert await store.players(poll.id) == [GM]
+
+
+async def test_an_older_polls_table_gets_the_new_columns(tmp_path: Path) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    path = tmp_path / "sessions.sqlite3"
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE polls (id INTEGER PRIMARY KEY,"
+            " guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER NULL,"
+            " name TEXT NOT NULL, gm_id INTEGER NOT NULL, days TEXT NOT NULL,"
+            " times TEXT NOT NULL, weeks INTEGER NOT NULL, duration_hours REAL NOT NULL,"
+            " min_players INTEGER NOT NULL, round_hours REAL NOT NULL,"
+            " round_number INTEGER NOT NULL, window_start TEXT NOT NULL, status TEXT NOT NULL,"
+            " created_at REAL NOT NULL, round_started_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO polls VALUES (1, 10, 100, NULL, 'Old', 1, '4', '19:00', 2, 4.0, 0, 0,"
+            " 1, '2026-11-06', 'voting', 1.0, 1.0)"
+        )
+    store = SqliteSessionStore(path)
+    old = await store.get_poll(1)
+    assert old is not None
+    assert (old.excluded, old.fixed_roster, old.result_message_id) == ((), False, None)
+    new = await _create(store)
+    assert new.id == 2

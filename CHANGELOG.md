@@ -4,6 +4,12 @@ What shipped in each merged pull request of [SNGomashie/discord-bot](https://git
 
 ## 2026-10-12
 
+### `/session_poll`: skip days and fix the player list (`2026.42.1`)
+- New optional `exclude`: days you can't play, as dates or ranges (`2026-10-22..2026-10-24,2026-11-05`). They never get a slot, in any round, and the poll shows a "Skipping ..." line. They are removed before the 25-slot limit is counted.
+- New optional `players`: the players as mentions. They are pinged once, the poll has no Join / Leave buttons, only they can vote, and the round closes by itself once all of them have voted. Without it, anyone can still join. The list needs at least one player besides the GM, at most 25 in all, and `min_players` can't be higher than the list.
+- The `polls` table gains `excluded` and `fixed_roster`; an older `sessions.sqlite3` gets the columns on first use. README, `/help`, `docs/manual-checks.md` and CLAUDE.md updated. 2220 tests in total.
+- Follow-ups: the two new manual checks are still open, and mentions typed into the `players` text option are assumed to arrive as `<@id>`.
+
 ### Session polls: a date picker for tabletop sessions (`2026.42.0`)
 - New `/session_poll name days times [weeks] [start] [duration_hours] [min_players] [round_hours]`: the bot generates candidate slots (up to 25) from weekdays, times and a number of weeks and posts a poll with **Join**, **Vote**, **Leave** and **Close round** buttons. Votes are cast in a private form (**Works for me** / **Only if needed**; anything else is a no) and the poll message updates its counts and `Waiting for` list live. The buttons keep working after a restart.
 - A round closes when every joined player has voted (at least two players, so the GM's own vote never closes it), when the GM or someone with Manage Events presses **Close round**, or when the optional `round_hours` deadline passes. A slot fits when enough players can attend (`min_players`, else everyone who joined) and the GM can too. Up to 3 fitting slots come with **Confirm** buttons; with no fit the poll opens the next round (the following weeks, same days and times) and pings only the players who haven't voted, for up to 6 rounds.

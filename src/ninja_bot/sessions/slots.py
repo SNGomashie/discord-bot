@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -10,12 +11,19 @@ from zoneinfo import ZoneInfo
 # Longest accepted `days` / `times` text; also the max length of the command options.
 MAX_DAYS_LENGTH = 64
 MAX_TIMES_LENGTH = 64
+MAX_EXCLUDE_LENGTH = 200
+# Longest single excluded range, in days (a range is expanded day by day).
+MAX_EXCLUDED_RANGE_DAYS = 62
 
 INVALID_DAYS_MESSAGE = (
     "Use weekdays like `fri,sat` or `friday, saturday` (or `weekend` / `weekdays`)."
 )
 INVALID_TIMES_MESSAGE = "Use 24-hour times like `19:00,14:30`."
 INVALID_START_DATE_MESSAGE = "Use a start date like `2026-11-06` (YYYY-MM-DD)."
+INVALID_EXCLUDE_MESSAGE = (
+    "Use dates or ranges like `2026-11-05,2026-11-13..2026-11-15` (YYYY-MM-DD,"
+    f" at most {MAX_EXCLUDED_RANGE_DAYS} days per range)."
+)
 PAST_START_DATE_MESSAGE = "The start date can't be in the past."
 NO_SLOTS_MESSAGE = "There are no slots in that window; pick a later start date or more weeks."
 TOO_MANY_SLOTS_MESSAGE = "That gives {count} slots (max {max}); use fewer weeks, days or times."
@@ -42,6 +50,10 @@ _DAYS: dict[str, tuple[int, ...]] = {
 # re.ASCII: `\d` must not match other Unicode digits.
 _TIME_RE = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)", re.ASCII)
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+
+
+# An excluded run of days, both ends included.
+DateRange = tuple[date, date]
 
 
 @dataclass(frozen=True)
@@ -92,21 +104,54 @@ def parse_times(text: str) -> tuple[time, ...]:
     return tuple(sorted(times))
 
 
+def _parse_iso_date(text: str, message: str) -> date:
+    if _DATE_RE.fullmatch(text) is None:
+        raise InvalidSessionInput(message)
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise InvalidSessionInput(message) from None
+
+
 def parse_start_date(text: str, tz: ZoneInfo, now: float) -> date:
     """Parse `YYYY-MM-DD`; blank means tomorrow in `tz`. Dates before today are rejected."""
     today = datetime.fromtimestamp(now, tz).date()
     text = text.strip()
     if not text:
         return today + timedelta(days=1)
-    if _DATE_RE.fullmatch(text) is None:
-        raise InvalidSessionInput(INVALID_START_DATE_MESSAGE)
-    try:
-        parsed = date.fromisoformat(text)
-    except ValueError:
-        raise InvalidSessionInput(INVALID_START_DATE_MESSAGE) from None
+    parsed = _parse_iso_date(text, INVALID_START_DATE_MESSAGE)
     if parsed < today:
         raise InvalidSessionInput(PAST_START_DATE_MESSAGE)
     return parsed
+
+
+def parse_excluded(text: str) -> tuple[DateRange, ...]:
+    """Parse `2026-11-05,2026-11-13..2026-11-15` into sorted, de-duplicated date ranges.
+
+    Blank means no exclusions. Each item is one day or `first..last` (both included).
+    """
+    text = text.strip()
+    if not text:
+        return ()
+    ranges: set[DateRange] = set()
+    for part in _split(text, MAX_EXCLUDE_LENGTH, INVALID_EXCLUDE_MESSAGE):
+        first, dots, last = part.partition("..")
+        start = _parse_iso_date(first.strip(), INVALID_EXCLUDE_MESSAGE)
+        end = _parse_iso_date(last.strip(), INVALID_EXCLUDE_MESSAGE) if dots else start
+        if end < start or (end - start).days >= MAX_EXCLUDED_RANGE_DAYS:
+            raise InvalidSessionInput(INVALID_EXCLUDE_MESSAGE)
+        ranges.add((start, end))
+    return tuple(sorted(ranges))
+
+
+def format_excluded(ranges: Sequence[DateRange]) -> str:
+    """`Thu 22 Oct - Sat 24 Oct, Thu 5 Nov` for display."""
+    return ", ".join(
+        format_local_date(first)
+        if first == last
+        else f"{format_local_date(first)} - {format_local_date(last)}"
+        for first, last in ranges
+    )
 
 
 def next_window_start(previous_start: date, weeks: int) -> date:
@@ -133,8 +178,11 @@ def generate_slots(
     tz: ZoneInfo,
     duration_hours: float,
     now: float,
+    excluded: Sequence[DateRange] = (),
 ) -> list[Slot]:
     """Candidate slots in `[start_date, start_date + weeks * 7 days)`, oldest first.
+
+    Days inside an `excluded` range get no slots.
 
     Each slot starts at the local wall-clock time on a chosen weekday. DST: a time
     that doesn't exist that day (spring-forward gap) is skipped, not shifted; a
@@ -147,7 +195,7 @@ def generate_slots(
     starts: list[float] = []
     for offset in range(weeks * 7):
         day = start_date + timedelta(days=offset)
-        if day.weekday() not in wanted:
+        if day.weekday() not in wanted or any(first <= day <= last for first, last in excluded):
             continue
         for at in times:
             local = _local_start(day, at, tz)

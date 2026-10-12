@@ -338,3 +338,100 @@ def test_generate_slots_fall_back_uses_first_occurrence() -> None:
     assert [r.start for r in result] == [_utc(2026, 10, 25, 0, 30)]
     # Real seconds: the 4 hours span the repeated hour.
     assert result[0].end == _utc(2026, 10, 25, 4, 30)
+
+
+def test_parse_excluded_blank_is_none() -> None:
+    assert slots.parse_excluded("") == ()
+    assert slots.parse_excluded("   ") == ()
+
+
+def test_parse_excluded_days_and_ranges_sorted_and_deduplicated() -> None:
+    parsed = slots.parse_excluded(
+        " 2026-11-13..2026-11-15, 2026-10-22..2026-10-24,2026-11-05 , 2026-11-05"
+    )
+    assert parsed == (
+        (date(2026, 10, 22), date(2026, 10, 24)),
+        (date(2026, 11, 5), date(2026, 11, 5)),
+        (date(2026, 11, 13), date(2026, 11, 15)),
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "tomorrow",
+        "2026-11-5",
+        "2026-13-01",
+        "2026-02-30",
+        "2026-11-05..",
+        "..2026-11-05",
+        "2026-11-05,",
+        "2026-11-15..2026-11-13",
+        "2026-11-01..2027-11-01",  # far too long
+        "٢٠٢٦-١١-٠٥",
+    ],
+)
+def test_parse_excluded_rejects(text: str) -> None:
+    with pytest.raises(InvalidSessionInput) as error:
+        slots.parse_excluded(text)
+    assert error.value.message == slots.INVALID_EXCLUDE_MESSAGE
+
+
+def test_parse_excluded_range_length_and_text_caps() -> None:
+    assert slots.parse_excluded("2026-11-01..2027-01-01")  # 61 days after the first
+    with pytest.raises(InvalidSessionInput):
+        slots.parse_excluded("2026-11-01..2027-01-02")  # 62 days after the first
+    with pytest.raises(InvalidSessionInput):
+        slots.parse_excluded("2026-11-05," * (slots.MAX_EXCLUDE_LENGTH // 11 + 1))
+
+
+def test_generate_slots_skips_excluded_days() -> None:
+    now = _ts(2026, 10, 12, 12)
+    excluded = slots.parse_excluded("2026-10-23..2026-10-24,2026-11-06")
+    result = slots.generate_slots(
+        date(2026, 10, 21), 3, (FRI, SAT), (time(19, 0),), AMS, 4, now, excluded
+    )
+    assert [r.start for r in result] == [
+        _ts(2026, 10, 30, 19),
+        _ts(2026, 10, 31, 19),
+        _ts(2026, 11, 7, 19),
+    ]
+
+
+def test_generate_slots_exclusion_counts_before_the_slot_cap() -> None:
+    now = _ts(2026, 10, 12, 12)
+    # 26 slots without the exclusion; excluding one day brings it under the cap.
+    days = ALL_DAYS
+    times = (time(10, 0), time(20, 0))
+    with pytest.raises(InvalidSessionInput):
+        slots.generate_slots(date(2026, 10, 21), 2, days, times, AMS, 4, now)
+    result = slots.generate_slots(
+        date(2026, 10, 21), 2, days, times, AMS, 4, now, ((date(2026, 10, 21), date(2026, 10, 22)),)
+    )
+    assert len(result) == 24
+
+
+def test_generate_slots_everything_excluded_is_no_slots() -> None:
+    now = _ts(2026, 10, 12, 12)
+    with pytest.raises(InvalidSessionInput) as error:
+        slots.generate_slots(
+            date(2026, 10, 21),
+            1,
+            ALL_DAYS,
+            (time(19, 0),),
+            AMS,
+            4,
+            now,
+            ((date(2026, 10, 21), date(2026, 10, 27)),),
+        )
+    assert error.value.message == slots.NO_SLOTS_MESSAGE
+
+
+def test_format_excluded() -> None:
+    assert slots.format_excluded(()) == ""
+    assert (
+        slots.format_excluded(
+            ((date(2026, 10, 22), date(2026, 10, 24)), (date(2026, 11, 5), date(2026, 11, 5)))
+        )
+        == "Thu 22 Oct - Sat 24 Oct, Thu 5 Nov"
+    )

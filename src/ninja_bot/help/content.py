@@ -214,19 +214,20 @@ COMMANDS: tuple[CommandHelp, ...] = (
         summary="Start a poll to find a date for a game session.",
         details=(
             "Posts a poll in this channel with one slot per chosen day and start time "
-            "in the coming weeks. You run it as the GM and are joined automatically. "
-            "Players press Join to take part and Leave to drop out (their votes go with them). "
-            "Vote opens a private form where you pick the slots that work for you "
-            "and the ones that only work if needed, then Save. "
-            "Once everyone voted (or the GM presses Close round) the round closes: "
-            "if a date fits, the GM picks it with Confirm and the players are pinged; "
-            "otherwise the next weeks get a new round, up to 6 rounds. "
-            "Slot times show in everyone's own time zone."
+            "in the coming weeks. You run it as the GM. Players press Join and Leave, "
+            "or you list them with players: and the list is fixed. "
+            "Vote opens a private form: pick the slots that work and the ones that "
+            "only work if needed, then Save. When everyone voted (or the GM presses "
+            "Close round), a fitting date is picked with Confirm and the players are "
+            "pinged; otherwise the next weeks get a new round, up to 6. "
+            "Times show in your own time zone."
         ),
         examples=(
             "/session_poll name:Curse of Strahd days:fri,sat times:19:00",
             "/session_poll name:One-shot days:weekend times:14:00,19:30 weeks:3 min_players:4",
             "/session_poll name:Campaign days:sat times:13:00 start:2026-11-07 round_hours:48",
+            "/session_poll name:Strahd days:fri,sat,sun times:19:00 weeks:4 "
+            "exclude:2026-11-05..2026-11-07 players:@Alice @Bob",
         ),
         notes=(
             "A poll offers at most 25 slots; use fewer days, times or weeks if it says more.",
@@ -243,6 +244,14 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "start": "A date like 2026-11-06 (YYYY-MM-DD), not in the past. Default: tomorrow.",
             "min_players": "Without it, a date only fits when every joined player can make it.",
             "round_hours": "Hours each voting round stays open. Leave it empty for no deadline.",
+            "exclude": (
+                "Days you can't play: dates or ranges like 2026-11-05,2026-11-13..2026-11-15. "
+                "No slots are offered on them."
+            ),
+            "players": (
+                "Mention the players, like @Alice @Bob. They are pinged and Join / Leave is "
+                "turned off. Leave it empty to let anyone join."
+            ),
         },
     ),
     CommandHelp(

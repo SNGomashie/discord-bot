@@ -51,6 +51,8 @@ def make_poll(
     status: str = STATUS_VOTING,
     message_id: int | None = 555,
     poll_id: int = 7,
+    excluded: tuple[tuple[date, date], ...] = (),
+    fixed_roster: bool = False,
 ) -> Poll:
     return Poll(
         id=poll_id,
@@ -70,6 +72,8 @@ def make_poll(
         status=status,
         created_at=START - 10 * HOUR,
         round_started_at=START - 5 * HOUR,
+        excluded=excluded,
+        fixed_roster=fixed_roster,
     )
 
 
@@ -388,3 +392,28 @@ def test_slot_label_fits_the_select_limit(monkeypatch: pytest.MonkeyPatch) -> No
     assert len(label) <= SELECT_LABEL_LIMIT == 100
     monkeypatch.setattr(embed_module, "SELECT_LABEL_LIMIT", 6)
     assert format_slot_label(slot, ZoneInfo("UTC")) == "Thu 31"
+
+
+def test_poll_embed_lists_excluded_days() -> None:
+    poll = make_poll(
+        excluded=((date(2026, 11, 5), date(2026, 11, 7)), (date(2026, 11, 13), date(2026, 11, 13)))
+    )
+    embed = build_poll_embed(poll, make_slots(2), [], [GM], [GM])
+    assert embed.description is not None
+    assert (
+        content.EXCLUDED_LINE.format(dates="Thu 5 Nov - Sat 7 Nov, Fri 13 Nov") in embed.description
+    )
+
+
+def test_poll_embed_without_exclusions_has_no_skipping_line() -> None:
+    embed = build_poll_embed(make_poll(), make_slots(2), [], [GM], [GM])
+    assert embed.description is not None
+    assert "Skipping" not in embed.description
+
+
+def test_fixed_roster_poll_embed_says_players_and_drops_the_join_hint() -> None:
+    embed = build_poll_embed(make_poll(fixed_roster=True), make_slots(2), [], [GM, 101], [101])
+    assert field(embed, content.PLAYERS_FIELD) == f"<@{GM}>\n<@101>"
+    assert all(f.name != content.JOINED_FIELD for f in embed.fields)
+    assert embed.footer.text == content.POLL_FOOTER_FIXED
+    assert "Join" not in content.POLL_FOOTER_FIXED

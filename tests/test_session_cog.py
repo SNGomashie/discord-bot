@@ -21,7 +21,8 @@ from ninja_bot.cogs.sessions import (
     cooldown_message,
 )
 from ninja_bot.media.cooldown import UserCooldown
-from ninja_bot.sessions import content
+from ninja_bot.sessions import content, slots
+from ninja_bot.sessions.players import INVALID_PLAYERS_MESSAGE
 from ninja_bot.sessions.scoring import MAX_ROUNDS, Vote
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
@@ -308,6 +309,8 @@ def test_command_is_guild_only_with_described_parameters() -> None:
         "duration_hours",
         "min_players",
         "round_hours",
+        "exclude",
+        "players",
     ]
     assert all(str(param.description).strip() for param in params.values())
     assert command._params["name"].to_dict()["max_length"] == MAX_NAME_LENGTH
@@ -318,6 +321,8 @@ def test_command_is_guild_only_with_described_parameters() -> None:
     assert (params["round_hours"].min_value, params["round_hours"].max_value) == (1, 336)
     assert not params["min_players"].required
     assert not params["start"].required
+    assert not params["exclude"].required
+    assert not params["players"].required
 
 
 # Join / Leave buttons
@@ -1012,6 +1017,12 @@ def test_poll_view_is_persistent_with_join_leave_vote_and_close() -> None:
     ]
 
 
+def test_fixed_roster_poll_view_has_only_vote_and_close() -> None:
+    view = poll_view(5, fixed_roster=True)
+    labels = [item.item.label for item in view.children if isinstance(item, PollButton)]
+    assert labels == [content.VOTE_BUTTON, content.CLOSE_ROUND_BUTTON]
+
+
 async def test_button_callback_hands_the_click_to_the_cog() -> None:
     handler = MagicMock(spec=Sessions)
     handler.handle_poll_action = AsyncMock()
@@ -1058,3 +1069,84 @@ def test_only_views_imports_discord_ui() -> None:
             if any(name == "discord.ui" or name.startswith("discord.ui.") for name in names):
                 importers.append(path.relative_to(SRC).as_posix())
     assert importers == ["sessions/views.py"]
+
+
+# exclude and players
+
+
+async def test_poll_with_excluded_days_skips_them(cog: Sessions, store: SqliteSessionStore) -> None:
+    interaction = make_interaction()
+    await start_poll(
+        cog,
+        interaction,
+        days="mon,tue,wed,thu,fri,sat,sun",
+        weeks=1,
+        start="2026-11-06",
+        exclude="2026-11-07..2026-11-12",
+    )
+    _, kwargs = reply(interaction)
+    (poll,) = await store.open_polls(GUILD)
+    assert len(await store.poll_slots(poll.id, 1)) == 1
+    assert "Skipping" in kwargs["embed"].description
+
+
+async def test_bad_exclude_is_an_ephemeral_error(cog: Sessions, store: SqliteSessionStore) -> None:
+    interaction = make_interaction()
+    await start_poll(cog, interaction, exclude="soon")
+    text, kwargs = reply(interaction)
+    assert kwargs["ephemeral"] is True
+    assert text == slots.INVALID_EXCLUDE_MESSAGE
+    assert await store.open_polls(GUILD) == []
+
+
+async def test_poll_with_players_pings_only_them_and_has_no_join_buttons(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    interaction = make_interaction()
+    await start_poll(cog, interaction, players="<@2> <@3>")
+    _, kwargs = reply(interaction)
+    assert "<@2>" in kwargs["content"] and "<@3>" in kwargs["content"]
+    assert sorted(user.id for user in kwargs["allowed_mentions"].users) == [2, 3]
+    ids = [item.custom_id for item in kwargs["view"].children]
+    assert not any(":join" in i or ":leave" in i for i in ids)
+    assert any(":vote" in i for i in ids)
+    (poll,) = await store.open_polls(GUILD)
+    assert poll.fixed_roster
+    assert sorted(await store.players(poll.id)) == [interaction.user.id, 2, 3]
+
+
+async def test_bad_players_list_is_an_ephemeral_error(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    interaction = make_interaction()
+    await start_poll(cog, interaction, players="Alice and Bob")
+    text, kwargs = reply(interaction)
+    assert kwargs["ephemeral"] is True
+    assert text == INVALID_PLAYERS_MESSAGE
+    assert await store.open_polls(GUILD) == []
+
+
+async def test_old_join_button_on_a_fixed_poll_is_refused(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    await start_poll(cog, make_interaction(), players="<@2>")
+    (poll,) = await store.open_polls(GUILD)
+    click = make_interaction()
+    click.user.id = 9
+    await cog.handle_join(click, poll.id)
+    text, kwargs = reply(click)
+    assert text == content.FIXED_ROSTER_MESSAGE
+    assert kwargs["ephemeral"] is True
+    assert 9 not in await store.players(poll.id)
+
+
+async def test_outsider_cannot_open_the_vote_form_of_a_fixed_poll(
+    cog: Sessions, store: SqliteSessionStore
+) -> None:
+    await start_poll(cog, make_interaction(), players="<@2>")
+    (poll,) = await store.open_polls(GUILD)
+    click = make_interaction()
+    click.user.id = 9
+    await cog.handle_vote(click, poll.id)
+    text, _ = reply(click)
+    assert text == content.NOT_ON_LIST_MESSAGE

@@ -90,15 +90,19 @@ class PollButton(ui.DynamicItem[ui.Button[ui.View]], template=CUSTOM_ID_TEMPLATE
         await handler.handle_poll_action(interaction, self.poll_id, self.action, self.arg)
 
 
-def poll_view(poll_id: int) -> ui.View:
-    """The buttons under a voting poll message."""
+def poll_view(poll_id: int, fixed_roster: bool = False) -> ui.View:
+    """The buttons under a voting poll message; no Join / Leave for a fixed player list."""
     view = ui.View(timeout=None)
-    view.add_item(
-        PollButton(
-            poll_id, PollAction.JOIN, label=content.JOIN_BUTTON, style=discord.ButtonStyle.success
+    if not fixed_roster:
+        view.add_item(
+            PollButton(
+                poll_id,
+                PollAction.JOIN,
+                label=content.JOIN_BUTTON,
+                style=discord.ButtonStyle.success,
+            )
         )
-    )
-    view.add_item(PollButton(poll_id, PollAction.LEAVE, label=content.LEAVE_BUTTON))
+        view.add_item(PollButton(poll_id, PollAction.LEAVE, label=content.LEAVE_BUTTON))
     view.add_item(
         PollButton(
             poll_id, PollAction.VOTE, label=content.VOTE_BUTTON, style=discord.ButtonStyle.primary

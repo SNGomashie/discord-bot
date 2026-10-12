@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from ninja_bot.sessions import service
+from ninja_bot.sessions import content, service
 from ninja_bot.sessions.scoring import MAX_PLAYERS, MAX_ROUNDS, Vote
 from ninja_bot.sessions.service import (
     JOIN_MESSAGES,
@@ -738,3 +738,102 @@ async def test_rebuild_outcome_is_none_for_other_polls(tmp_path: Path) -> None:
         await svc.close_round(failed.id, GM, False, "manual")
     assert (await svc.store.get_poll(failed.id)).status == STATUS_FAILED  # type: ignore[union-attr]
     assert await svc.rebuild_outcome(failed.id) is None
+
+
+async def test_create_poll_with_excluded_days_skips_them_in_every_round(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(
+        svc,
+        weeks=1,
+        start_text="2026-11-06",
+        exclude_text="2026-11-07,2026-11-13",
+    )
+    assert poll.excluded == (
+        (date(2026, 11, 7), date(2026, 11, 7)),
+        (date(2026, 11, 13), date(2026, 11, 13)),
+    )
+    starts = [slot.start for slot in await svc.store.poll_slots(poll.id, 1)]
+    assert [datetime.fromtimestamp(s, TZ).date() for s in starts] == [date(2026, 11, 6)]
+    outcome = await svc.close_round(poll.id, GM, True, "manual")
+    assert isinstance(outcome, RoundAdvanced)
+    days = [datetime.fromtimestamp(s.start, TZ).date() for s in outcome.slots]
+    # Window 2 is 13-19 Nov: Fri 13 is excluded, Sat 14 is not.
+    assert days == [date(2026, 11, 14)]
+
+
+async def test_create_poll_rejects_bad_exclude(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    with pytest.raises(InvalidSessionInput):
+        await _create(svc, exclude_text="next week")
+
+
+async def test_create_poll_with_players_fixes_the_roster(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, players_text=f"<@{PLAYER}> <@{OTHER}> <@{PLAYER}>")
+    assert poll.fixed_roster
+    assert sorted(await svc.store.players(poll.id)) == [GM, PLAYER, OTHER]
+
+
+async def test_create_poll_without_players_keeps_manual_joining(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc)
+    assert not poll.fixed_roster
+
+
+async def test_players_list_may_name_the_gm_but_needs_someone_else(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    with pytest.raises(InvalidSessionInput) as error:
+        await _create(svc, players_text=f"<@{GM}>")
+    assert error.value.message == content.PLAYERS_ONLY_GM_MESSAGE
+    poll = await _create(svc, players_text=f"<@{GM}> <@{PLAYER}>")
+    assert sorted(await svc.store.players(poll.id)) == [GM, PLAYER]
+
+
+async def test_players_list_validation(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    with pytest.raises(InvalidSessionInput):
+        await _create(svc, players_text="Alice")
+    too_many = " ".join(f"<@{1000 + n}>" for n in range(MAX_PLAYERS))
+    with pytest.raises(InvalidSessionInput) as error:
+        await _create(svc, players_text=too_many)
+    assert error.value.message == content.TOO_MANY_PLAYERS_MESSAGE.format(
+        count=MAX_PLAYERS + 1, max=MAX_PLAYERS
+    )
+    with pytest.raises(InvalidSessionInput) as error:
+        await _create(svc, players_text=f"<@{PLAYER}> <@{OTHER}>", min_players=4)
+    assert error.value.message == content.MIN_PLAYERS_ABOVE_LIST_MESSAGE.format(min=4, count=3)
+    assert await _create(svc, players_text=f"<@{PLAYER}> <@{OTHER}>", min_players=3)
+
+
+async def test_fixed_roster_refuses_join_and_leave(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, players_text=f"<@{PLAYER}>")
+    assert await svc.join(poll.id, OTHER) is JoinResult.FIXED_ROSTER
+    assert await svc.join(poll.id, PLAYER) is JoinResult.FIXED_ROSTER
+    assert await svc.leave(poll.id, PLAYER) is JoinResult.FIXED_ROSTER
+    assert await svc.leave(poll.id, GM) is JoinResult.FIXED_ROSTER
+    assert sorted(await svc.store.players(poll.id)) == [GM, PLAYER]
+
+
+async def test_fixed_roster_only_lets_listed_players_vote(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, players_text=f"<@{PLAYER}>")
+    ids = await _slot_ids(svc, poll)
+    assert await svc.submit_vote(poll.id, OTHER, ids[:1], []) is VoteResult.NOT_ON_LIST
+    assert await svc.submit_vote(poll.id, PLAYER, ids[:1], []) is VoteResult.RECORDED
+    open_poll = await _create(svc)
+    assert await svc.submit_vote(open_poll.id, OTHER, [], []) is VoteResult.NOT_JOINED
+
+
+async def test_fixed_roster_round_closes_when_all_listed_players_voted(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    poll = await _create(svc, players_text=f"<@{PLAYER}>")
+    ids = await _slot_ids(svc, poll)
+    await svc.submit_vote(poll.id, GM, ids[:1], [])
+    players, slots, votes = await svc.round_state(poll)
+    assert should_auto_close(poll, players, [s.id for s in slots], votes, svc.clock()) is None
+    await svc.submit_vote(poll.id, PLAYER, ids[:1], [])
+    players, slots, votes = await svc.round_state(poll)
+    assert (
+        should_auto_close(poll, players, [s.id for s in slots], votes, svc.clock()) == "all_voted"
+    )

@@ -10,6 +10,7 @@ from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from ninja_bot.sessions import content
+from ninja_bot.sessions.players import parse_players
 from ninja_bot.sessions.scoring import (
     MAX_PLAYERS,
     MAX_ROUNDS,
@@ -32,6 +33,7 @@ from ninja_bot.sessions.slots import (
     generate_slots,
     next_window_start,
     parse_days,
+    parse_excluded,
     parse_start_date,
     parse_times,
 )
@@ -61,6 +63,7 @@ class JoinResult(Enum):
     NOT_JOINED = "not_joined"
     POLL_CLOSED = "poll_closed"
     GM_CANNOT_LEAVE = "gm_cannot_leave"
+    FIXED_ROSTER = "fixed_roster"
 
 
 class VoteResult(Enum):
@@ -68,6 +71,7 @@ class VoteResult(Enum):
     NOT_JOINED = "not_joined"
     POLL_CLOSED = "poll_closed"
     UNKNOWN_SLOT = "unknown_slot"
+    NOT_ON_LIST = "not_on_list"
 
 
 JOIN_MESSAGES: dict[JoinResult, str] = {
@@ -78,6 +82,7 @@ JOIN_MESSAGES: dict[JoinResult, str] = {
     JoinResult.NOT_JOINED: content.NOT_JOINED_MESSAGE,
     JoinResult.POLL_CLOSED: content.POLL_CLOSED_MESSAGE,
     JoinResult.GM_CANNOT_LEAVE: content.GM_CANNOT_LEAVE_MESSAGE,
+    JoinResult.FIXED_ROSTER: content.FIXED_ROSTER_MESSAGE,
 }
 
 VOTE_MESSAGES: dict[VoteResult, str] = {
@@ -85,6 +90,7 @@ VOTE_MESSAGES: dict[VoteResult, str] = {
     VoteResult.NOT_JOINED: content.NOT_JOINED_MESSAGE,
     VoteResult.POLL_CLOSED: content.POLL_CLOSED_MESSAGE,
     VoteResult.UNKNOWN_SLOT: content.UNKNOWN_SLOT_MESSAGE,
+    VoteResult.NOT_ON_LIST: content.NOT_ON_LIST_MESSAGE,
 }
 
 
@@ -248,8 +254,14 @@ class SessionService:
         duration_hours: int = DEFAULT_DURATION_HOURS,
         min_players: int | None = None,
         round_hours: int | None = None,
+        exclude_text: str = "",
+        players_text: str = "",
     ) -> Poll:
-        """Validate the input and store a new poll in round 1; raises `InvalidSessionInput`."""
+        """Validate the input and store a new poll in round 1; raises `InvalidSessionInput`.
+
+        `exclude_text` lists days without slots; `players_text` (mentions) fixes the player
+        list, so nobody can join or leave, and the GM is added to it.
+        """
         name = name.strip()
         if not name:
             raise InvalidSessionInput(content.BLANK_NAME_MESSAGE)
@@ -263,9 +275,11 @@ class SessionService:
             _check_range(round_hours, 1, MAX_ROUND_HOURS, content.INVALID_ROUND_HOURS_MESSAGE)
         days = parse_days(days_text)
         times = parse_times(times_text)
+        excluded = parse_excluded(exclude_text)
+        invited = self._invited(gm_id, players_text, min_players)
         now = self.clock()
         start = parse_start_date(start_text, self.tz, now)
-        slots = generate_slots(start, weeks, days, times, self.tz, duration_hours, now)
+        slots = generate_slots(start, weeks, days, times, self.tz, duration_hours, now, excluded)
         if len(await self.store.open_polls(guild_id)) >= MAX_OPEN_POLLS:
             message = content.TOO_MANY_OPEN_POLLS_MESSAGE.format(max=MAX_OPEN_POLLS)
             raise InvalidSessionInput(message)
@@ -283,7 +297,28 @@ class SessionService:
             window_start=start,
             slots=slots,
             now=now,
+            excluded=excluded,
+            player_ids=invited,
         )
+
+    @staticmethod
+    def _invited(gm_id: int, players_text: str, min_players: int | None) -> tuple[int, ...]:
+        """The listed players besides the GM (empty without a list); raises on a bad list."""
+        listed = parse_players(players_text)
+        if not listed:
+            return ()
+        roster = tuple(dict.fromkeys((gm_id, *listed)))
+        if len(roster) < 2:
+            raise InvalidSessionInput(content.PLAYERS_ONLY_GM_MESSAGE)
+        if len(roster) > MAX_PLAYERS:
+            raise InvalidSessionInput(
+                content.TOO_MANY_PLAYERS_MESSAGE.format(count=len(roster), max=MAX_PLAYERS)
+            )
+        if min_players is not None and min_players > len(roster):
+            raise InvalidSessionInput(
+                content.MIN_PLAYERS_ABOVE_LIST_MESSAGE.format(min=min_players, count=len(roster))
+            )
+        return tuple(player for player in roster if player != gm_id)
 
     async def _voting_poll(self, poll_id: int) -> Poll | None:
         poll = await self.store.get_poll(poll_id)
@@ -294,6 +329,8 @@ class SessionService:
             poll = await self._voting_poll(poll_id)
             if poll is None:
                 return JoinResult.POLL_CLOSED
+            if poll.fixed_roster:
+                return JoinResult.FIXED_ROSTER
             players = await self.store.players(poll_id)
             if user_id in players:
                 return JoinResult.ALREADY_JOINED
@@ -323,6 +360,8 @@ class SessionService:
             poll = await self._voting_poll(poll_id)
             if poll is None:
                 return JoinResult.POLL_CLOSED
+            if poll.fixed_roster:
+                return JoinResult.FIXED_ROSTER
             if user_id == poll.gm_id:
                 return JoinResult.GM_CANNOT_LEAVE
             if user_id not in await self.store.players(poll_id):
@@ -346,7 +385,7 @@ class SessionService:
             if poll is None:
                 return VoteResult.POLL_CLOSED
             if user_id not in await self.store.players(poll_id):
-                return VoteResult.NOT_JOINED
+                return VoteResult.NOT_ON_LIST if poll.fixed_roster else VoteResult.NOT_JOINED
             slot_ids = [slot.id for slot in await self.store.poll_slots(poll_id, poll.round_number)]
             if not set(yes_ids) | set(maybe_ids) <= set(slot_ids):
                 return VoteResult.UNKNOWN_SLOT
@@ -461,6 +500,7 @@ class SessionService:
                 self.tz,
                 poll.duration_hours,
                 self.clock(),
+                poll.excluded,
             )
         except InvalidSessionInput:
             await self.store.set_status(poll.id, STATUS_FAILED)

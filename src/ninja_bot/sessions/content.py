@@ -7,6 +7,11 @@ BLANK_NAME_MESSAGE = "Give the poll a name."
 NAME_TOO_LONG_MESSAGE = "The poll name can be at most {max} characters."
 INVALID_WEEKS_MESSAGE = "`weeks` must be between 1 and {max}."
 INVALID_DURATION_MESSAGE = "`duration_hours` must be between 1 and {max}."
+PLAYERS_ONLY_GM_MESSAGE = "Mention at least one player besides yourself, or leave `players` out."
+TOO_MANY_PLAYERS_MESSAGE = "That list has {count} players (max {max}, you included)."
+MIN_PLAYERS_ABOVE_LIST_MESSAGE = (
+    "`min_players` is {min} but only {count} players are on the list (you included)."
+)
 INVALID_MIN_PLAYERS_MESSAGE = "`min_players` must be between 2 and {max}."
 INVALID_ROUND_HOURS_MESSAGE = "`round_hours` must be between 1 and {max}."
 TOO_MANY_OPEN_POLLS_MESSAGE = (
@@ -20,6 +25,8 @@ POLL_FULL_MESSAGE = "This poll is full ({max} players)."
 LEFT_MESSAGE = "You left the poll; your votes were removed."
 NOT_JOINED_MESSAGE = "You haven't joined this poll. Press **Join** first."
 POLL_CLOSED_MESSAGE = "This poll isn't taking votes any more."
+FIXED_ROSTER_MESSAGE = "This poll has a fixed player list, so nobody can join or leave. Ask the GM."
+NOT_ON_LIST_MESSAGE = "You're not on this poll's player list. Ask the GM."
 GM_CANNOT_LEAVE_MESSAGE = "You run this poll, so you can't leave it. Cancel it instead."
 
 # Votes.
@@ -46,8 +53,13 @@ SLOT_LINE = "`{index}` {start} · ✅ {yes} · 🤔 {if_needed}"
 DEADLINE_LINE = "Round closes {deadline}"
 JOINED_FIELD = "Joined"
 JOINED_CONTINUED_FIELD = "Joined (cont.)"
+PLAYERS_FIELD = "Players"
+PLAYERS_CONTINUED_FIELD = "Players (cont.)"
+EXCLUDED_LINE = "Skipping {dates}"
 WAITING_FIELD = "Waiting for"
 MORE_LINE = "+{count} more"
+POLL_FOOTER_FIXED = "Press Vote. ✅ works · 🤔 only if needed. Times show in your own time zone."
+POLL_INVITE_PING = "{players} you're on the player list for this poll. Press **Vote**."
 POLL_FOOTER = (
     "Press Join, then Vote. ✅ works · 🤔 only if needed. Times show in your own time zone."
 )

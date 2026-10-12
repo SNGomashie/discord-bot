@@ -17,7 +17,7 @@ from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.sessions import content
 from ninja_bot.sessions.scoring import MAX_ROUNDS, SlotScore, Vote, Votes
 from ninja_bot.sessions.service import MAX_NAME_LENGTH, FailReason
-from ninja_bot.sessions.slots import format_local_time
+from ninja_bot.sessions.slots import format_excluded, format_local_time
 from ninja_bot.sessions.store import STATUS_AWAITING_CONFIRM, Poll, PollSlot, Session
 
 DESCRIPTION_LIMIT = 4096
@@ -76,6 +76,8 @@ def build_poll_embed(
         _poll_details(poll),
         "",
     ]
+    if poll.excluded:
+        header.insert(2, content.EXCLUDED_LINE.format(dates=format_excluded(poll.excluded)))
     slot_lines = []
     for index, slot in enumerate(slots, start=1):
         score = by_slot.get(slot.id)
@@ -93,11 +95,16 @@ def build_poll_embed(
     embed.description = _truncate("\n".join(header + slot_lines), DESCRIPTION_LIMIT)
 
     joined = [_person(user_id, names) for user_id in players]
+    first_name, more_name = (
+        (content.PLAYERS_FIELD, content.PLAYERS_CONTINUED_FIELD)
+        if poll.fixed_roster
+        else (content.JOINED_FIELD, content.JOINED_CONTINUED_FIELD)
+    )
     for index, chunk in enumerate(pack_lines(joined, FIELD_VALUE_LIMIT)):
-        name = content.JOINED_FIELD if index == 0 else content.JOINED_CONTINUED_FIELD
+        name = first_name if index == 0 else more_name
         _add_field(embed, name, chunk)
     _add_field(embed, content.WAITING_FIELD, fit_with_more([mention(p) for p in pending]))
-    embed.set_footer(text=content.POLL_FOOTER)
+    embed.set_footer(text=content.POLL_FOOTER_FIXED if poll.fixed_roster else content.POLL_FOOTER)
     return embed
 
 

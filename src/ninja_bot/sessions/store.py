@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote
-from ninja_bot.sessions.slots import Slot
+from ninja_bot.sessions.slots import DateRange, Slot
 
 STATUS_VOTING = "voting"
 STATUS_AWAITING_CONFIRM = "awaiting_confirm"
@@ -34,7 +34,8 @@ _SCHEMA = (
     " weeks INTEGER NOT NULL, duration_hours REAL NOT NULL, min_players INTEGER NOT NULL,"
     " round_hours REAL NOT NULL, round_number INTEGER NOT NULL, window_start TEXT NOT NULL,"
     " status TEXT NOT NULL, created_at REAL NOT NULL, round_started_at REAL NOT NULL,"
-    " result_message_id INTEGER NULL)",
+    " result_message_id INTEGER NULL, excluded TEXT NOT NULL DEFAULT '',"
+    " fixed_roster INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX IF NOT EXISTS polls_guild_status ON polls (guild_id, status)",
     "CREATE TABLE IF NOT EXISTS poll_slots (id INTEGER PRIMARY KEY,"
     " poll_id INTEGER NOT NULL, round_number INTEGER NOT NULL,"
@@ -58,10 +59,17 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS poll_nudges_round ON poll_nudges (poll_id, round_number)",
 )
 
+# Columns added after the first schema; older databases get them on first use.
+_ADDED_POLL_COLUMNS = (
+    ("result_message_id", "INTEGER NULL"),
+    ("excluded", "TEXT NOT NULL DEFAULT ''"),
+    ("fixed_roster", "INTEGER NOT NULL DEFAULT 0"),
+)
+
 _POLL_COLUMNS = (
     "id, guild_id, channel_id, message_id, name, gm_id, days, times, weeks, duration_hours,"
     " min_players, round_hours, round_number, window_start, status, created_at, round_started_at,"
-    " result_message_id"
+    " result_message_id, excluded, fixed_roster"
 )
 _SLOT_COLUMNS = 'id, poll_id, round_number, start, "end"'
 _SESSION_COLUMNS = (
@@ -95,6 +103,10 @@ class Poll:
     created_at: float
     round_started_at: float
     result_message_id: int | None = None
+    # Days without slots in every round (the GM can't play then).
+    excluded: tuple[DateRange, ...] = ()
+    # True when the GM listed the players: nobody can join or leave.
+    fixed_roster: bool = False
 
 
 @dataclass(frozen=True)
@@ -141,6 +153,18 @@ def _split_times(text: str) -> tuple[time, ...]:
     return tuple(time.fromisoformat(at) for at in text.split(",")) if text else ()
 
 
+def _join_excluded(ranges: Sequence[DateRange]) -> str:
+    return ",".join(f"{first.isoformat()}..{last.isoformat()}" for first, last in ranges)
+
+
+def _split_excluded(text: str) -> tuple[DateRange, ...]:
+    ranges: list[DateRange] = []
+    for part in text.split(",") if text else ():
+        first, _, last = part.partition("..")
+        ranges.append((date.fromisoformat(first), date.fromisoformat(last)))
+    return tuple(ranges)
+
+
 def _poll(row: tuple[Any, ...]) -> Poll:
     (
         poll_id,
@@ -161,6 +185,8 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         created_at,
         round_started_at,
         result_message_id,
+        excluded,
+        fixed_roster,
     ) = row
     return Poll(
         id=int(poll_id),
@@ -181,6 +207,8 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         created_at=float(created_at),
         round_started_at=float(round_started_at),
         result_message_id=None if result_message_id is None else int(result_message_id),
+        excluded=_split_excluded(str(excluded)),
+        fixed_roster=bool(fixed_roster),
     )
 
 
@@ -281,8 +309,11 @@ class SessionStore(Protocol):
         window_start: date,
         slots: Sequence[Slot],
         now: float,
+        excluded: Sequence[DateRange] = (),
+        player_ids: Sequence[int] = (),
     ) -> Poll:
-        """Insert a `voting` poll in round 1 with its slots and the GM joined, atomically."""
+        """Insert a `voting` poll in round 1 with its slots, the GM and `player_ids` joined
+        (a non-empty list makes the roster fixed), atomically."""
         ...
 
     async def get_poll(self, poll_id: int) -> Poll | None:
@@ -422,6 +453,14 @@ class SqliteSessionStore:
         self._path = Path(path)
         self._ready = False
 
+    @staticmethod
+    def _add_missing_columns(conn: sqlite3.Connection) -> None:
+        # CREATE TABLE IF NOT EXISTS leaves an older `polls` table as it was.
+        have = {str(row[1]) for row in conn.execute("PRAGMA table_info(polls)")}
+        for column, definition in _ADDED_POLL_COLUMNS:
+            if column not in have:
+                conn.execute(f"ALTER TABLE polls ADD COLUMN {column} {definition}")
+
     def _connect(self) -> sqlite3.Connection:
         if not self._ready:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -430,6 +469,7 @@ class SqliteSessionStore:
             with conn:
                 for statement in _SCHEMA:
                     conn.execute(statement)
+                self._add_missing_columns(conn)
             self._ready = True
         return conn
 
@@ -448,13 +488,15 @@ class SqliteSessionStore:
         window_start: date,
         slots: Sequence[Slot],
         now: float,
+        excluded: Sequence[DateRange] = (),
+        player_ids: Sequence[int] = (),
     ) -> Poll:
         with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 "INSERT INTO polls (guild_id, channel_id, message_id, name, gm_id, days, times,"
                 " weeks, duration_hours, min_players, round_hours, round_number, window_start,"
-                " status, created_at, round_started_at)"
-                " VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                " status, created_at, round_started_at, excluded, fixed_roster)"
+                " VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
                 (
                     guild_id,
                     channel_id,
@@ -470,6 +512,8 @@ class SqliteSessionStore:
                     STATUS_VOTING,
                     now,
                     now,
+                    _join_excluded(excluded),
+                    1 if player_ids else 0,
                 ),
             )
             poll_id = cursor.lastrowid
@@ -478,8 +522,9 @@ class SqliteSessionStore:
                 'INSERT INTO poll_slots (poll_id, round_number, start, "end") VALUES (?, 1, ?, ?)',
                 [(poll_id, slot.start, slot.end) for slot in slots],
             )
-            conn.execute(
-                "INSERT INTO poll_players (poll_id, user_id) VALUES (?, ?)", (poll_id, gm_id)
+            conn.executemany(
+                "INSERT OR IGNORE INTO poll_players (poll_id, user_id) VALUES (?, ?)",
+                [(poll_id, user_id) for user_id in (gm_id, *player_ids)],
             )
             row = conn.execute(
                 f"SELECT {_POLL_COLUMNS} FROM polls WHERE id = ?", (poll_id,)
@@ -753,6 +798,8 @@ class SqliteSessionStore:
         window_start: date,
         slots: Sequence[Slot],
         now: float,
+        excluded: Sequence[DateRange] = (),
+        player_ids: Sequence[int] = (),
     ) -> Poll:
         return await asyncio.to_thread(
             self._create_poll,
@@ -769,6 +816,8 @@ class SqliteSessionStore:
             window_start,
             slots,
             now,
+            excluded,
+            player_ids,
         )
 
     async def get_poll(self, poll_id: int) -> Poll | None:

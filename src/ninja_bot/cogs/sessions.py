@@ -30,6 +30,7 @@ from ninja_bot.sessions.embed import (
     mention,
     timestamp,
 )
+from ninja_bot.sessions.players import MAX_PLAYERS_TEXT_LENGTH
 from ninja_bot.sessions.reminders import SessionNotifier
 from ninja_bot.sessions.scoring import MAX_PLAYERS, Vote, pending_players, score_slots
 from ninja_bot.sessions.service import (
@@ -57,6 +58,7 @@ from ninja_bot.sessions.slots import (
     DEFAULT_DURATION_HOURS,
     DEFAULT_WEEKS,
     MAX_DAYS_LENGTH,
+    MAX_EXCLUDE_LENGTH,
     MAX_TIMES_LENGTH,
     MAX_WEEKS,
     InvalidSessionInput,
@@ -300,6 +302,8 @@ class Sessions(commands.Cog):
         ),
         min_players=f"Players needed for a date to fit (2-{MAX_PLAYERS}, default everyone)",
         round_hours=f"Close each round after this many hours (1-{MAX_ROUND_HOURS}, optional)",
+        exclude="Days to skip: dates or ranges, e.g. 2026-11-05,2026-11-13..2026-11-15",
+        players="Mention the players to fix the list (then nobody can join or leave)",
     )
     async def session_poll(
         self,
@@ -312,6 +316,8 @@ class Sessions(commands.Cog):
         duration_hours: app_commands.Range[int, 1, MAX_DURATION_HOURS] = DEFAULT_DURATION_HOURS,
         min_players: app_commands.Range[int, 2, MAX_PLAYERS] | None = None,
         round_hours: app_commands.Range[int, 1, MAX_ROUND_HOURS] | None = None,
+        exclude: app_commands.Range[str, 1, MAX_EXCLUDE_LENGTH] | None = None,
+        players: app_commands.Range[str, 1, MAX_PLAYERS_TEXT_LENGTH] | None = None,
     ) -> None:
         await self.handle_session_poll(
             interaction,
@@ -323,6 +329,8 @@ class Sessions(commands.Cog):
             duration_hours,
             min_players,
             round_hours,
+            exclude,
+            players,
         )
 
     async def handle_session_poll(
@@ -336,6 +344,8 @@ class Sessions(commands.Cog):
         duration_hours: int = DEFAULT_DURATION_HOURS,
         min_players: int | None = None,
         round_hours: int | None = None,
+        exclude: str | None = None,
+        players: str | None = None,
     ) -> None:
         guild = interaction.guild
         channel = interaction.channel
@@ -371,6 +381,8 @@ class Sessions(commands.Cog):
                 duration_hours=duration_hours,
                 min_players=min_players,
                 round_hours=round_hours,
+                exclude=exclude or "",
+                players=players or "",
             )
             if poll is not None:
                 posted = await self._post_poll(interaction, poll)
@@ -392,6 +404,8 @@ class Sessions(commands.Cog):
         duration_hours: int,
         min_players: int | None,
         round_hours: int | None,
+        exclude: str,
+        players: str,
     ) -> Poll | None:
         """The new poll, or None after replying with the (ephemeral) reason."""
         try:
@@ -407,6 +421,8 @@ class Sessions(commands.Cog):
                 duration_hours=duration_hours,
                 min_players=min_players,
                 round_hours=round_hours,
+                exclude_text=exclude,
+                players_text=players,
             )
         except InvalidSessionInput as exc:
             await _send_safely(interaction.response.send_message(exc.message, ephemeral=True))
@@ -429,8 +445,16 @@ class Sessions(commands.Cog):
             await self._discard(poll)
             return False
         try:
+            invited = await self._invited(poll)
             response = await interaction.response.send_message(
-                embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none()
+                content=content.POLL_INVITE_PING.format(
+                    players=" ".join(mention(user_id) for user_id in invited)
+                )
+                if invited
+                else None,
+                embed=embed,
+                view=view,
+                allowed_mentions=_pinging(invited) if invited else discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
             log.warning("Could not post session poll %d", poll.id, exc_info=True)
@@ -446,6 +470,16 @@ class Sessions(commands.Cog):
             log.exception("Could not store the message id of session poll %d", poll.id)
         return True
 
+    async def _invited(self, poll: Poll) -> list[int]:
+        """The listed players to ping when the poll is posted (none without a fixed list)."""
+        if not poll.fixed_roster:
+            return []
+        return [
+            user_id
+            for user_id in await self.service.store.players(poll.id)
+            if user_id != poll.gm_id
+        ]
+
     async def _discard(self, poll: Poll) -> None:
         """Cancel a poll nobody can see, so it doesn't count towards the open-poll limit."""
         try:
@@ -455,7 +489,7 @@ class Sessions(commands.Cog):
 
     async def poll_message(self, poll: Poll) -> tuple[discord.Embed, discord.ui.View]:
         """The poll embed for the current round and its buttons."""
-        return await self.poll_embed(poll), poll_view(poll.id)
+        return await self.poll_embed(poll), poll_view(poll.id, poll.fixed_roster)
 
     async def poll_embed(self, poll: Poll) -> discord.Embed:
         """The poll embed for the current round."""
@@ -661,9 +695,10 @@ class Sessions(commands.Cog):
             )
             return
         if user_id not in await store.players(poll_id):
-            await _send_safely(
-                interaction.response.send_message(content.NOT_JOINED_MESSAGE, ephemeral=True)
+            message = (
+                content.NOT_ON_LIST_MESSAGE if poll.fixed_roster else content.NOT_JOINED_MESSAGE
             )
+            await _send_safely(interaction.response.send_message(message, ephemeral=True))
             return
         slots = await store.poll_slots(poll_id, poll.round_number)
         votes = await store.votes(poll_id, poll.round_number)
