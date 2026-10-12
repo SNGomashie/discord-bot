@@ -44,12 +44,15 @@ All commands are slash commands, which Discord delivers as interactions, and rep
 | Send Messages | Post replies and any non-interaction messages |
 | Embed Links | Show the info embeds |
 | Attach Files | Upload downloaded audio and video |
+| Read Message History | Reply to a session poll message with a vote nudge (Discord requires it for replies) |
 
-Permission integer: **52224** (`1024 + 2048 + 16384 + 32768`). No administrator, no role or member management.
+Permission integer: **117760** (`1024 + 2048 + 16384 + 32768 + 65536`). A bot invited earlier with `52224` lacks Read Message History; grant it to the bot's role (or in the poll channels) instead of re-inviting. No administrator, no role or member management.
 
 **Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links` or `unavailable (Discord error)` (a temporary Discord failure; retried next cycle), and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
 
 **Activity channel (`ACTIVITY_CHANNEL_ID`):** the monthly activity overview is a normal message too, with the same requirements: **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread) in that channel. Otherwise the bot logs one warning, `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>` (same causes as above), and posts nothing until the channel works. See the [README](../README.md#monthly-auto-post).
+
+**Session poll channels:** `/session_poll` checks the channel it is run in for the same **View Channel, Send Messages and Embed Links** (Send Messages in Threads for a thread), because later poll updates are posted there as normal messages. Without them the GM gets a private refusal and no poll is created. Vote nudges are replies to the poll message, so the channel also needs **Read Message History**; it isn't checked up front, and without it each nudge is refused by Discord and logged (`Could not send session poll nudge`). Deadline closes, reminders and nudges check the channel again every minute; a broken channel logs one warning per cause, `Can't post session poll messages in channel <id>: <cause>`, and nothing is posted until it works. Session polls need no new intent. See the [README](../README.md#session-polls).
 
 Notes:
 - Users need **Use Application Commands** in the channel to see and run the commands. This is a user permission, not a bot one, and is on by default.
@@ -60,7 +63,7 @@ Notes:
 Replace `APP_ID` with the Application ID and open the URL while logged in as the server owner (or someone with *Manage Server*):
 
 ```
-https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot%20applications.commands&permissions=52224
+https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot%20applications.commands&permissions=117760
 ```
 
 Both scopes are required:
@@ -159,6 +162,8 @@ LEETIFY_API_KEY=<leetify api key>
 # Optional: monthly activity report channel and its time zone.
 # ACTIVITY_CHANNEL_ID=<channel id>
 # ACTIVITY_TIMEZONE=Europe/Amsterdam
+# Optional: session poll time zone (default: ACTIVITY_TIMEZONE).
+# SESSIONS_TIMEZONE=Europe/Amsterdam
 # Optional: track Toasty ;pokemon catches (enable Message Content Intent in the portal first).
 # TOASTY_BOT_ID=<toasty user id>
 ```
@@ -199,7 +204,7 @@ systemctl status ninja-bot
 journalctl -u ninja-bot -f       # live logs
 ```
 
-The bot logs at INFO level to stderr, which journald keeps along with stdout. The bot finds `.env` through `python-dotenv`'s default search (`load_dotenv()` with no path), which works here because the install is editable and the file sits in the repo root; a variable already set in the unit (for example `Environment=`) wins over `.env`. The unit's `WorkingDirectory` still matters because the default `DATA_DIR` (`data`) is relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which contains the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. It also holds `activity.sqlite3`: the recorded **voice sessions** (Discord has no voice history, so losing it loses the history for good), the log of which monthly activity overviews were already posted (an old copy can make a month's overview be posted again), and, with `TOASTY_BOT_ID`, the recorded Toasty `;pokemon` events (no message text). If you set `DATA_DIR`, the same applies to that directory. The tables and their meaning are described in the [README](../README.md#data-and-storage).
+The bot logs at INFO level to stderr, which journald keeps along with stdout. The bot finds `.env` through `python-dotenv`'s default search (`load_dotenv()` with no path), which works here because the install is editable and the file sits in the repo root; a variable already set in the unit (for example `Environment=`) wins over `.env`. The unit's `WorkingDirectory` still matters because the default `DATA_DIR` (`data`) is relative to it. `data/` is gitignored and survives `git pull`. It holds `cs2.sqlite3`, which contains the Discord-to-Steam **link list** (for `/scoreboard`, `/profile`, `/leaderboard` and auto-posts) and the **posted-match log** (which matches were already announced and which players were seeded). It must be writable by `ninja` and **backed up** (for example with Proxmox backups of the container); losing it means everyone has to `/link` again, and an old copy of it can make recent matches be posted again. It also holds `activity.sqlite3`: the recorded **voice sessions** (Discord has no voice history, so losing it loses the history for good), the log of which monthly activity overviews were already posted (an old copy can make a month's overview be posted again), and, with `TOASTY_BOT_ID`, the recorded Toasty `;pokemon` events (no message text). It also holds `sessions.sqlite3`: the **session polls** with their candidate slots, players and votes, the confirmed **sessions**, and which reminders and nudges were sent (losing it loses every open poll, its votes and every upcoming session with its reminders; an old copy can make reminders and nudges be sent again). If you set `DATA_DIR`, the same applies to that directory. The tables and their meaning are described in the [README](../README.md#data-and-storage).
 
 ### 3.6 Verify
 
@@ -262,9 +267,10 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | `LEETIFY_API_KEY` | optional | recommended | Leetify public API key for `/link`, `/scoreboard`, `/profile` ([leetify.com/app/developer](https://leetify.com/app/developer)). Empty = requests go unauthenticated |
 | `CS2_CHANNEL_ID` | optional | optional | Channel for automatic CS2 match posts (new matches of linked players). Unset = no auto-posts. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `CS2_POLL_SECONDS` | optional | optional | How often (seconds) to check Leetify for new matches when `CS2_CHANNEL_ID` is set. Default `300`. Each cycle makes one Leetify request per linked player, so don't set it very low |
-| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log; `activity.sqlite3`: voice sessions, Toasty `;pokemon` events and posted monthly reports). Default `data` (relative to `WorkingDirectory`) |
+| `DATA_DIR` | optional | optional | Directory for persistent data (`cs2.sqlite3`: links and the posted-match log; `activity.sqlite3`: voice sessions, Toasty `;pokemon` events and posted monthly reports; `sessions.sqlite3`: session polls, slots, players, votes, confirmed sessions, sent reminders and nudges). Default `data` (relative to `WorkingDirectory`) |
 | `ACTIVITY_CHANNEL_ID` | optional | optional | Channel for the automatic monthly activity report (previous month, posted once after the month ends in `ACTIVITY_TIMEZONE`). Unset = no monthly auto-post. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `ACTIVITY_TIMEZONE` | optional | optional | IANA time zone name for activity month boundaries. Default `UTC`; an unknown name is a `ConfigError` at startup |
+| `SESSIONS_TIMEZONE` | optional | optional | IANA time zone name for session poll slot times. Default: the value of `ACTIVITY_TIMEZONE`; an unknown name is a `ConfigError` at startup |
 | `TOASTY_BOT_ID` | optional | optional | User ID of the Toasty bot. Set = track `;pokemon` catches and request the Message Content intent, which must also be enabled in the Developer Portal. Unset = no Toasty tracking |
 
 ## 6. Troubleshooting

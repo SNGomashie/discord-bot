@@ -1,4 +1,4 @@
-# Ralph progress log — started 2026-10-11 (feature: activity-tracking; patterns carried over)
+# Ralph progress log — started 2026-10-11 (feature: session-polls review follow-ups; patterns carried over)
 
 ## Codebase Patterns
 - Local-time splitting: `periods.split_local(start, end, tz, "hour"|"day")` yields (piece_start, piece_end, local) in real seconds with the DST no-advance guard; use it instead of hand-rolled cursor loops. On the fall-back day the repeated 02:00 hour is one 2-hour piece (local.hour 2).
@@ -78,135 +78,73 @@
 - Activity auto-post (activity/reporter.py, cogs/activity.py): `MonthlyReporter(store, tz, clock)`; `due_month` walks months from `month_of(store.first_session_start())` up to (not incl.) the current local month, returning the first that is unposted and has positive clipped time (`clip`); empty months are skipped, never marked. `Activity(..., channel_id=)` starts `report_loop` (hourly, `REPORT_CHECK_SECONDS`) in `cog_load` only with a channel. `run_report_cycle`: due -> `_post_channel` (cs2 `channel_problem`; problems warn once and leave the month unposted) -> `_post_report` (build + send in try, `confirm` in finally). Tests: tests/test_activity_autopost.py (real SqliteActivityStore + FakeClock, `make_channel`/`make_bot`), tests/test_activity_reporter.py.
 - Pokémon stats (activity/pokemon_stats.py): `pokemon_stats` filters events to the local month itself; `impatient_awards` returns `Award`s with `AwardKey.IMPATIENT` (value = hits) that go into `MonthlyReport.awards`, but `build_monthly_embed` renders keys in `POKEMON_AWARDS` in the Pokémon field instead of Awards. `UserProfile.pokemon` is None when the month has no Pokémon data (zeros otherwise). The Pokémon field always ends with a `🎯 Server:` totals line so a cooldown-only month never yields an empty (skipped) field. Command `FakeStore` needs `pokemon_events_between`.
 - Toasty (activity/pokemon.py, cogs/activity.py): `PokemonTracker(store, toasty_bot_id, guild_id, pending)` is a separate cog added in `setup` only with `TOASTY_BOT_ID` (shares the Activity store). Commands are remembered in `PendingCommands` (not consumed on lookup, so duplicate deliveries and edits still pair); events use the reply's `created_at` and `message_id` (INSERT OR IGNORE = idempotent). Embeds go to the parser as `embed.to_dict()`. Fixtures in tests/fixtures/toasty/replies.json carry `from_toasty` (false = other bot, must record nothing). Cog tests: `make_message`/`make_tracker` (real SqliteActivityStore) in tests/test_activity_pokemon.py.
+- Session service (sessions/service.py): "not set" `min_players`/`round_hours` are stored as 0 (store columns are NOT NULL; `evaluate_round` uses `min_players or len(players)`). Join/leave/vote refuse anything not `voting` (incl. unknown poll ids) with `POLL_CLOSED`. `store.join` returns False for both already-joined and full, so the service checks `players` first (under `self._lock`, so a False can only mean full). Refusal text: `JOIN_MESSAGES`/`VOTE_MESSAGES` (service) -> constants in sessions/content.py. Service tests use the real `SqliteSessionStore` in tmp_path + `FakeClock` (2026-11-02 12:00 UTC, Europe/Amsterdam) in tests/test_session_service.py.
+- Session service lock: `SessionService._lock` serialises join (incl. prefill)/leave/submit_vote/close_round/confirm/cancel_poll; methods called under it (`_voting_poll`, `_prefill`, `round_state`, `_advance`, `_reload`) must never take it. Race tests: `GatedStore` (record_votes waits on an Event) in tests/test_session_service.py; check a race test fails without the fix (`asyncio.wait({task}, timeout=...)` + `assert not task.done()`).
+- Session round close (sessions/service.py): the offered top slots are not stored; `confirm` recomputes them with `_evaluate` (votes can't change outside `voting`, since join/leave/vote refuse). Refusals for confirm/cancel raise `SessionRefused(message)`; close_round returns `NotVoting`/`NotAllowed` outcomes instead. A next window with no slots (DST gap/cap) = `RoundFailed(FailReason.NO_SLOTS)`; test it with `sun` `02:30` `weeks=1` starting 2027-03-21 (Amsterdam spring-forward 2027-03-28).
+- Cogs that start a `tasks.loop` in `cog_load`: tests calling `cog_load` on a MagicMock bot must set `bot.wait_until_ready = AsyncMock(side_effect=asyncio.Event().wait)` and call `cog_unload` (else the loop task errors in the background). Session notify tests: tests/test_session_notify.py (`make_bot(channel)` also wires `get_partial_messageable` for the close path).
+- Session input (sessions/slots.py): `InvalidSessionInput(message)` is the one parse error (user-facing `.message`, ValueError). `parse_days`/`parse_times` check the raw text length (`MAX_DAYS_LENGTH`/`MAX_TIMES_LENGTH`, reuse as `app_commands.Range` max) before splitting; empty comma parts (`fri,,sat`, trailing comma) are rejected. Times regex is anchored (`fullmatch`) with re.ASCII.
+- Session autocomplete (sessions/cancel.py, cogs/sessions.py): choice building is pure (`cancel_choices` -> (label, value) tuples); the cog's `cancel_choices(interaction, current)` loads from the store and the `@session_cancel.autocomplete` callback only wraps them in `app_commands.Choice`. Day/month labels must use `slots.format_local_date`/`format_local_time` (English, locale-free), never `strftime("%a")`.
+- Session reminders (sessions/reminders.py): `SessionNotifier.due_reminders()` itself marks overtaken earlier offsets (`skipped_offsets`) as sent, so the cog only posts + `confirm_reminder`; `due_nudges()` reads `store.voting_polls()` (all guilds). Cog must call `confirm_*` after every send attempt.
+- Session embeds (sessions/embed.py): pure builders over `Poll`/`PollSlot`/`Session`/`SlotScore`; strings (incl. field names) in sessions/content.py. Poll names go through `escape_name(name, MAX_NAME_LENGTH)` (escape_name now takes `max_length`; default 32 would cut 60-char poll names). `fit_with_more(lines, limit, hidden=0)` = whole lines + `+N more`; `pack_lines` lives in cs2/embed.py (not formatting.py). `timestamp(unix, style)`/`mention(id)`/`poll_link(poll)` are public helpers for the cog. Tests in tests/test_session_embed.py check `len(embed)` <= 6000 at 25 slots/25 players with long ids/names.
+- Session cog (cogs/sessions.py, sessions/views.py): poll buttons are one `PollButton` DynamicItem (`ses:<poll>:<action>[:<arg>]`); new actions = a `PollAction` member + a `case` in `Sessions.handle_poll_action` (unknown actions reply `STALE_BUTTON_MESSAGE`). `poll_message(poll)` renders embed + view from the store. Only views.py may import `discord.ui` (ast test in tests/test_session_cog.py); annotate with `discord.ui.View` elsewhere. Cog tests use the real `SqliteSessionStore` + `FakeClock` and `make_interaction` (MagicMock; `send_message` returns `MagicMock(message_id=...)`, channel `MagicMock(spec=discord.TextChannel)`). Range params: `Command._params[name].to_dict()` (not `command.parameters`).
+
+- Session round close (cogs/sessions.py): `close_and_post(poll_id, reason, by_user_id=0, is_manager=False)` is the one close path (US-014's deadline loop should call it with `"deadline"`); `post_outcome` edits the old poll message (`ROUND_CLOSED_MESSAGE`, view None) then posts in the channel. Channel posts use `_post(channel_id, what, **kwargs)` (partial messageable `send` inside `send_safely`, returns the Message or None); pings use `_pinging(ids)` (AllowedMentions with explicit users only). `RoundAdvanced.poll` carries the OLD message_id (service `_advance` replaces it in the outcome; the store itself already has `message_id` NULL until the new post succeeds). Tests: `channel_mocks(cog)` -> (send, edit), `pinged(kwargs)`, `make_interaction` sets `permissions = Permissions.none()` (a MagicMock would be truthy = manager).
+- Session vote view (sessions/views.py, cogs/sessions.py): `VoteView` keeps the picks on the view (`yes_ids`/`maybe_ids`, updated by `_SlotSelect.callback` -> `view.pick`, which defers), because `Select.values` is empty until the user touches a select (pre-selected defaults don't count). Tests set `select._values` or call `view.pick`, and press buttons with `view.save.callback(interaction)`. The public poll message is refreshed with `bot.get_partial_messageable(channel_id).get_partial_message(message_id).edit(...)` (`refresh_poll_message`, errors logged; tests use `poll_message_edit(cog)`). `SessionService.round_state(poll)` = (players, slots, votes) of the current round.
+
 
 ## 2026-10-11 - US-001
-- Config gains `activity_channel_id`, `activity_timezone` ("UTC"), `toasty_bot_id`; `_parse_timezone` raises ConfigError naming the variable. NinjaBot sets `intents.message_content = config.toasty_bot_id is not None`.
-- Files: src/ninja_bot/config.py, src/ninja_bot/bot.py, tests/test_config.py, README.md (Configuration rows + Intents), .env.example, docs/deployment.md (portal step, Intents, prod .env example, settings reference, checklist).
-- Needs manual check: with TOASTY_BOT_ID set and Message Content Intent off in the portal, the bot fails at startup with PrivilegedIntentsRequired; with it on, it connects.
----
+- `scoring.all_voted` requires `MIN_PLAYERS_TO_AUTO_CLOSE` (2) joined players, so the auto-joined GM's vote alone never auto-closes; manual/deadline closes unchanged (close_round never checks all_voted itself).
+- Files: sessions/scoring.py, tests/test_session_scoring.py, tests/test_session_service.py, README.md (Close round button + Deadlines bullets).
+- Learnings: /help `details` is capped at 600 chars (tests/test_help_content.py); session_poll is at ~593, so extra help wording doesn't fit. `/sessions` "everyone voted" uses `pending_players`, so a lone GM who voted still shows it there.
+
 ## 2026-10-11 - US-002
-- New package `ninja_bot.activity`: periods.py (`Month`, `month_of`, `parse_month`, `InvalidMonthError`) and formatting.py (`format_hours` truncates, NaN/inf/negative -> `0m`; `day_strip` 🟩/⬜ with a space every 7 days, days outside the month ignored).
-- Files: src/ninja_bot/activity/{__init__,periods,formatting}.py, tests/test_activity_periods.py, tests/test_activity_formatting.py. No docs (internal helpers).
----
+- `SessionService.join` (with prefill), `leave` and `submit_vote` now run under the same `_lock` as close/confirm/cancel_poll and read the poll status inside it, so a vote/join after an evaluation gets `POLL_CLOSED` and writes nothing; `join`'s `FULL` comment explains why a False from `store.join` can only mean full.
+- Tests: concurrent same-user joins (JOINED + ALREADY_JOINED), a held vote counted by a concurrent close then confirmable, a vote/join after a close refused (`GatedStore`).
+- Files: sessions/service.py, tests/test_session_service.py. No user-visible/doc change.
+- Learnings: the first version of the in-flight race test passed without the lock (thread ordering); wait for the competing task with a timeout and assert it is still blocked.
+
 ## 2026-10-11 - US-003
-- `activity/store.py`: `ActivityStore` Protocol, `Session`, `SqliteActivityStore` (voice_sessions + index on (user_id, start_ts), reports_posted). `close_stale` returns how many sessions it closed (useful for logging in US-004).
-- Files: src/ninja_bot/activity/store.py, tests/test_activity_store.py, README.md (Data and storage, DATA_DIR row, layout), docs/deployment.md (backup notes, DATA_DIR), CLAUDE.md (activity Architecture entries).
----
-## 2026-10-11 - US-004
-- `activity/tracker.py` (`Open`/`Close`/`Move`/`Nothing`, `plan_transition`) and `cogs/activity.py` (`Activity(bot, store, guild_id, clock)`: voice listener ignoring bots and other guilds when GUILD_ID is set, 60 s heartbeat loop, `reconcile` on first on_ready, `members_in_voice`). Registered in EXTENSIONS.
-- Files: src/ninja_bot/activity/tracker.py, src/ninja_bot/cogs/activity.py, src/ninja_bot/bot.py, tests/test_activity_tracker.py, tests/test_activity_cog.py, README.md (Activity tracking section, contents, Intents note, layout, Known limitations), docs/manual-checks.md (Activity tracking), CLAUDE.md (Architecture).
-- Needs manual check: docs/manual-checks.md "Activity tracking" (join / mute / move / AFK / leave / restart mid-session / bots).
----
-
-## 2026-10-11 - US-005
-- `activity/stats.py`: `UserStats`, `RankedRow`, `ACTIVE_DAY_MIN_SECONDS`, `clip`, `monthly_stats`, `rank`, `shame_list` (pure).
-- Files: src/ninja_bot/activity/stats.py, tests/test_activity_stats.py, CLAUDE.md (Architecture), README.md (layout block). No user-facing docs yet (surfaced in US-008).
----
-## 2026-10-11 - US-006
-- `activity/awards.py`: `AwardKey`, `Award`, label constants, `compute_awards`, `TopPair`, `SocialStats`, `social_stats` (pure).
-- Files: src/ninja_bot/activity/awards.py, tests/test_activity_awards.py, CLAUDE.md (Architecture), README.md (layout block). No user-facing docs yet (surfaced in US-008).
----
-## 2026-10-11 - US-007
-- `activity/report.py` (`MonthlyReport`, `UserProfile`, `build_monthly_report`, `user_profile`, `SHAME_LIMIT` 3) and `activity/embed.py` (`build_monthly_embed`, `build_profile_embed`, `format_awards`, `format_together`, `format_leaderboard_row`, `format_shame`); `month_label`/`hour_range`/`plural` added to activity/formatting.py; cs2 `_pack_lines` -> `pack_lines`.
-- Files: src/ninja_bot/activity/{report,embed,formatting}.py, src/ninja_bot/cs2/embed.py, tests/test_activity_embed.py, CLAUDE.md (Architecture), README.md (layout block). User-facing docs come with US-008.
-- Needs manual check: how the overview/profile embeds look in Discord (after US-008).
----
-## 2026-10-11 - US-008
-- `/activity [month]` and `/myactivity [user] [month]` in cogs/activity.py (`Activity(..., timezone=, cooldown=)`, `COOLDOWN_SECONDS` 10, `GENERIC_ERROR_MESSAGE`, `cooldown_message`, `no_activity_message`, `monthly_report`, `cog_app_command_error`); `resolve_month` + `FUTURE_MONTH_MESSAGE` in activity/periods.py; help group "Voice activity" + two CommandHelp entries; GETTING_STARTED mentions them.
-- Files: src/ninja_bot/cogs/activity.py, src/ninja_bot/activity/periods.py, src/ninja_bot/help/content.py, tests/test_activity_commands.py, tests/test_activity_periods.py, tests/test_help_content.py, README.md (intro, commands table, /activity, /myactivity, months/cooldown/errors sections, /help groups, layout), docs/manual-checks.md, CLAUDE.md (Architecture).
-- Needs manual check: docs/manual-checks.md "/activity and /myactivity" (embed look, no pings, private errors, cooldown).
----
-## 2026-10-11 - US-009
-- `activity/reporter.py` (`MonthlyReporter`), `ActivityStore.first_session_start`, hourly `report_loop` + `run_report_cycle` in cogs/activity.py (`channel_id=` from `ACTIVITY_CHANNEL_ID`). Channel problems (missing/not text/permissions) warn once and do not confirm, so the month posts once the channel is fixed; any send attempt (incl. failures) and embed errors confirm.
-- Files: src/ninja_bot/activity/{reporter,store}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{reporter,autopost,store}.py, README.md (Monthly auto-post section, Configuration row, Known limitations, layout), docs/deployment.md (Permissions, settings reference), docs/manual-checks.md (Monthly auto-post), CLAUDE.md (Architecture).
-- Needs manual check: docs/manual-checks.md "Monthly auto-post" (forced past-month post, no repeat after restart, permission warning).
----
-## 2026-10-11 - US-010
-- `activity/pokemon.py` (`is_pokemon_command`, `parse_reply`, `parse_duration`, `Catch`, `Cooldown`, `PendingCommands`), `pokemon_events` table + `PokemonEvent`, `record_pokemon_event`/`pokemon_events_between` in activity/store.py (known_users includes event users), `PokemonTracker` cog (on_message/on_message_edit) registered only with TOASTY_BOT_ID. Fixtures: added gender symbol, embed field and non-Toasty cases, `from_toasty` flag.
-- Files: src/ninja_bot/activity/{pokemon,store}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{pokemon,store}.py, tests/fixtures/toasty/replies.json, README.md (Toasty section, Data and storage, Known limitations, layout), docs/deployment.md (backup notes, DATA_DIR, troubleshooting), docs/manual-checks.md (Toasty), CLAUDE.md (Architecture).
-- Needs manual check: docs/manual-checks.md "Toasty ;pokemon" (catch, shiny, cooldown; confirm the real raw reply format and whether Toasty edits/uses embeds).
-
-## 2026-10-11 - US-011
-- `activity/pokemon_stats.py` (`PokemonUserStats`, `ShinyCatch`, `PokemonStats`, `pokemon_stats`, `impatient_awards`, `IMPATIENT_MIN_COOLDOWNS` 3); `AwardKey.IMPATIENT`; `build_monthly_report(..., pokemon_events)`, `MonthlyReport.pokemon`, `UserProfile.pokemon`; `Pokémon` field in both embeds (`MAX_POKEMON_CATCHERS`/`MAX_SHINY_LINES`/`MAX_TOP_SPECIES` 5); `Activity.monthly_report` loads the month's events; `/activity` keeps the cooldown for a month with only Pokémon data.
-- Files: src/ninja_bot/activity/{pokemon_stats,awards,report,embed}.py, src/ninja_bot/cogs/activity.py, src/ninja_bot/help/content.py, tests/test_activity_{pokemon_stats,embed,commands}.py, README.md (/activity, /myactivity, cooldown, Pokémon stats subsection, commands table, layout), docs/manual-checks.md (Toasty), CLAUDE.md (Architecture).
-- Decisions: months with only Pokémon data are not auto-posted (reporter needs voice time) and `/myactivity` still needs voice time; both documented in README.
-- Needs manual check: docs/manual-checks.md "Toasty ;pokemon" Pokémon field items.
----
-## 2026-10-11 - US-012
-- Final docs pass, checked against the code (constants, messages, loops). Most docs were already current from the per-story updates.
-- README: "reads no messages" now names the Toasty exception; DATA_DIR row lists Toasty events; invite note links the monthly auto-post channel; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post; Known limitations add voice only / no history before the feature / month boundaries in ACTIVITY_TIMEZONE.
-- docs/deployment.md: fixed the activity.sqlite3 backup sentence; Troubleshooting rows for `PrivilegedIntentsRequired` and a missing monthly post. docs/manual-checks.md: Toasty startup-without-intent and unseen-command checks. CLAUDE.md: intent rule names the conditional Message Content intent.
-- Relative links/anchors checked with a small script (the only hit was an example `[x](y)` in a code span).
-- Needs manual check: everything in docs/manual-checks.md "Activity tracking", "Monthly auto-post", "Toasty ;pokemon".
-
-
----
-# Review follow-ups (tasks/prd-activity-tracking-review.md): first run archived in scripts/ralph/archive/2026-10-11-activity-tracking/
-
-# Review follow-ups (tasks/prd-activity-tracking-review.md) — story IDs restart at US-001
-
-## 2026-10-11 - Review US-001
-- `known_users()` replaced by `voice_user_ranges()` (store Protocol + Sqlite: MIN/MAX start_ts per voice user; Pokémon-only users not included). `shame_candidates(ranges, month_end_ts)` + `SHAME_LOOKBACK_DAYS` 90 in activity/stats.py; `build_monthly_report` takes `voice_user_ranges` and shames candidates | users with time that month.
-- Sessions after the viewed month count as "last seen" (someone back since is still a candidate).
-- Files: src/ninja_bot/activity/{store,stats,report}.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{store,stats,embed,commands}.py, README.md (Wall of shame bullet, Toasty storage note), CLAUDE.md, docs/manual-checks.md.
-- Needs manual check: docs/manual-checks.md wall of shame item (old month with a later-joined member).
----
-## 2026-10-11 - Review US-002
-- `MonthlyReport.shame_pool`, `drop_departed(pool, departed, limit)`, `without_departed(report, departed)` in activity/report.py; `Activity.monthly_report(month, guild=None)` + `departed_members(guild, report)` (lookups lowest first, stop at SHAME_LIMIT kept; NotFound = departed, HTTP errors keep the candidate and aren't cached). `/activity` passes `interaction.guild`, the monthly post `channel.guild`; `/myactivity` doesn't (no shame list). `Activity(..., members=MemberCache)`.
-- Files: src/ninja_bot/activity/report.py, src/ninja_bot/cogs/activity.py, tests/test_activity_{embed,commands,autopost}.py, README.md (Wall of shame bullet), docs/manual-checks.md, CLAUDE.md.
-- Needs manual check: docs/manual-checks.md departed-member wall of shame item.
----
----
-## 2026-10-11 - US-003 (review follow-ups)
-- `_run_ending_on(days, last_day, *, ongoing)` in activity/stats.py: for the current month a quiet today falls back to yesterday; ended months unchanged; `longest_streak` untouched.
-- Files: src/ninja_bot/activity/stats.py, tests/test_activity_stats.py (quiet morning, active today, two quiet days, the 1st), README.md (/myactivity streak rules). help/content.py made no claim about it, unchanged.
----
+- `close_round` with `"all_voted"`/`"deadline"` re-runs `should_auto_close` inside the lock; `None` returns the new `NotReady(poll)` (in `RoundOutcome`) and leaves the round open. `close_and_post` posts nothing for it (so `advance_if_ready`/`_close_due_rounds` stay quiet); `handle_close` folds it into the `NotVoting` branch (manual closes never give it).
+- Tests: a player joining between the unlocked check and the locked close (`JoiningStore` hooks `get_poll`), an early `"deadline"` close, the cog posting nothing for `NotReady`. Existing tests that used `"all_voted"`/`"deadline"` as a shortcut for "skip the permission check" now use `"manual"` by the GM (or really vote everyone).
+- Files: sessions/service.py, cogs/sessions.py, tests/test_session_service.py, tests/test_session_cog.py, CLAUDE.md (close_round outcomes). No user-visible/doc change.
+- Learnings: in service tests, don't pass an automatic reason to `close_round` unless it is really true at the fake clock time; it now returns `NotReady`.
 
 ## 2026-10-11 - US-004
-- `compute_awards` (activity/awards.py) only adds Biggest climber / Biggest drop when `now >= month.end(tz)` (month over) and `previous_stats` is non-empty; other awards unchanged.
-- Tests: running month on day 3 (no climber/drop, night owl still awarded), ended month at exactly `month.end` (both awarded). Existing tests use `LATER` (Dec 1) so they keep passing.
-- README activity Awards bullet says completed months only.
-- Files: src/ninja_bot/activity/awards.py, tests/test_activity_awards.py, README.md
----
+- `SessionStore.confirm(poll, slot, roster, now)` marks every `REMINDER_OFFSETS` offset with `start - offset <= now` in `session_reminders` in the same transaction; `SessionService.confirm` passes `self.clock()`. Downtime catch-up in reminders.py is unchanged.
+- `REMINDER_OFFSETS` moved to sessions/store.py (reminders.py imports store, so the reverse would be a cycle); reminders.py re-exports it (`import ... as REMINDER_OFFSETS`).
+- Tests: store (5 h before start), notifier minute-by-minute run for 3 days / 5 h / 30 min, service clock wiring. Store tests confirm with `BEFORE_REMINDERS` (their slots start at 5000-9000 s, so `now=0` is already past the 24 h mark).
+- Docs: README reminders bullet, docs/manual-checks.md late-confirmation check, CLAUDE.md reminders entry.
+- Needs manual check: late confirmation in Discord (docs/manual-checks.md).
+- Learning: re-exports for mypy strict use `from x import NAME as NAME`.
 
 ## 2026-10-11 - US-005
-- `_post_report` (cogs/activity.py) builds the report + embed first; a build error is logged with `log.exception("Could not build the activity overview for %s; retrying")` and the month is not confirmed (next hourly cycle retries). `confirm` stays in a `finally` around the send only, so every send attempt (HTTP or unexpected error) is confirmed.
-- Tests (tests/test_activity_autopost.py): build fails once then posts once; build fails every cycle (logged with traceback each time, never confirmed); unexpected send error confirmed, not retried. Existing tests cover send fails / succeeds.
-- Docs: README Monthly auto-post "One post per month" bullet, docs/deployment.md "No monthly activity post" troubleshooting row.
----
+- `VoteView.save` with both `yes_ids` and `maybe_ids` empty replies `content.VOTE_EMPTY_MESSAGE` ephemerally, doesn't stop the view and doesn't call `on_save`. None of these work is unchanged; a pre-filled form saves as is (picks start from the stored votes).
+- Tests: empty Save refused + view open + nothing stored, clearing picks then Save refused, later pick saves; pre-filled unchanged Save. `test_save_after_the_poll_closed...` now picks a slot first.
+- Files: sessions/views.py, sessions/content.py, tests/test_session_cog.py, README.md (Vote button bullet), docs/manual-checks.md.
+- Needs manual check: empty Save in Discord (docs/manual-checks.md).
 
 ## 2026-10-11 - US-006
-- `MIN_YEAR = 2015` in activity/periods.py; `parse_month` (so also `resolve_month`) rejects earlier years with `INVALID_MONTH_MESSAGE`. `Month` keeps its 1..9998 bound, so `previous()` of `2015-01` is fine and local timestamps can't overflow for accepted (non-future) months. `9999-12` is rejected by `Month.__post_init__` (same message).
-- Tests: tests/test_activity_periods.py (0001-01, 2014-12, 9999-12, 2015-13 rejected; 2015-01 previous/start/end in UTC, Amsterdam, Kiritimati, Pago_Pago), tests/test_activity_commands.py (both commands reply privately with the format message; 2015-01 builds /activity and /myactivity in UTC, Kiritimati, Pago_Pago).
-- Docs: README /activity `month` bullet (earliest month) and Errors bullet. help/content.py states no range, unchanged.
----
+- `refresh_poll_message` returns unless the poll is `voting` and edits only `embed` + `allowed_mentions` (no `view=`), so a late refresh can't restore buttons a close removed. New `Sessions.poll_embed(poll)`; `poll_message` = `poll_embed` + `poll_view`.
+- Tests: voting refresh edits embed only; no edit for awaiting_confirm/confirmed/failed/cancelled; refresh racing a close (patched `poll_embed` closes before the edit) leaves `view=None` last.
+- Files: cogs/sessions.py, tests/test_session_cog.py, CLAUDE.md. No user-visible doc change.
+- Learning: when monkeypatching `cog.poll_embed` to inject a race, restore it first: the close path re-renders via `poll_message` -> `poll_embed` and would recurse.
 
 ## 2026-10-11 - US-007
-- `posted_months() -> set[str]` on `ActivityStore` + `SqliteActivityStore`; `MonthlyReporter.due_month` fetches it once and only calls `_has_data` for unposted months (all posted: 2 store calls). `report_posted` kept (tests/other callers).
-- `Activity.monthly_report` computes the month's start/end once (previous month window ends at `start`).
-- New index `voice_sessions_start ON voice_sessions (start_ts)` in `_SCHEMA` (lazy, so existing DBs get it on first connect).
-- Tests: `CountingStore` wrapper in tests/test_activity_reporter.py (24 posted months = 2 calls; posted months skipped in memory), store tests for `posted_months` and the index on a fresh and an old-schema DB.
-- Docs: none (README Data and storage lists no indexes).
----
+- `polls.result_message_id` + `Poll.result_message_id` (default None, last field), `set_result_message`, `polls_missing_messages()`; `_set_status` clears `result_message_id` on entering `awaiting_confirm`; `_advance_round` now sets `message_id = ?` (replaces, default None).
+- Service `_advance` returns `RoundAdvanced(replace(advanced, message_id=poll.message_id), ...)` so the cog still edits the closed round's message to ROUND_CLOSED_MESSAGE.
+- Files: sessions/store.py, sessions/service.py, tests/test_session_store.py, tests/test_session_cog.py (failed next-round post now leaves message_id None), README.md (Data and storage polls row), CLAUDE.md.
+- Learnings: session fakes all subclass `SqliteSessionStore`, so new store methods need no fake updates.
 
 ## 2026-10-11 - US-008
-- New `src/ninja_bot/posting.py`: `send_safely(send, what="message")` and `PostChannelResolver` (warning template with one `%s`). `CHANNEL_UNAVAILABLE = "unavailable (Discord error)"` in cs2/channels.py for other `HTTPException`s from `fetch_channel` (warned once, cycle skipped, activity month stays unposted).
-- cogs/cs2.py and cogs/activity.py: `POST_WARNING` constants (texts unchanged), `self._post_channel` resolver, `_send_safely` wrappers keep "Could not send CS2/activity response".
-- Tests: tests/test_posting.py (each cause, once-per-cause, clear on success, send_safely), HTTP error cases in tests/test_{cs2,activity}_autopost.py; existing tests untouched.
-- Docs: CLAUDE.md Architecture, README layout + both cause lists, docs/deployment.md permissions paragraph.
----
+- `SessionService.rebuild_outcome(poll_id)` (read-only, under the service lock): `RoundFits` for `awaiting_confirm` (re-evaluated like `confirm`), `RoundAdvanced` for voting round 2+ (current slots, pending = who hasn't voted this round), else None.
+- Cog: `_outcome_lock` around `close_and_post`, `handle_close`'s close+post and each repair; `_post_result` stores `result_message_id`; `repair_missing_messages()` is the first notify step (re-read poll, skip if message exists or `_channel` is None, then `post_outcome(rebuilt)`); nudges skip polls without `message_id`; poll cancel also edits `result_message_id`.
+- Tests: tests/test_session_notify.py (repair of result / next round, no double post, unusable channel, lock race checked to fail without the lock, no nudge without message), tests/test_session_service.py (rebuild_outcome), tests/test_session_cancel.py (both messages edited).
+- Docs: README Session polls (Nudges, Channel gone, Old messages, /session_cancel poll bullet), docs/manual-checks.md (failed outcome post, cancel awaiting_confirm), CLAUDE.md.
+- Needs manual check: revoke Send Messages, close a round, restore it, see the message appear once (docs/manual-checks.md).
+- Learning: lock order is cog `_outcome_lock` -> service `_lock`, never the reverse.
 
 ## 2026-10-11 - US-009
-- Added `split_local` to activity/periods.py (hour/day boundaries, DST guard); `stats._seconds_per_day` and `awards._hour_pieces` use it; removed `_next_midnight`. `awards._clipped` already used `stats.clip`.
-- Tests: tests/test_activity_periods.py (one hour, midnight, several days, Amsterdam spring-forward/fall-back, zero length). Existing stats/awards tests unchanged.
-- Learning: fall-back hour split merges the repeated 02:00 hour into one 7200 s piece (kept as-is: no behaviour change).
-
-## 2026-10-11 - US-010
-- Removed the ignored `tz` parameter from `Month.days()` (periods.py); updated callers in activity/report.py, activity/stats.py and tests/test_activity_periods.py. No behaviour change, no docs (internal).
----
-
-## 2026-10-11 - US-011
-- New pure `to_event(result, message_id, user_id, ts) -> PokemonEvent` in activity/pokemon.py (imports `PokemonEvent` from store.py; no cycle); `PokemonTracker.record_reply` now only extracts ids + `message.created_at`, calls `parse_reply`/`to_event` and stores.
-- Tests: tests/test_activity_pokemon.py `test_to_event` (catch, shiny, cooldown with/without wait) and a fake-message test that the creation time (not `edited_at`) is stored.
-- Docs: CLAUDE.md Architecture (pokemon.py lists `to_event`); no user-visible change.
----
+- `SessionStore.round_state(poll_id, round) -> RoundState` (players, slots, votes over one connection, one `to_thread` hop; module-level `_select_players`/`_select_slots`/`_select_votes(conn, ...)` shared with the single reads). `SessionService.round_state(poll)` delegates to it.
+- `run_notify_cycle` keeps a `states: dict[(poll_id, round), RoundState]`; `_close_due_rounds(states)` stores the state of every poll it leaves open (a round it tries to close is left out), `_post_nudges(states)` -> `SessionNotifier.due_nudges(states)`, which still lists `voting_polls()` but skips (poll, round) keys missing from the mapping (closed/advanced this cycle) and only reads `round_state` itself when called without a mapping.
+- Tests: store round_state == single reads; notifier with/without mapping (CountingStore); notify cycle reads each of 3 polls once via `round_state` and no `players`/`votes` (checked to fail on the old code); deadline-advanced poll not nudged in the same cycle.
+- Files: sessions/store.py, sessions/service.py, sessions/reminders.py, cogs/sessions.py, tests/test_session_{store,reminders,notify}.py, CLAUDE.md. No user-visible/doc change.

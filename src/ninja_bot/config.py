@@ -23,6 +23,7 @@ class Config:
     activity_channel_id: int | None = None
     activity_timezone: str = "UTC"
     toasty_bot_id: int | None = None
+    sessions_timezone: str = "UTC"
 
     @property
     def is_dev(self) -> bool:
@@ -49,6 +50,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     # Monthly activity report channel; unset = no auto-post.
     activity_channel_id = _parse_optional_positive_int(source, "ACTIVITY_CHANNEL_ID")
     activity_timezone = _parse_timezone(source, "ACTIVITY_TIMEZONE", "UTC")
+    # Session poll slots; unset = same zone as activity.
+    sessions_timezone = _parse_timezone(source, "SESSIONS_TIMEZONE", activity_timezone)
     # Toasty ;pokemon tracking; set = Message Content intent requested.
     toasty_bot_id = _parse_optional_positive_int(source, "TOASTY_BOT_ID")
     return Config(
@@ -63,6 +66,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         activity_channel_id=activity_channel_id,
         activity_timezone=activity_timezone,
         toasty_bot_id=toasty_bot_id,
+        sessions_timezone=sessions_timezone,
     )
 
 

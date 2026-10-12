@@ -279,6 +279,11 @@ def test_escape_name_truncates_long_names() -> None:
     assert len(escaped) == ESCAPED_NAME_LENGTH
 
 
+def test_escape_name_takes_a_custom_length() -> None:
+    assert escape_name("x" * 60, 60) == "x" * 60
+    assert escape_name("x" * 61, 60) == "x" * 59 + "…"
+
+
 def test_escape_name_truncates_before_escaping() -> None:
     escaped = escape_name("*" * 100)
     assert escaped == "\\*" * (ESCAPED_NAME_LENGTH - 1) + "…"

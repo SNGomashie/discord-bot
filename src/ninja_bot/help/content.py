@@ -31,12 +31,14 @@ class CommandHelp:
 MEDIA = "media"
 CS2 = "cs2"
 ACTIVITY = "activity"
+SESSIONS = "sessions"
 UTILITY = "utility"
 
 GROUPS: tuple[HelpGroup, ...] = (
     HelpGroup(MEDIA, "Media"),
     HelpGroup(CS2, "CS2 stats"),
     HelpGroup(ACTIVITY, "Voice activity"),
+    HelpGroup(SESSIONS, "Session polls"),
     HelpGroup(UTILITY, "Utility"),
 )
 
@@ -207,6 +209,78 @@ COMMANDS: tuple[CommandHelp, ...] = (
         },
     ),
     CommandHelp(
+        name="session_poll",
+        group=SESSIONS,
+        summary="Start a poll to find a date for a game session.",
+        details=(
+            "Posts a poll in this channel with one slot per chosen day and start time "
+            "in the coming weeks. You run it as the GM and are joined automatically. "
+            "Players press Join to take part and Leave to drop out (their votes go with them). "
+            "Vote opens a private form where you pick the slots that work for you "
+            "and the ones that only work if needed, then Save. "
+            "Once everyone voted (or the GM presses Close round) the round closes: "
+            "if a date fits, the GM picks it with Confirm and the players are pinged; "
+            "otherwise the next weeks get a new round, up to 6 rounds. "
+            "Slot times show in everyone's own time zone."
+        ),
+        examples=(
+            "/session_poll name:Curse of Strahd days:fri,sat times:19:00",
+            "/session_poll name:One-shot days:weekend times:14:00,19:30 weeks:3 min_players:4",
+            "/session_poll name:Campaign days:sat times:13:00 start:2026-11-07 round_hours:48",
+        ),
+        notes=(
+            "A poll offers at most 25 slots; use fewer days, times or weeks if it says more.",
+            "A server can have at most 5 open polls at a time.",
+            "Only the GM or someone with Manage Events can close a round or confirm a date.",
+            "Errors are only visible to you, and they don't use up your cooldown.",
+        ),
+        parameter_notes={
+            "days": (
+                "Comma-separated weekdays: short (fri) or full (friday) names, "
+                "or weekend / weekdays."
+            ),
+            "times": "Comma-separated 24-hour start times like 19:00 or 9:30.",
+            "start": "A date like 2026-11-06 (YYYY-MM-DD), not in the past. Default: tomorrow.",
+            "min_players": "Without it, a date only fits when every joined player can make it.",
+            "round_hours": "Hours each voting round stays open. Leave it empty for no deadline.",
+        },
+    ),
+    CommandHelp(
+        name="sessions",
+        group=SESSIONS,
+        summary="List the open session polls and upcoming sessions.",
+        details=(
+            "Posts this server's open session polls in the channel: each links to its poll "
+            "message and shows the round and who still has to vote (or that the GM still has "
+            "to confirm). Below them come the upcoming sessions with their start time and GM, "
+            "at most 10."
+        ),
+        examples=("/sessions",),
+        notes=(
+            "Mentions in the list never ping anyone.",
+            "Cooldown: 10 seconds, not used up when the list couldn't be posted.",
+        ),
+    ),
+    CommandHelp(
+        name="session_cancel",
+        group=SESSIONS,
+        summary="Cancel a session poll or an upcoming session.",
+        details=(
+            "Pick an open poll or an upcoming session from the list that appears while you "
+            "type. The poll message is marked as cancelled and loses its buttons, and the "
+            "cancellation is announced in the channel. A cancelled poll gets no more nudges "
+            "and a cancelled session no reminders."
+        ),
+        examples=("/session_cancel item:Poll: Curse of Strahd (from Fri 6 Nov)",),
+        notes=(
+            "Only the GM or someone with Manage Events can cancel.",
+            "Sessions that already started can't be cancelled.",
+        ),
+        parameter_notes={
+            "item": "Choose from the suggestions; typed text only filters them.",
+        },
+    ),
+    CommandHelp(
         name="ping",
         group=UTILITY,
         summary="Check that the bot is online and see its latency.",
@@ -240,6 +314,7 @@ GETTING_STARTED_TITLE = "Getting started"
 GETTING_STARTED = (
     "Link your Steam account with /link, then use /scoreboard, /profile and /leaderboard "
     "for CS2 stats. Use /activity and /myactivity to see who spends the most time in voice. "
+    "Use /session_poll to find a date for a game session and /sessions to see what is planned. "
     "Use /download to get a video or its audio as a file."
 )
 

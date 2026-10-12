@@ -124,6 +124,32 @@ def test_activity_timezone_invalid_raises(value: str) -> None:
         load_config({**PROD, "ACTIVITY_TIMEZONE": value})
 
 
+def test_sessions_timezone_falls_back_to_activity_timezone() -> None:
+    assert load_config(dict(PROD)).sessions_timezone == "UTC"
+    cfg = load_config({**PROD, "ACTIVITY_TIMEZONE": "Europe/Amsterdam"})
+    assert cfg.sessions_timezone == "Europe/Amsterdam"
+
+
+def test_sessions_timezone_explicit_value_wins() -> None:
+    cfg = load_config(
+        {**PROD, "ACTIVITY_TIMEZONE": "Europe/Amsterdam", "SESSIONS_TIMEZONE": " America/New_York "}
+    )
+    assert cfg.sessions_timezone == "America/New_York"
+    assert cfg.activity_timezone == "Europe/Amsterdam"
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_sessions_timezone_uses_activity_timezone(value: str) -> None:
+    env = {**PROD, "ACTIVITY_TIMEZONE": "Europe/Amsterdam", "SESSIONS_TIMEZONE": value}
+    assert load_config(env).sessions_timezone == "Europe/Amsterdam"
+
+
+@pytest.mark.parametrize("value", ["Not/AZone", "Europe", "../etc/passwd", "/etc/localtime"])
+def test_sessions_timezone_invalid_raises(value: str) -> None:
+    with pytest.raises(ConfigError, match="SESSIONS_TIMEZONE"):
+        load_config({**PROD, "SESSIONS_TIMEZONE": value})
+
+
 @pytest.mark.parametrize(("toasty", "expected"), [(None, False), ("42", True)])
 def test_message_content_intent_only_with_toasty(toasty: str | None, expected: bool) -> None:
     env = dict(PROD) if toasty is None else {**PROD, "TOASTY_BOT_ID": toasty}

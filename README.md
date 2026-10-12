@@ -2,12 +2,13 @@
 
 A personal Discord bot for one private server of friends. It is built on discord.py 2.x (Python 3.12+), runs in a Proxmox LXC on a homelab, and makes no LLM calls. Everything it does is rule-based.
 
-It does four things:
+It does five things:
 
 - **Media**: `/download` fetches a video (or a clip of it) with yt-dlp and posts it as an mp3 or mp4.
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 - **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
+- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons. `/sessions` lists open polls and upcoming sessions, `/session_cancel` cancels one.
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -20,6 +21,7 @@ It does four things:
 - [CS2 stats](#cs2-stats)
 - [Auto-posted matches](#auto-posted-matches)
 - [Activity tracking](#activity-tracking)
+- [Session polls](#session-polls)
 - [/help](#help)
 - [Data and storage](#data-and-storage)
 - [Troubleshooting](#troubleshooting)
@@ -42,6 +44,9 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
+| `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336) | public poll (errors are private); Join/Leave/Vote and refused Close round/Confirm replies are private; round results and confirmed sessions are posted publicly | 30 s; refunded unless the poll was posted |
+| `/sessions` | none | public list (errors are private) | 10 s; refunded unless the list was posted |
+| `/session_cancel` | `item` (pick an open poll or upcoming session from the autocomplete) | public confirmation; refusals are private | none |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -71,14 +76,15 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `LEETIFY_API_KEY` | none | no, recommended | Sent to Leetify as a bearer token. Get one at [leetify.com/app/developer](https://leetify.com/app/developer). Without it, requests are sent unauthenticated. |
 | `CS2_CHANNEL_ID` | none | no | Channel for [auto-posted matches](#auto-posted-matches). Unset means no auto-posts and no polling at all. Positive integer. |
 | `CS2_POLL_SECONDS` | `300` | no | How often to check Leetify when `CS2_CHANNEL_ID` is set. Positive integer. Each cycle makes one Leetify request per linked player, so don't set it very low. |
-| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions, Toasty `;pokemon` events and posted monthly reports). A relative path is relative to the process's working directory. |
+| `DATA_DIR` | `data` | no | Directory for `cs2.sqlite3` (links and the posted-match log) and `activity.sqlite3` (voice sessions, Toasty `;pokemon` events and posted monthly reports) and `sessions.sqlite3` (session polls, their slots, players and votes, confirmed sessions, sent reminders and nudges). A relative path is relative to the process's working directory. |
 | `ACTIVITY_CHANNEL_ID` | none | no | Channel for the automatic monthly activity report (see [Monthly auto-post](#monthly-auto-post)). Unset means no monthly auto-post. Positive integer. |
 | `ACTIVITY_TIMEZONE` | `UTC` | no | IANA time zone name (for example `Europe/Amsterdam`) that decides where activity months start and end. An unknown name stops the bot at startup with a `ConfigError`; empty means `UTC`. |
+| `SESSIONS_TIMEZONE` | `ACTIVITY_TIMEZONE` | no | IANA time zone name in which session poll slot times (for example `19:00`) are read and shown. Unset or empty means the same zone as `ACTIVITY_TIMEZONE` (so `UTC` when neither is set). An unknown name stops the bot at startup with a `ConfigError`. |
 | `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
 
 **Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
 
-**Invite permissions:** View Channels, Send Messages, Embed Links and Attach Files (permission integer `52224`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
+**Invite permissions:** View Channels, Send Messages, Embed Links, Attach Files and Read Message History (permission integer `117760`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). `/session_poll` needs View Channel, Send Messages and Embed Links in the channel it is run in, plus Read Message History there for the vote nudges, which are replies to the poll message (see [Session polls](#session-polls)). Session polls need no new intent. Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
 **Logging:** INFO level to stderr (journald captures it under systemd). On start the bot logs `Logged in as <name> (env=<ENVIRONMENT>)`.
 
@@ -355,11 +361,70 @@ When a month has Toasty events (catches or cooldowns), `/activity`, the monthly 
 
 Pokémon names are shown as plain text (markdown escaped) and cut at 32 characters. A month counts by the reply's time in `ACTIVITY_TIMEZONE`. The monthly auto-post only happens for months with voice time, so a month with only Pokémon data is not auto-posted (it still shows in `/activity`).
 
+## Session polls
+
+A GM (whoever runs the command) starts a poll to find a date for a game session. The bot offers candidate slots, players join and vote with buttons, and the poll message keeps itself up to date. When a round closes, the GM confirms one of the fitting dates, or the poll moves on to the next weeks.
+
+### /session_poll
+
+`/session_poll name days times [weeks] [start] [duration_hours] [min_players] [round_hours]` posts the poll in the current channel, publicly. It only works in a server.
+
+| Parameter | Accepted | Default |
+|---|---|---|
+| `name` | 1-60 characters (spaces around it are ignored) | required |
+| `days` | comma-separated weekdays: `fri`, `friday` (any case), `weekend` (Sat + Sun), `weekdays` (Mon-Fri); for example `fri,sat`; at most 64 characters | required |
+| `times` | comma-separated 24-hour start times `H:MM` or `HH:MM`, for example `19:00,14:30`; at most 64 characters | required |
+| `weeks` | 1-8: how many weeks from `start` to offer | 2 |
+| `start` | first day to offer, `YYYY-MM-DD`, today or later | tomorrow |
+| `duration_hours` | 1-12: how long a session lasts | 4 |
+| `min_players` | 2-25: players needed for a date to fit | every joined player |
+| `round_hours` | 1-336: how long each voting round stays open | no deadline |
+
+- **Slots:** every chosen weekday at every chosen time from `start` for `weeks` weeks (start date included, the day `weeks` weeks later excluded), in `SESSIONS_TIMEZONE` (falls back to `ACTIVITY_TIMEZONE`, see [Configuration](#configuration)). Slots that already started are dropped. A time that doesn't exist on a daylight-saving change day is skipped; a time that happens twice uses the first one. A poll offers at most 25 slots (Discord select menus hold 25 options).
+- **The poll message:** the name, `Round 1 of 6`, the GM, the session length and `min_players` (when set), one line per slot with its time (shown in everyone's own time zone) and ✅ / 🤔 counts, the round deadline (when `round_hours` is set), `Joined` (every player as a mention) and `Waiting for` (players without a vote this round, `+N more` when it doesn't fit). Mentions never ping.
+- **Join / Leave buttons:** the GM is joined automatically. **Join** adds you (at most 25 players), **Leave** removes you and your votes; both update the poll message and confirm privately. The GM can't leave their own poll. Pressing Join twice, Leave without having joined, or either button on a poll that no longer takes votes gives a private reply and changes nothing. Buttons keep working after the bot restarts.
+- **Vote button:** opens a private form (it works for 10 minutes) with two multi-selects over the current round's slots, **✅ Works for me** and **🤔 Only if needed**, already filled in with your saved votes. The options read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE` (select menus can't show times in your own zone; the prompt names the zone). **Save** replaces all your votes for the round: a slot picked in both lists counts as works, a slot in neither as a no. **Save** with nothing picked in either list is refused privately with "Pick at least one slot, or press **None of these work** if none of them suit you." and the form stays open, so an early Save never counts as a no for everything. **None of these work** saves a no for every slot. Either way the form closes with "Your votes are saved." and the poll message updates its counts and `Waiting for`. If the poll message can't be edited (deleted, missing permissions), your vote still counts. You must press **Join** first ("You haven't joined this poll. Press **Join** first."); on a poll that no longer takes votes you get "This poll isn't taking votes any more.", also when you press Save after the poll closed.
+- **Close round button:** only the GM or someone with **Manage Events** can press it; anyone else gets "Only the GM or someone with **Manage Events** can do that." privately. A round also closes on its own as soon as every joined player has saved a vote (None of these counts), but only once at least two players (the GM and one more) have joined, so the GM's own vote never closes the round alone; or it closes when its `round_hours` deadline passes (see Deadlines). Pressing Close round on a round that is already closed says "This round is already closed." privately and changes nothing.
+- **When a round closes:** the old poll message keeps its last counts, loses its buttons and says "**Round N is closed.**". Then one of three things is posted in the channel:
+  - **A date fits:** a slot fits when the players who picked it (✅ plus 🤔) reach `min_players` (or every joined player when `min_players` isn't set) **and** the GM picked it too: the GM must attend. Up to 3 fitting slots are shown, most ✅ first, then fewest 🤔, then earliest, each with who can't make it. The message pings only the GM ("pick the date with a **Confirm** button") and has one **Confirm N: Fri 6 Nov 19:00** button per slot.
+  - **Nothing fits, rounds left:** a new round opens with the same days and times over the next `weeks` weeks (a poll has at most 6 rounds). A new poll message with Join/Leave/Vote/Close round is posted, together with a summary of the new window and who still hadn't voted, and only those players are pinged. Votes don't carry over; everyone votes again on the new slots.
+  - **Nothing fits in round 6** (or the next window has no usable slots): a "No date fit" message with advice (fewer days, more weeks or a lower `min_players`); the poll ends. Nobody is pinged.
+- **Confirm button:** only the GM or someone with **Manage Events**; others get the same private refusal. It turns the result message into "✅ **Confirmed:** <date>." (buttons removed) and posts the session: date and time (absolute and relative), GM, length and the players, who are pinged. The players are everyone who picked that slot (✅ or 🤔), in join order. A second Confirm (a double click or another button) gets "There's no open poll with that id; it may be finished or cancelled." privately.
+- **Deadlines:** with `round_hours`, a background check (every 60 s) closes the round once its deadline passes, with the same outcome as Close round. Without `round_hours` a round stays open until everyone voted (at least two players) or the GM closes it. A round left open by a restart (everyone voted, but the bot stopped before closing it) is closed by the same check.
+- **Reminders:** a confirmed session gets two reminders in the poll's channel, 24 hours and 1 hour before the start: "⏰ <players> **<name>** starts in <time>!" with the session embed, pinging the players. Each is sent once, also across restarts. Reminders whose time has already passed when the session is confirmed are skipped (the announcement covers them): confirmed 5 hours ahead, only the 1-hour reminder follows; confirmed 30 minutes ahead, none. If the bot was down past the 24-hour mark it sends only the 1-hour reminder (one message, not two); nothing is sent once the session started, and cancelled sessions are never reminded.
+- **Nudges:** while a round is open, players who haven't voted get a reply to the poll message ("👋 <players> please vote in **<name>** (round N).", pinging only them) once the round has been open 24 hours, then at most once per 24 hours, at most 3 times per round. A new round starts the count again; cancelled or closed polls are never nudged, and neither is a new round whose poll message hasn't been posted yet.
+- **Channel gone:** before a deadline close, reminder or nudge the bot checks the poll's channel. If it was deleted or the bot lost View Channel, Send Messages or Embed Links there, nothing is posted and one warning per cause is logged (not one per minute); a due deadline close or reminder waits until the channel works again (a reminder only until the session starts). A reminder or nudge that Discord refuses anyway is logged and not retried. A result or next-round message that could not be sent is retried every 60 s (once the channel works) until it is posted, so the GM still gets Confirm buttons and the players a poll to vote on.
+- **Old messages:** if the old poll message can't be edited or a result, next-round or no-fit message can't be posted (deleted channel or message, missing permissions), the error is logged and the poll still moves on; a missing result or next-round message is posted later (see Channel gone), a missing no-fit message is not. Close round and Confirm keep working after a restart; buttons on a poll that's gone say "This button doesn't work any more." privately.
+- **Limits:** at most 5 open polls per server.
+- **Cooldown:** 30 s per user, refunded unless the poll was posted (input errors, a channel problem and a failed send cost nothing). Like the other cooldowns it resets when the bot restarts.
+- **Channel:** the bot needs View Channel, Send Messages and Embed Links in the channel (Send Messages in Threads for a thread); otherwise you get "I can't post a poll here: I need View Channel, Send Messages and Embed Links in this channel." It also needs Read Message History there for the nudges (Discord only allows replies with it); this isn't checked up front, so without it each nudge is refused by Discord, logged and still counted.
+- **Errors** are private replies: a blank or too long name, days not in the accepted forms ("Use weekdays like `fri,sat` or `friday, saturday` (or `weekend` / `weekdays`)."), bad times ("Use 24-hour times like `19:00,14:30`."), a bad or past start date, an out-of-range number, no slots in the window ("There are no slots in that window; pick a later start date or more weeks."), more than 25 slots ("That gives N slots (max 25); use fewer weeks, days or times."), too many open polls, and "Something went wrong with the session poll. Please try again later." for anything unexpected (logged). If the poll message can't be sent, the poll is cancelled so it doesn't count towards the limit.
+- Polls, players and votes are stored in `sessions.sqlite3`; see [Data and storage](#data-and-storage).
+
+### /sessions
+
+`/sessions` (no parameters, server only) posts this server's open polls and upcoming sessions publicly:
+
+- **Open polls** (voting or waiting for Confirm, oldest first): the name linked to the current poll message (bold without a link when the message id is unknown), `Round N of 6`, and either `waiting for <players>`, `everyone voted` or `waiting for the GM to confirm`.
+- **Upcoming sessions** (confirmed, not cancelled, not started yet, soonest first): name, start time (absolute and relative, in everyone's own time zone) and GM; at most 10, then `+N more`.
+- With neither: "No open polls or upcoming sessions. Start one with `/session_poll`."
+- Mentions in the list never ping. Cooldown: 10 s per user, refunded unless the list was posted. Anything unexpected gives "Something went wrong with the session poll. Please try again later." privately (logged).
+
+### /session_cancel
+
+`/session_cancel item` cancels an open poll or an upcoming session of this server. Only the GM or someone with **Manage Events** can cancel; anyone else gets "Only the GM or someone with **Manage Events** can do that." privately.
+
+- **`item`** autocompletes this server's open polls (`Poll: <name> (from Tue 3 Nov)`, the first day of the current round's window) and upcoming sessions (`Session: <name> (Fri 6 Nov 19:00)`), with dates in `SESSIONS_TIMEZONE`. Typing filters the list (case-insensitive, anywhere in the label); at most 25 suggestions. Pick a suggestion: text typed by hand that isn't one gets "Pick an open poll or upcoming session from the list; it may be finished or cancelled." privately.
+- **A poll:** the poll stops (no more votes, deadline closes or nudges; it no longer counts towards the 5 open polls). Its current poll message gets "🚫 **Cancelled.** This poll no longer takes votes." and loses its buttons; a result message that was still waiting for Confirm gets the same text and loses its Confirm buttons.
+- **A session:** it disappears from `/sessions` and gets no more reminders; the poll message it came from gets "🚫 **Cancelled.** This session won't take place.". Sessions that already started can't be cancelled.
+- The bot then replies publicly, for example "🚫 The session poll **<name>** was cancelled by <you>." (mentions don't ping). If the poll message can't be edited (deleted, missing permissions) the error is logged and the cancel still counts.
+- An item that is finished, already cancelled or from another server gets "There's no open poll with that id; it may be finished or cancelled." or "There's no upcoming session with that id; it may have started or been cancelled." privately.
+
 ## /help
 
 `/help [command] [public]` explains the bot inside Discord. The reply is private unless `public` is true.
 
-- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats, Voice activity and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
+- **Overview** (no `command`): a "Getting started" hint, then the commands grouped as Media, CS2 stats, Voice activity, Session polls and Utility, one line each with the usage and a one-line summary (for example `` `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]` ``). A registered command without help text is listed under "Other" with its Discord description. The footer points to `/help command:<name>`.
 - **Detail** (`command` set): the command's summary and explanation, then Usage, Parameters (required or optional, choices, accepted formats), Examples and Notes.
 - **Command names:** `command` has autocomplete (names that start with what you typed first, then names that contain it, up to 25). Case and a leading `/` are ignored, so `/Link` works like `link`.
 - **Unknown names** get a private reply, "There is no command with that name.", with up to 3 similar names ("Did you mean: /download?") or a pointer to `/help`.
@@ -369,7 +434,7 @@ Pokémon names are shown as plain text (markdown escaped) and cut at 32 characte
 
 ## Data and storage
 
-The bot keeps two SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
+The bot keeps three SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
 
 The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds three tables:
 
@@ -387,7 +452,19 @@ The activity database at `<DATA_DIR>/activity.sqlite3` holds three tables:
 | `reports_posted` | `month_key` (primary key, `YYYY-MM`), `posted_at` | Months whose activity overview was already auto-posted. |
 | `pokemon_events` | `message_id` (primary key, Toasty's reply), `user_id`, `ts`, `kind` (`catch` or `cooldown`), `pokemon` (empty for cooldowns), `shiny` | One row per Toasty reply to a member's `;pokemon` (only with `TOASTY_BOT_ID`; see [Toasty ;pokemon catches](#toasty-pokemon-catches)). No message text. Never pruned. |
 
-In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
+The session poll database at `<DATA_DIR>/sessions.sqlite3` holds these tables:
+
+| Table | Columns | Purpose |
+|---|---|---|
+| `polls` | `id` (primary key), `guild_id`, `channel_id`, `message_id`, `name`, `gm_id`, `days` (weekdays, Mon=0, comma-separated), `times` (`HH:MM`, comma-separated), `weeks`, `duration_hours`, `min_players`, `round_hours`, `round_number`, `window_start` (`YYYY-MM-DD`), `status` (`voting`, `awaiting_confirm`, `confirmed`, `failed` or `cancelled`), `created_at`, `round_started_at`, `result_message_id` | One row per session poll. `message_id` is the current round's poll message and stays empty until that message is sent (also after a new round starts). `result_message_id` is the result message with the Confirm buttons, empty until it is sent. Never pruned. |
+| `poll_slots` | `id` (primary key), `poll_id`, `round_number`, `start`, `end` | The candidate slots of each round (Unix timestamps). Earlier rounds' slots are kept. |
+| `poll_players` | `poll_id`, `user_id` (primary key together) | Who joined each poll (the GM joins automatically). |
+| `poll_votes` | `poll_id`, `user_id`, `slot_id` (primary key together), `vote` (`yes`, `if_needed` or `no`) | Each player's vote per slot. Leaving a poll deletes that player's votes. Votes of earlier rounds are kept, but only the current round's slots count. |
+| `sessions` | `id` (primary key), `poll_id`, `guild_id`, `channel_id`, `message_id` (the poll message), `name`, `gm_id`, `start`, `end`, `roster` (user ids, comma-separated), `cancelled` | One row per confirmed session. Cancelling keeps the row and sets `cancelled`. Never pruned. |
+| `session_reminders` | `session_id`, `offset_seconds` (primary key together) | Which reminders (seconds before the start) were already handled, so none is sent twice after a restart. |
+| `poll_nudges` | `poll_id`, `round_number`, `sent_at` | One row per nudge sent, counted per round. |
+
+In prod this directory must be writable by the service user, persistent, and **backed up** (for example with Proxmox container backups). Losing `cs2.sqlite3` means everyone has to `/link` again (they are then seeded silently, so nothing old is posted). Restoring an *old* copy is the risky case: recent matches may be posted a second time (those from the last 3 hours; older ones never are). Losing `activity.sqlite3` loses all recorded voice history (Discord has no history to rebuild it from); restoring an old copy loses the time since that backup, and the auto-post may post a month's overview again if its `reports_posted` row is missing. Losing `sessions.sqlite3` loses every open session poll (its buttons stop working), its votes and every confirmed session with its reminders; restoring an old copy can repeat reminders and nudges sent since that backup. The `data/` directory is gitignored and survives `git pull`. `/download` stores nothing and removes its temp files after each request.
 
 ## Troubleshooting
 
@@ -421,6 +498,12 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Month boundaries:** months, days and hours use `ACTIVITY_TIMEZONE` (default `UTC`). Changing it later shifts which sessions fall into which day and month, and a month already auto-posted is not posted again.
 - **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
 - **Toasty catches:** only recorded while the bot is online, and only when Toasty replies to a `;pokemon` message (catches by any other route, or replies to a message the bot missed, are not seen). The reply formats are derived from a few observed replies, so a Toasty wording change can stop the recording without an error.
+- **Session polls live in their channel:** a poll is a message in the channel it was started in. Every update, result, reminder and nudge goes to that channel; there is no way to move a poll, and a deleted poll channel leaves the poll open (cancel it with `/session_cancel`).
+- **Departed members in polls:** players who left the server stay joined, count towards `min_players` and the fit rule, and keep being mentioned in `Waiting for`, nudges, rosters and reminders. The GM or someone with Manage Events can cancel the poll and start a new one.
+- **One session time zone:** slot times are read in one server-wide `SESSIONS_TIMEZONE` (default `ACTIVITY_TIMEZONE`); a player can't enter times in their own zone. Changing it later moves the times of new polls and later rounds; slots already offered keep their times.
+- **Select labels use the server zone:** the vote form's options (`Fri 6 Nov 19:00`) are in `SESSIONS_TIMEZONE`, because select menus can't show Discord timestamps, while the poll, result and session embeds use timestamps that Discord shows in each reader's own zone. For players in another zone the two can differ.
+- **No conflict detection:** polls are independent; the bot doesn't notice overlapping polls, sessions at the same time, or a player confirmed into two sessions at once.
+- **Reminders and nudges while offline:** they are only sent while the bot runs (checked every 60 s). After downtime a due reminder is sent late (only the latest one), and nothing is sent once the session started. A reminder or nudge is marked as sent right after the attempt, so a refused send is not retried.
 - **Monthly post after a crash:** a month is recorded as posted right after the send. If the bot stops between the two, that month's overview is posted again after the restart.
 
 ## Development
@@ -433,12 +516,14 @@ src/ninja_bot/
   config.py       env-based config (load_config takes an optional dict for tests)
   posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
-                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener)
+                  help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener),
+                  sessions.py (/session_poll, /sessions, /session_cancel, poll buttons)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
                   cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
+  sessions/       session poll logic: slots (weekday/time/date parsing, candidate slots), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/ and tests/fixtures/toasty/
 docs/             deployment.md, manual-checks.md

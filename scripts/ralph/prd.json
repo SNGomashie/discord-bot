@@ -1,18 +1,17 @@
 {
   "project": "ninja-discord-bot",
-  "branchName": "ralph/activity-tracking",
-  "description": "Review follow-ups for activity tracking: shame list, streak, awards, report retry, month bounds, reporter cost, shared posting helpers and cleanups",
+  "branchName": "ralph/session-polls",
+  "description": "Review follow-ups for session polls: lone-GM auto-close, serialised votes and joins, late reminders, empty Save, stale refresh, repairing failed outcome posts, cancel cleanup and per-cycle state reads",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Wall of shame only lists plausible members",
-      "description": "As a member, I want the wall of shame to list people who are actually part of the server's voice crowd, so that it isn't filled with long-gone members.",
+      "title": "A lone GM doesn't close the round",
+      "description": "As a GM, I want the poll to wait for other players after I vote, so that my own vote doesn't close or burn a round.",
       "acceptanceCriteria": [
-        "`known_users()` (store Protocol and `SqliteActivityStore`) is replaced or supplemented by a method returning, per user, the first and last voice session start (for example `voice_user_ranges() -> dict[int, tuple[float, float]]`); users who only appear in `pokemon_events` are not shame candidates",
-        "New pure function in `activity/stats.py` (or `activity/report.py`), e.g. `shame_candidates(ranges, month_start_ts, month_end_ts)`, returns the users whose first session is before the end of the viewed month and whose last session is at most `SHAME_LOOKBACK_DAYS = 90` days before the end of the viewed month (a named constant); `build_monthly_report` uses it instead of the raw known-users set, and still includes users who have voice time that month",
-        "A user whose first session is after the end of the viewed month is never shamed for it (viewing `2026-01` does not list someone first seen in September)",
-        "Unit tests: user first seen after the month, user last seen 91 days before month end (excluded) and 89 days (included), Pokémon-only user excluded, user with 0h in range included, ordering and the `SHAME_LIMIT` unchanged",
-        "Docs: `README.md` activity section says who can appear on the wall of shame (seen in voice within the last 90 days and already known by that month) and `docs/manual-checks.md` item adjusted if it mentions the shame list",
+        "`scoring.all_voted` returns False unless at least `MIN_PLAYERS_TO_AUTO_CLOSE` (new constant, 2) players have joined and none is pending; the docstring says why",
+        "`should_auto_close` therefore returns `None` (or `\"deadline\"` when due) for a poll with only the GM joined; a manual close by the GM and a deadline close still work and evaluate normally",
+        "Tests: GM alone has voted gives no `all_voted`; GM plus one player both voted gives `all_voted`; GM alone with an elapsed deadline gives `\"deadline\"`; a manual close with only the GM still evaluates; all existing scoring tests still pass",
+        "Docs: `README.md` Session polls section says a round closes by itself only once at least two players (the GM and one more) have all voted",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -22,14 +21,13 @@
     },
     {
       "id": "US-002",
-      "title": "Skip departed members in the wall of shame",
-      "description": "As a member, I want people who left the server not to appear as dead `<@id>` mentions on the wall of shame.",
+      "title": "Serialise joins, leaves and votes with close and confirm",
+      "description": "As a player, I want my vote or join to be either counted in the round or refused, never recorded after the round was evaluated.",
       "acceptanceCriteria": [
-        "In the cog, shame candidates (not the leaderboard) are checked against the guild with the existing REST-backed lookup pattern from `cogs/cs2.py` (`member_lookup` / `MemberCache`: cache first, then `fetch_member`; `NotFound` means not a member); the lookup needs no members intent",
-        "A candidate that is definitively not a member is dropped before `SHAME_LIMIT` is applied, so the list still fills up with eligible members; transient lookup errors keep the candidate (never drop on an error) and are not cached",
-        "The filtering decision is a pure function over `(candidate ids, set of departed ids)`; the cog only gathers the departed set, for both `/activity` and the monthly post",
-        "Tests: departed member dropped and list refilled, lookup error keeps the candidate, all candidates departed gives an empty shame field (no empty embed field), `/activity` and the monthly post both filter",
-        "Docs: `README.md` activity section mentions that members who left the server are skipped",
+        "In `SessionService`, `join` (including its prefill), `leave` and `submit_vote` run under the same `self._lock` as `close_round`, `confirm` and `cancel_poll`, and read the poll status inside the lock; the lock is never taken twice in one call path (no deadlock: helpers called under the lock don't acquire it)",
+        "A vote or join arriving after the round was evaluated returns `POLL_CLOSED` and writes nothing",
+        "`join` no longer mistakes a lost race for a full poll: because the call now runs under the lock, a `False` from `store.join` can only mean the poll is full; add a short comment saying so and a test with two concurrent `asyncio.gather` joins by the same user (one `JOINED`, one `ALREADY_JOINED`, never `FULL` on a poll with space)",
+        "Test: a vote started concurrently with `close_round` (use a store whose `record_votes` awaits an `asyncio.Event`) is either counted in the evaluated round or returns `POLL_CLOSED`, and `confirm` afterwards offers exactly the slots the result showed",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -39,13 +37,13 @@
     },
     {
       "id": "US-003",
-      "title": "Current streak stays alive until the day ends",
-      "description": "As a member, I want my current streak to still count while I haven't joined voice yet today.",
+      "title": "Re-check the auto-close reason under the lock",
+      "description": "As a GM, I want a round to close on \"everyone voted\" or \"deadline\" only if that is still true when it closes.",
       "acceptanceCriteria": [
-        "In `monthly_stats` (`activity/stats.py`), for the month that contains `now`, the current streak ends at today when today is an active day, otherwise at yesterday (day-of-month − 1); for ended months it still ends on the last day of the month; on the 1st with no activity yet today the current streak is 0",
-        "`_run_ending_on` or its caller is the only place that decides this; `longest_streak` is unchanged",
-        "Tests: 10 active days then a quiet morning on day 11 gives current streak 10; today active gives 11; yesterday inactive and today inactive gives 0; 1st of the month; ended month unchanged",
-        "Docs: `README.md` activity section states that streaks are counted within the viewed month (they restart on the 1st) and that today doesn't break a running streak; `help/content.py` text for `/myactivity` is corrected if it claims otherwise",
+        "`close_round` with reason `\"all_voted\"` or `\"deadline\"` recomputes `should_auto_close(poll, players, slot_ids, votes, now)` inside the lock; when it returns `None` the round stays open and `close_round` returns a new frozen `NotReady(poll)` outcome (added to the `RoundOutcome` union)",
+        "`\"manual\"` is unchanged (permission check, no readiness check)",
+        "The cog (`close_and_post`, `advance_if_ready`, `_close_due_rounds`) treats `NotReady` like `NotVoting`: nothing is posted, nothing raises",
+        "Tests: a player joins between the unlocked read and the locked close (simulate by joining inside a fake store hook) so `all_voted` is no longer true and the round stays open; a `\"deadline\"` close attempted before the deadline (fake clock) stays open; `NotReady` posts nothing in the cog; a still-true reason closes as before",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -55,12 +53,14 @@
     },
     {
       "id": "US-004",
-      "title": "Climber and drop awards only for ended months",
-      "description": "As a member, I want \"Biggest climber\" and \"Biggest drop\" to compare complete months, so that mid-month results aren't nonsense.",
+      "title": "No instant reminder for a late-confirmed session",
+      "description": "As a player, I want reminders only for the moments that are still ahead when the session is confirmed.",
       "acceptanceCriteria": [
-        "`compute_awards` (`activity/awards.py`) omits Biggest climber and Biggest drop when the viewed month contains `now` (the month is not over); every other award is unchanged",
-        "Tests: viewing the current month on day 3 yields neither award even when last month had data; viewing an ended month still yields them; a month with no previous data still yields neither",
-        "Docs: `README.md` activity section says these two awards appear for completed months only",
+        "`SessionStore.confirm` takes `now` and, in the same transaction that inserts the session, marks every `REMINDER_OFFSETS` offset with `start - offset <= now` as already handled (rows in `session_reminders`), without posting; `SessionService.confirm` passes `self.clock()`",
+        "A session confirmed 5 h before its start: the 24 h reminder is never posted, the 1 h reminder is; confirmed 30 min before: neither is posted; confirmed 3 days ahead: both are",
+        "The `reminders.py` logic for downtime catch-up is unchanged (the closest missed reminder is still sent late)",
+        "Tests on the real `SqliteSessionStore` (`tmp_path`) and through `SessionNotifier.due_reminders` with a fake clock for the three cases above; the store Protocol, fakes in the tests and docstrings updated",
+        "Docs: `README.md` reminders bullet says reminders whose time has already passed when the session is confirmed are skipped (the announcement covers them); `docs/manual-checks.md` reminder check adjusted",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -70,14 +70,13 @@
     },
     {
       "id": "US-005",
-      "title": "A failed report build is retried, not marked posted",
-      "description": "As a member, I want the monthly overview to be retried when it couldn't be built, instead of being lost forever.",
+      "title": "Refuse an empty Save",
+      "description": "As a player, I don't want to be counted as having voted \"no to everything\" because I pressed Save too early.",
       "acceptanceCriteria": [
-        "In `_post_report` (`cogs/activity.py`) `reporter.confirm(month)` is no longer in a `finally` that also covers building the report; if building the report (`monthly_report`, embed) raises, the month is not confirmed, the error is logged with `log.exception`, and the next hourly cycle tries again",
-        "The month is still confirmed after every send attempt, successful or not, so a broken channel or a Discord error on send can't repeat endlessly (existing behaviour)",
-        "The cycle still never raises",
-        "Tests: report build raises then succeeds next cycle (posted once); send fails (confirmed, not retried); send succeeds; build raises every time (logged each cycle, never confirmed, loop keeps running)",
-        "Docs: `docs/deployment.md` troubleshooting row for a missing monthly post mentions that a failed build is retried hourly and where it is logged; `README.md` auto-post section stays correct",
+        "In `sessions/views.py`, **Save** with both selections empty does not stop the view and does not call `on_save`; it replies ephemerally with a new content constant (e.g. `VOTE_EMPTY_MESSAGE`: pick at least one slot, or press **None of these work**) and the form stays usable",
+        "**None of these work** still records an all-No vote and **Save** with at least one selection still works; a user whose stored votes pre-filled the selects can Save unchanged",
+        "Tests: empty Save refused and view still open, non-empty Save, none-of-these, pre-filled Save, constant lives in `sessions/content.py`",
+        "Docs: `README.md` Vote button bullet mentions the prompt for an empty Save; `docs/manual-checks.md` vote-view check added",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -87,14 +86,13 @@
     },
     {
       "id": "US-006",
-      "title": "Reject unreasonable months up front",
-      "description": "As a member, I want `/activity month:0001-01` to get the normal month-format reply, not \"something went wrong\".",
+      "title": "A refresh never restores buttons or touches closed polls",
+      "description": "As a player, I don't want a closed round's message to show live buttons again.",
       "acceptanceCriteria": [
-        "`parse_month` / `resolve_month` reject years before `MIN_YEAR = 2015` (a named constant: the year Discord launched) with the same user-readable `InvalidMonthError` message used for other bad months; future months are still rejected as before",
-        "`Month.previous()` can never raise for a month that passed validation (a month at `MIN_YEAR` January is handled, for example by returning `None`-safe behaviour in `monthly_report` or by `MIN_YEAR` being at least one year above the `Month` lower bound)",
-        "Timestamp conversion cannot overflow for any accepted month in any valid `ACTIVITY_TIMEZONE`",
-        "Tests: `0001-01`, `2014-12`, `2015-01` (accepted, report builds), `9999-12`, `2015-13`, a month in `Pacific/Kiritimati` and `Pacific/Pago_Pago`; `/activity` and `/myactivity` reply with the format message for rejected months",
-        "Docs: `README.md` month parameter text states the earliest accepted month; `help/content.py` is unchanged unless it states a range",
+        "`refresh_poll_message` returns without editing when the poll's status is not `voting`",
+        "The refresh edit sends only the new embed (and `allowed_mentions`), never `view=`: the poll buttons are static, so omitting the view leaves them as Discord has them, and a late refresh can't bring back buttons that a close removed",
+        "The vote-save path and any other caller keep working unchanged",
+        "Tests: refresh on a voting poll edits with an embed and no `view` kwarg; on `awaiting_confirm`, `confirmed`, `failed` and `cancelled` polls it edits nothing; a refresh racing a close (close edit then refresh) leaves `view=None` as the last view state seen by the fake message",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -104,15 +102,15 @@
     },
     {
       "id": "US-007",
-      "title": "Cheap hourly report check",
-      "description": "As the owner, I want the hourly \"is a report due?\" check to stay cheap as months pile up.",
+      "title": "Store the result message and detect unposted messages",
+      "description": "As a developer, I need the store to know which poll messages were really posted so that a failed send can be repaired and a cancel can find every message.",
       "acceptanceCriteria": [
-        "The store gains `posted_months() -> set[str]` (or `latest_posted_month()`); `MonthlyReporter.due_month` fetches it once and walks months in memory, calling `_has_data` only for months that are not posted; with every past month posted, a cycle makes at most two store calls (first session and posted months)",
-        "`monthly_report` and `_has_data` compute `month.start/end(tz).timestamp()` once per call and fetch `sessions_between` for a given window once, not several times",
-        "New index `CREATE INDEX IF NOT EXISTS ... ON voice_sessions(start_ts)` in the schema (existing databases get it lazily like the other tables)",
-        "Behaviour is unchanged: oldest unposted month with data first, at most one per call, never older than the first session's month",
-        "Tests: existing reporter tests keep passing; a counting fake store proves 24 posted months cost at most two store calls; the new index exists after `_connect`",
-        "Docs: none beyond `README.md` Data and storage if the schema list there names indexes",
+        "`polls` gets `result_message_id INTEGER NULL` (the result message with the Confirm buttons); `Poll` gets `result_message_id: int | None`; `_POLL_COLUMNS`, the row mapper and the schema are updated (no migration: the table has never shipped); `set_result_message(poll_id, message_id)` is added to the Protocol and `SqliteSessionStore`",
+        "`advance_round` now **replaces** `message_id` with its argument (default `None`) instead of keeping the old one, so `message_id IS NULL` on a voting poll in round 2 or later means \"the round message was never posted\"; `result_message_id` is reset to NULL when a poll enters `awaiting_confirm`",
+        "`polls_missing_messages() -> list[Poll]` returns voting polls with `round_number > 1` and `message_id IS NULL`, and `awaiting_confirm` polls with `result_message_id IS NULL`, oldest first (round 1 is excluded: a failed first post is already discarded by `_discard`)",
+        "`confirm`'s session keeps `message_id` as the poll's voting message as before",
+        "Tests on the real store: set/get of the result message, `advance_round` clears `message_id` and a later `set_poll_message` sets it, the new query returns exactly the two cases and not round-1 polls or polls whose messages are set, restart persistence; fakes and the Protocol docs updated",
+        "Docs: `README.md` Data and storage `polls` row lists `result_message_id`",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -122,14 +120,17 @@
     },
     {
       "id": "US-008",
-      "title": "Share the auto-post channel helpers",
-      "description": "As the developer, I want one implementation of \"resolve the post channel, warn once per cause, send safely\" used by both the CS2 and activity cogs.",
+      "title": "Repair a failed outcome post and cancel result messages",
+      "description": "As a GM, I want a poll to recover when Discord rejected the result or next-round message, and I want a cancel to remove every live button.",
       "acceptanceCriteria": [
-        "New module `src/ninja_bot/posting.py` with `send_safely(awaitable)` and a small `PostChannelResolver(bot, warning_template, channel_id)` (or equivalent) that holds the once-per-cause warning set and implements the `get_channel` → `fetch_channel` → `is_post_channel` → `channel_problem` flow now duplicated in `cogs/cs2.py` and `cogs/activity.py`",
-        "Both cogs use it; the logged warning texts stay exactly as they are today (`Not posting CS2 matches: ...` / `Not posting the monthly activity overview: ...`); behaviour for missing, wrong-type and permission problems is unchanged and a working channel clears the remembered warnings",
-        "`fetch_channel` failing with an `HTTPException` other than `NotFound`/`Forbidden` is treated as \"unavailable this cycle\" (logged at warning level once, no crash) in both cogs",
-        "Existing cs2 and activity autopost tests pass with only import/attribute updates; new tests for the shared module cover each cause, the clear-on-success rule and the extra `HTTPException` case",
-        "Docs: `CLAUDE.md` Architecture list names `posting.py`; the layout block in `README.md` lists it",
+        "`SessionService.rebuild_outcome(poll_id) -> RoundFits | RoundAdvanced | None` rebuilds, without changing any state, the outcome for a poll in `awaiting_confirm` (the fitting top slots, as `confirm` evaluates them) or a voting round-2+ poll (current slots and pending players); `None` for anything else",
+        "The cog holds one `asyncio.Lock` (`_outcome_lock`) around `close_and_post`, `handle_close`'s close-and-post, and the repair, so a repair can't run between a close and its post",
+        "`_post_result` stores the sent message's id with `set_result_message`; `_post_next_round` already stores the new `message_id`",
+        "`repair_missing_messages()` runs at the start of each notify cycle: for each poll from `polls_missing_messages()`, under the lock, re-read the poll, skip it if the message now exists or the channel is unusable (`_channel`), otherwise rebuild the outcome and post it exactly like the first time, also marking the previous poll message closed when it has an id; errors are logged per poll and never raise",
+        "Nudges are skipped for a voting poll without `message_id`",
+        "`handle_session_cancel` for a poll also edits `result_message_id` (when set) with the cancelled text and `view=None`, in addition to `message_id`",
+        "Tests: a failing channel on the first `_post_result` leaves the poll `awaiting_confirm` without a result id, and the next cycle (channel working) posts the result once and stores its id; same for a failed next-round post; no double post when the first send succeeded; repair skipped when the channel is unusable; the lock serialises a close and a repair; cancel of an `awaiting_confirm` poll edits both messages; no nudge without a poll message",
+        "Docs: `README.md` Session polls section (\"Channel gone\" / failure handling) says a result or next-round message that could not be sent is retried every 60 s; `docs/manual-checks.md` gets a check (revoke Send Messages, close a round, restore it, see the message appear)",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
@@ -139,50 +140,17 @@
     },
     {
       "id": "US-009",
-      "title": "One helper for splitting intervals at local boundaries",
-      "description": "As the developer, I want a single, DST-safe way to split a session at local hour and day boundaries.",
+      "title": "Read each poll's state once per notify cycle",
+      "description": "As the owner, I want the 60-second loop to stay cheap as polls accumulate.",
       "acceptanceCriteria": [
-        "One function (for example `split_local(start, end, tz, unit: Literal[\"hour\", \"day\"]) -> Iterator[tuple[float, float, datetime]]`) yields the pieces of `[start, end)` split at local hour or day boundaries, including the \"boundary did not advance\" guard for DST transitions",
-        "`_seconds_per_day` (`stats.py`) and `_hour_pieces` (`awards.py`) use it, and the clip-then-iterate loop in `awards._clipped` reuses `clip` from `stats.py` instead of re-implementing it",
-        "No behaviour change: every existing stats/awards/social test passes unchanged",
-        "New tests for the helper: within one hour, spanning midnight, spanning several days, the DST spring-forward and fall-back days in `Europe/Amsterdam`, zero-length interval",
-        "Docs: none (internal)",
+        "`SessionStore` gets `round_state(poll_id, round_number) -> tuple[list[int], list[PollSlot], dict[tuple[int, int], Vote]]` reading players, slots and votes over one connection (one `asyncio.to_thread` hop); `SessionService.round_state` uses it",
+        "`run_notify_cycle` reads the state of every voting poll once and passes it to both the auto-close decision and the nudge decision (`SessionNotifier.due_nudges` accepts an optional mapping of precomputed states and falls back to reading them when absent); a poll closed during the cycle is not nudged in that cycle",
+        "Behaviour is otherwise unchanged: all existing notify, nudge and deadline tests still pass",
+        "Tests: with N voting polls the cycle makes at most one `round_state` store call per poll (counting fake store); a poll closed by the deadline is not nudged in the same cycle; `due_nudges` without the mapping still works",
         "Typecheck passes",
         "`./scripts/check.sh` passes"
       ],
       "priority": 9,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-010",
-      "title": "Remove the unused `tz` parameter from `Month.days`",
-      "description": "As the developer, I want `Month.days()` to take no argument it ignores.",
-      "acceptanceCriteria": [
-        "`Month.days()` has no `tz` parameter and no `del tz`; every call site in `src/` and `tests/` is updated; grep finds no `.days(tz)` or `.days(timezone)` call on a `Month`",
-        "Behaviour is unchanged",
-        "Docs: none (internal)",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
-      ],
-      "priority": 10,
-      "passes": true,
-      "notes": ""
-    },
-    {
-      "id": "US-011",
-      "title": "Toasty event mapping out of the Discord handler",
-      "description": "As the developer, I want the Catch/Cooldown to `PokemonEvent` mapping to be a pure, tested function, per the repo convention that cogs are thin wrappers.",
-      "acceptanceCriteria": [
-        "New pure function in `activity/pokemon.py`, `to_event(result: Catch | Cooldown, message_id: int, user_id: int, ts: float) -> PokemonEvent`, containing the `isinstance` branching and the field mapping that today lives in `PokemonTracker.record_reply` (`cogs/activity.py`)",
-        "`record_reply` only extracts ids and the timestamp from the message, calls `parse_reply` and `to_event`, and stores the result",
-        "The timestamp choice (message creation time) is passed in and covered by a test with a fake message",
-        "Tests: `to_event` for a plain catch, a shiny catch and a cooldown (with and without `wait_seconds`); the cog tests keep passing",
-        "Docs: none (internal)",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
-      ],
-      "priority": 11,
       "passes": true,
       "notes": ""
     }

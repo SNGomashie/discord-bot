@@ -120,9 +120,41 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] `/myactivity` shows `N catches · N shinies · N cooldown hits` and the Impatient award; a member who didn't play shows zeros
 - [ ] A shiny can be faked with `sqlite3 data/activity.sqlite3 "INSERT INTO pokemon_events VALUES (1, <your user id>, strftime('%s','now'), 'catch', 'Pikachu', 1)"` if Toasty doesn't cooperate; delete the row afterwards
 
+## Session polls
+
+- [ ] `/session_poll name:Test days:fri,sat times:19:00` posts the poll publicly with Join, Leave, Vote and Close round buttons; a second poll within 30 s is throttled privately
+- [ ] In a channel where the bot lacks Embed Links, `/session_poll` replies privately with the channel problem and posts nothing
+- [ ] Join and Leave update the poll message and confirm privately; the GM can't leave; the buttons still work after a bot restart
+- [ ] Vote without having joined says "Press **Join** first" privately
+- [ ] Vote opens a private form (only you see it) with the two multi-selects, Save and None of these work; option labels read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE`
+- [ ] Pick slots, Save: the form turns into "Your votes are saved." and the poll counts and `Waiting for` update
+- [ ] Vote again: the selects are pre-selected with your saved votes; None of these work turns all your votes into no
+- [ ] Vote without having saved anything, press Save with both selects empty: a private "Pick at least one slot..." reply, the form stays open and nothing is saved; pick a slot and Save works. Vote again and press Save without changing the pre-selected votes: they are saved unchanged
+- [ ] The form and the poll embed fit on the phone app (selects usable, labels not cut off)
+- [ ] Close round pressed by a player without Manage Events is refused privately; pressed by the GM it closes the round
+- [ ] With two players voting ✅ on a slot (and `min_players` unset), the last Save closes the round by itself: the old poll message says "Round 1 is closed." without buttons, and the result message pings only the GM with Confirm buttons
+- [ ] With no fitting slot, Close round posts round 2 as a new poll message (buttons work), pinging only players who didn't vote; the old message has no buttons
+- [ ] Confirm by a player is refused privately; Confirm by the GM edits the result to "Confirmed" and posts the session embed, pinging the roster; a second Confirm click is refused privately
+- [ ] Restart the bot mid-poll (while voting, and again while awaiting Confirm): Vote, Close round and Confirm still work afterwards
+- [ ] Deadline: start a poll with `round_hours:1`, leave a player without a vote; about an hour later (checked every minute) the round closes by itself and the outcome is posted
+- [ ] Reminders: confirm a session, then move its start close to now so the reminders fall due (stop the bot first; `<id>` is the session id, `start`/`end` are Unix seconds):
+  `sqlite3 data/sessions.sqlite3 "UPDATE sessions SET start = strftime('%s','now') + 86280, \"end\" = strftime('%s','now') + 100680 WHERE id = <id>;"`
+  (SQLite evaluates every `SET` against the old row, so set `"end"` explicitly, not as `start + ...`.) Start the bot: within a minute or two the 24 h reminder pings the roster (once, also after another restart). Then use `+ 3480` / `+ 17880` and check the 1 h reminder. Setting the start to 30 minutes ahead before any reminder was sent posts only one reminder.
+- [ ] Late confirmation: start a poll with a slot about 5 hours ahead, close the round and confirm that slot. No 24 h reminder follows the announcement; the 1 h reminder does. A slot confirmed 30 minutes ahead gets no reminder at all.
+- [ ] Nudges: with a voting poll and a player who hasn't voted, backdate the round (`sqlite3 data/sessions.sqlite3 "UPDATE polls SET round_started_at = round_started_at - 86400 WHERE id = <id>;"`, bot stopped): after a restart the bot replies to the poll message pinging only that player; no second nudge within 24 h; after three nudges in one round no more follow; in a channel where the bot lacks Read Message History the nudge is refused and logged (`Could not send session poll nudge`)
+- [ ] Failed outcome post: remove the bot's Send Messages in a poll's channel right after starting a poll, close the round as GM (no result appears; `Could not send session poll result` is logged), then restore Send Messages: within about a minute the result message with Confirm buttons appears once and Confirm works. Do the same with a round that doesn't fit: the round 2 poll message appears once and its buttons work
+- [ ] `/session_cancel` a poll that is waiting for Confirm: both the round's poll message and the result message say "Cancelled" and lose their buttons
+- [ ] Delete the channel of a poll with a due reminder: the bot logs one warning (`Can't post session poll messages in channel <id>: missing`), not one per minute, and keeps running
+- [ ] `/sessions` posts the list publicly: open polls link to their current poll message and show who is pending, upcoming sessions show the start in your own time zone; nobody is pinged; a second call within 10 s is refused privately
+- [ ] `/sessions` in a server without polls or sessions shows the empty-state text
+- [ ] `/session_cancel item:` suggests open polls and upcoming sessions with dates, and narrows as you type
+- [ ] `/session_cancel` by a player (no Manage Events) is refused privately; by the GM it posts the public confirmation (no ping), the poll message says "Cancelled" without buttons, and the item is gone from `/sessions` and the suggestions
+- [ ] Cancel a confirmed session: no reminder follows, and it is gone from `/sessions`
+- [ ] Typing a random `item` (not a suggestion) gives a private "Pick an open poll or upcoming session from the list" reply
+
 ## /help
 
-- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity and Utility groups, and a footer hint
+- [ ] `/help` shows the overview privately: getting started plus Media, CS2 stats, Voice activity, Session polls and Utility groups, and a footer hint
 - [ ] Typing `/help command:` offers all commands, narrows as you type (`do` -> `download`)
 - [ ] `/help command:download` shows usage `/download url:<url> [format:mp3|mp4] [start:<start>] [end:<end>]`, parameter notes for clips and examples
 - [ ] `/help command:/Link` (capital, leading slash) works the same as `link`
