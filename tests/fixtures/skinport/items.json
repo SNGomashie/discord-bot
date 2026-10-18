@@ -1,0 +1,58 @@
+[
+  {
+    "market_hash_name": "AK-47 | Redline (Field-Tested)",
+    "currency": "EUR",
+    "suggested_price": 31.5,
+    "item_page": "https://skinport.com/item/csgo/ak-47-redline-field-tested",
+    "market_page": "https://skinport.com/market/730?cat=Rifle&item=Redline&type=AK-47",
+    "min_price": 28.37,
+    "max_price": 64.12,
+    "mean_price": 33.9,
+    "median_price": 31.02,
+    "quantity": 1,
+    "created_at": 1535988253,
+    "updated_at": 1760774400
+  },
+  {
+    "market_hash_name": "Sticker | Example Team (Holo) | Example Major 2024",
+    "currency": "EUR",
+    "suggested_price": 0.12,
+    "item_page": "https://skinport.com/item/csgo/sticker-example-team-holo-example-major-2024",
+    "market_page": "https://skinport.com/market/730?cat=Sticker",
+    "min_price": null,
+    "max_price": null,
+    "mean_price": null,
+    "median_price": null,
+    "quantity": 0,
+    "created_at": 1717200000,
+    "updated_at": 1760774400
+  },
+  {
+    "market_hash_name": "Recoil Case",
+    "currency": "EUR",
+    "suggested_price": 0.49,
+    "item_page": "https://skinport.com/item/csgo/recoil-case",
+    "market_page": "https://skinport.com/market/730?cat=Container&item=Recoil+Case",
+    "min_price": 0.29,
+    "max_price": 1.5,
+    "mean_price": 0.41,
+    "median_price": 0.39,
+    "quantity": 1843,
+    "created_at": 1656633600,
+    "updated_at": 1760774400
+  },
+  {
+    "market_hash_name": "★ Karambit | Doppler (Factory New)",
+    "currency": "EUR",
+    "suggested_price": 1234.56,
+    "item_page": "https://skinport.com/item/csgo/karambit-doppler-factory-new",
+    "market_page": "https://skinport.com/market/730?cat=Knife&item=Doppler&type=Karambit",
+    "min_price": 1099.99,
+    "max_price": 2499,
+    "mean_price": 1350.1,
+    "median_price": 1301.7,
+    "quantity": 12,
+    "created_at": 1535988253,
+    "updated_at": 1760774400
+  }
+]
