@@ -1,0 +1,135 @@
+{
+  "success": true,
+  "start": 0,
+  "pagesize": 100,
+  "total_count": 5,
+  "searchdata": {
+    "query": "",
+    "search_descriptions": false,
+    "total_count": 5,
+    "pagesize": 100,
+    "prefix": "searchResults",
+    "class_prefix": "market"
+  },
+  "results": [
+    {
+      "name": "★ Karambit | Doppler (Factory New)",
+      "hash_name": "★ Karambit | Doppler (Factory New)",
+      "sell_listings": 42,
+      "sell_price": 123456,
+      "sell_price_text": "1.234,56€",
+      "app_icon": "https://example.invalid/730.jpg",
+      "app_name": "Counter-Strike 2",
+      "asset_description": {
+        "appid": 730,
+        "classid": "100000001",
+        "instanceid": "0",
+        "background_color": "",
+        "icon_url": "example-icon",
+        "tradable": 1,
+        "name": "★ Karambit | Doppler (Factory New)",
+        "name_color": "8650AC",
+        "type": "★ Covert Knife",
+        "market_name": "★ Karambit | Doppler (Factory New)",
+        "market_hash_name": "★ Karambit | Doppler (Factory New)",
+        "commodity": 0
+      },
+      "sale_price_text": "1.199,99€"
+    },
+    {
+      "name": "AK-47 | Redline (Field-Tested)",
+      "hash_name": "AK-47 | Redline (Field-Tested)",
+      "sell_listings": 1532,
+      "sell_price": 3012,
+      "sell_price_text": "30,12€",
+      "app_icon": "https://example.invalid/730.jpg",
+      "app_name": "Counter-Strike 2",
+      "asset_description": {
+        "appid": 730,
+        "classid": "100000002",
+        "instanceid": "0",
+        "background_color": "",
+        "icon_url": "example-icon",
+        "tradable": 1,
+        "name": "AK-47 | Redline (Field-Tested)",
+        "name_color": "D2D2D2",
+        "type": "Classified Rifle",
+        "market_name": "AK-47 | Redline (Field-Tested)",
+        "market_hash_name": "AK-47 | Redline (Field-Tested)",
+        "commodity": 0
+      },
+      "sale_price_text": "29,40€"
+    },
+    {
+      "name": "Recoil Case",
+      "hash_name": "Recoil Case",
+      "sell_listings": 98123,
+      "sell_price": 31,
+      "sell_price_text": "0,31€",
+      "app_icon": "https://example.invalid/730.jpg",
+      "app_name": "Counter-Strike 2",
+      "asset_description": {
+        "appid": 730,
+        "classid": "100000003",
+        "instanceid": "0",
+        "background_color": "",
+        "icon_url": "example-icon",
+        "tradable": 1,
+        "name": "Recoil Case",
+        "name_color": "D2D2D2",
+        "type": "Base Grade Container",
+        "market_name": "Recoil Case",
+        "market_hash_name": "Recoil Case",
+        "commodity": 1
+      },
+      "sale_price_text": "0,30€"
+    },
+    {
+      "name": "Sticker | Example Team (Holo) | Example Major 2024",
+      "hash_name": "Sticker | Example Team (Holo) | Example Major 2024",
+      "sell_listings": 0,
+      "sell_price": 0,
+      "sell_price_text": "0,--€",
+      "app_icon": "https://example.invalid/730.jpg",
+      "app_name": "Counter-Strike 2",
+      "asset_description": {
+        "appid": 730,
+        "classid": "100000004",
+        "instanceid": "0",
+        "background_color": "",
+        "icon_url": "example-icon",
+        "tradable": 1,
+        "name": "Sticker | Example Team (Holo) | Example Major 2024",
+        "name_color": "D2D2D2",
+        "type": "Remarkable Sticker",
+        "market_name": "Sticker | Example Team (Holo) | Example Major 2024",
+        "market_hash_name": "Sticker | Example Team (Holo) | Example Major 2024",
+        "commodity": 1
+      },
+      "sale_price_text": ""
+    },
+    {
+      "name": "Music Kit | Example Artist, Example Song",
+      "hash_name": "Music Kit | Example Artist, Example Song",
+      "sell_listings": 0,
+      "sell_price_text": "",
+      "app_icon": "https://example.invalid/730.jpg",
+      "app_name": "Counter-Strike 2",
+      "asset_description": {
+        "appid": 730,
+        "classid": "100000005",
+        "instanceid": "0",
+        "background_color": "",
+        "icon_url": "example-icon",
+        "tradable": 1,
+        "name": "Music Kit | Example Artist, Example Song",
+        "name_color": "D2D2D2",
+        "type": "High Grade Music Kit",
+        "market_name": "Music Kit | Example Artist, Example Song",
+        "market_hash_name": "Music Kit | Example Artist, Example Song",
+        "commodity": 1
+      },
+      "sale_price_text": ""
+    }
+  ]
+}
