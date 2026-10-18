@@ -6,6 +6,7 @@ from ninja_bot.cs2.steam import (
     STEAM_ID_ONLY_MESSAGE,
     SteamId,
     VanityName,
+    is_steam_id,
     is_vanity_name,
     parse_steam_id,
     parse_steam_target,
@@ -224,3 +225,23 @@ def test_parse_steam_id_rejects_vanity_input(text: str) -> None:
         parse_steam_id(text)
     assert exc_info.value.message == STEAM_ID_ONLY_MESSAGE
     assert "17-digit" in STEAM_ID_ONLY_MESSAGE
+
+
+@pytest.mark.parametrize("text", ["76561197960287930", "76561198000000001"])
+def test_is_steam_id_accepts_ids(text: str) -> None:
+    assert is_steam_id(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "gaben",
+        "7656119796028793",
+        "765611979602879301",
+        " 76561197960287930",
+        "16561197960287930",
+    ],
+)
+def test_is_steam_id_rejects_others(text: str) -> None:
+    assert not is_steam_id(text)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import string
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from ninja_bot.cs2.models import ApiError
 
@@ -46,6 +46,13 @@ class InventoryItem:
     marketable: bool
     colour: int | None
     kind: ItemKind
+
+
+class InventoryProvider(Protocol):
+    async def get_inventory(self, steam64_id: str) -> list[InventoryItem]: ...
+
+    # Wrappers (such as a cache around another provider) must delegate this.
+    async def aclose(self) -> None: ...
 
 
 def parse_inventory(payload: Any) -> list[InventoryItem]:

@@ -524,8 +524,8 @@ src/ninja_bot/
                   sessions.py (/session_poll, /sessions, /session_cancel, poll buttons)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
-  cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (the only Steam module),
-                  cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
+  cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (Steam name lookups),
+                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
   sessions/       session poll logic: slots (weekday/time/date parsing, excluded days, candidate slots), players (the `players` mention list), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/

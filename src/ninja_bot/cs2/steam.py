@@ -43,18 +43,23 @@ def is_vanity_name(name: str) -> bool:
     return not (name.isdigit() and len(name) == _STEAM_ID_LENGTH)
 
 
+def is_steam_id(text: str) -> bool:
+    """True for a bare SteamID64 (17 ASCII digits starting with 7656119), nothing else."""
+    return _STEAM_ID_RE.fullmatch(text) is not None
+
+
 def parse_steam_target(text: str) -> SteamId | VanityName:
     """Parse /link input: a SteamID64, a `/profiles/<id>` or `/id/<name>` URL, or a bare name."""
     if len(text) > MAX_STEAM_INPUT_LENGTH:
         raise InvalidSteamIdError()
     value = text.strip()
     if match := _PROFILE_URL_RE.fullmatch(value):
-        if _STEAM_ID_RE.fullmatch(match.group(1)):
+        if is_steam_id(match.group(1)):
             return SteamId(match.group(1))
         raise InvalidSteamIdError()
     if match := _VANITY_URL_RE.fullmatch(value):
         value = match.group(1)
-    elif _STEAM_ID_RE.fullmatch(value):
+    elif is_steam_id(value):
         return SteamId(value)
     if is_vanity_name(value):
         return VanityName(value)

@@ -98,3 +98,9 @@
 - `colour` = Rarity tag `color` (hex), fallback `name_color`, else None.
 - Needs manual check: fixture shape vs a real inventory response (US-016 capture script).
 - **Learnings:** Steam inventory ids/amounts are strings; descriptions are shared by stacked assets with the same classid+instanceid.
+
+## 2026-10-18 - US-002
+- Added `src/ninja_bot/cs2/inventory_client.py` (`SteamInventoryClient`, `inventory_url`, `MAX_INVENTORY_BYTES` 8 MiB, `INVENTORY_RATE_LIMITED_MESSAGE`), `InventoryProvider` Protocol in inventory.py, `is_steam_id` in steam.py (also used by `parse_steam_target`), tests `tests/test_cs2_inventory_client.py` + `is_steam_id` tests; CLAUDE.md architecture and README layout block.
+- Decisions: client lives in its own module so inventory.py stays network-free. A body that reaches the cap is refused (`_OversizeBodyError` in the default fetch, `>= MAX_INVENTORY_BYTES` for injected bodies) instead of parsing truncated JSON. No redirects (Steam redirects private/odd requests to HTML = ApiError). Timeout 15 s. All ApiErrors use `INVENTORY_ERROR_MESSAGE`.
+- Needs manual check: real Steam responses for private (403) / empty (`total_inventory_count: 0`) inventories (US-016 capture script).
+- **Learnings:** reuse `read_capped`/`READ_CHUNK_BYTES` from resolver.py; the fake aiohttp session pattern from tests/test_cs2_resolver.py is copied into the inventory client tests (FakeContent.read raises to prove `read_capped` is used).
