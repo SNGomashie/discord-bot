@@ -1,0 +1,82 @@
+{
+  "assets": [
+    {"appid": 730, "contextid": "2", "assetid": "30000000001", "classid": "310776560", "instanceid": "302028390", "amount": "1"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000002", "classid": "5201000001", "instanceid": "188530139", "amount": "1"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000003", "classid": "5201000002", "instanceid": "188530139", "amount": "1"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000004", "classid": "5201000003", "instanceid": "0", "amount": "1"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000005", "classid": "5201000004", "instanceid": "0", "amount": "1"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000006", "classid": "5201000004", "instanceid": "0", "amount": "1"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000007", "classid": "5201000005", "instanceid": "0", "amount": "3"},
+    {"appid": 730, "contextid": "2", "assetid": "30000000008", "classid": "5201000006", "instanceid": "0", "amount": "1"}
+  ],
+  "descriptions": [
+    {
+      "appid": 730, "classid": "310776560", "instanceid": "302028390",
+      "name": "AK-47 | Redline", "market_hash_name": "AK-47 | Redline (Field-Tested)",
+      "type": "Classified Rifle", "name_color": "D2D2D2", "marketable": 1, "tradable": 1,
+      "tags": [
+        {"category": "Type", "internal_name": "CSGO_Type_Rifle", "localized_category_name": "Type", "localized_tag_name": "Rifle"},
+        {"category": "Weapon", "internal_name": "weapon_ak47", "localized_category_name": "Weapon", "localized_tag_name": "AK-47"},
+        {"category": "Rarity", "internal_name": "Rarity_Legendary_Weapon", "localized_category_name": "Quality", "localized_tag_name": "Classified", "color": "d32ce6"}
+      ]
+    },
+    {
+      "appid": 730, "classid": "5201000001", "instanceid": "188530139",
+      "name": "★ Karambit | Fade", "market_hash_name": "★ Karambit | Fade (Factory New)",
+      "type": "★ Covert Knife", "name_color": "8650AC", "marketable": 1, "tradable": 1,
+      "tags": [
+        {"category": "Type", "internal_name": "CSGO_Type_Knife", "localized_category_name": "Type", "localized_tag_name": "Knife"},
+        {"category": "Rarity", "internal_name": "Rarity_Ancient_Weapon", "localized_category_name": "Quality", "localized_tag_name": "Covert", "color": "eb4b4b"}
+      ]
+    },
+    {
+      "appid": 730, "classid": "5201000002", "instanceid": "188530139",
+      "name": "★ Sport Gloves | Vice", "market_hash_name": "★ Sport Gloves | Vice (Minimal Wear)",
+      "type": "★ Extraordinary Gloves", "name_color": "8650AC", "marketable": 1, "tradable": 1,
+      "tags": [
+        {"category": "Type", "internal_name": "Type_Hands", "localized_category_name": "Type", "localized_tag_name": "Gloves"},
+        {"category": "Rarity", "internal_name": "Rarity_Ancient", "localized_category_name": "Quality", "localized_tag_name": "Extraordinary", "color": "eb4b4b"}
+      ]
+    },
+    {
+      "appid": 730, "classid": "5201000003", "instanceid": "0",
+      "name": "Sticker | Crown (Foil)", "market_hash_name": "Sticker | Crown (Foil)",
+      "type": "Extraordinary Sticker", "name_color": "D2D2D2", "marketable": 1, "tradable": 1,
+      "tags": [
+        {"category": "Type", "internal_name": "CSGO_Tool_Sticker", "localized_category_name": "Type", "localized_tag_name": "Sticker"},
+        {"category": "Rarity", "internal_name": "Rarity_Ancient", "localized_category_name": "Quality", "localized_tag_name": "Extraordinary", "color": "eb4b4b"}
+      ]
+    },
+    {
+      "appid": 730, "classid": "5201000004", "instanceid": "0",
+      "name": "Kilowatt Case", "market_hash_name": "Kilowatt Case",
+      "type": "Base Grade Container", "name_color": "D2D2D2", "marketable": 1, "tradable": 1,
+      "tags": [
+        {"category": "Type", "internal_name": "CSGO_Type_WeaponCase", "localized_category_name": "Type", "localized_tag_name": "Container"},
+        {"category": "Rarity", "internal_name": "Rarity_Common", "localized_category_name": "Quality", "localized_tag_name": "Base Grade", "color": "b0c3d9"}
+      ]
+    },
+    {
+      "appid": 730, "classid": "5201000005", "instanceid": "0",
+      "name": "Revolution Case", "market_hash_name": "Revolution Case",
+      "type": "Base Grade Container", "name_color": "D2D2D2", "marketable": 1, "tradable": 1,
+      "tags": [
+        {"category": "Type", "internal_name": "CSGO_Type_WeaponCase", "localized_category_name": "Type", "localized_tag_name": "Container"},
+        {"category": "Rarity", "internal_name": "Rarity_Common", "localized_category_name": "Quality", "localized_tag_name": "Base Grade", "color": "b0c3d9"}
+      ]
+    },
+    {
+      "appid": 730, "classid": "5201000006", "instanceid": "0",
+      "name": "5 Year Veteran Coin", "market_hash_name": "5 Year Veteran Coin",
+      "type": "Extraordinary Collectible", "name_color": "D2D2D2", "marketable": 0, "tradable": 0,
+      "tags": [
+        {"category": "Type", "internal_name": "CSGO_Type_Collectible", "localized_category_name": "Type", "localized_tag_name": "Collectible"},
+        {"category": "Rarity", "internal_name": "Rarity_Ancient", "localized_category_name": "Quality", "localized_tag_name": "Extraordinary", "color": "eb4b4b"}
+      ]
+    }
+  ],
+  "more_items": 0,
+  "total_inventory_count": 10,
+  "success": 1,
+  "rwgrsn": -2
+}

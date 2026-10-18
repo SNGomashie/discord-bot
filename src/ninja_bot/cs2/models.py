@@ -34,6 +34,13 @@ class PrivateProfileError(Cs2Error):
     default_message = "That Leetify profile is private, so its stats can't be shown."
 
 
+class PrivateInventoryError(Cs2Error):
+    default_message = (
+        "That Steam inventory is private, so its skins can't be shown. "
+        "Set the inventory to public in the Steam privacy settings to show it."
+    )
+
+
 class RateLimitedError(Cs2Error):
     default_message = "Leetify is rate limiting us right now. Please try again later."
 
