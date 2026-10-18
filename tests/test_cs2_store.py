@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from ninja_bot.cs2 import store as store_module
+from ninja_bot.cs2.prices import Prices, PriceStore
 from ninja_bot.cs2.store import LinkStore, MatchLog, SqliteLinkStore
 
 STEAM_A = "76561197960287930"
@@ -286,3 +287,84 @@ def _posted_count(path: Path) -> int:
     finally:
         conn.close()
     return int(row[0])
+
+
+def test_sqlite_store_satisfies_price_store(tmp_path: Path) -> None:
+    store: PriceStore = _store(tmp_path)
+    assert isinstance(store, SqliteLinkStore)
+
+
+async def test_prices_empty_table(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert await store.load_prices() == {}
+    assert await store.last_update("steam") is None
+    assert await store.last_update("skinport") is None
+
+
+async def test_prices_round_trip(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.save_steam_prices({"AK-47 | Redline (Field-Tested)": 1234}, now=100.0)
+    await store.save_skinport_prices({"AK-47 | Redline (Field-Tested)": 999, "Case": 5}, now=200.0)
+    assert await store.load_prices() == {
+        "AK-47 | Redline (Field-Tested)": Prices(steam=1234, skinport=999),
+        "Case": Prices(steam=None, skinport=5),
+    }
+    assert await store.last_update("steam") == 100.0
+    assert await store.last_update("skinport") == 200.0
+    # A new store on the same file sees the same prices.
+    reopened = SqliteLinkStore(tmp_path / "links.sqlite3")
+    assert (await reopened.load_prices())["Case"] == Prices(skinport=5)
+
+
+async def test_saving_one_source_keeps_the_other(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.save_steam_prices({"A": 100, "B": 200}, now=1.0)
+    await store.save_skinport_prices({"A": 90}, now=2.0)
+    await store.save_steam_prices({"A": 110}, now=3.0)
+    await store.save_skinport_prices({"B": 180}, now=4.0)
+    assert await store.load_prices() == {
+        "A": Prices(steam=110, skinport=90),
+        "B": Prices(steam=200, skinport=180),
+    }
+    assert await store.last_update("steam") == 3.0
+    assert await store.last_update("skinport") == 4.0
+
+
+async def test_saving_no_prices_runs_no_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def recorder(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no query expected")
+
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    path = tmp_path / "links.sqlite3"
+    store = SqliteLinkStore(path)
+    await store.save_steam_prices({}, now=1.0)
+    await store.save_skinport_prices({}, now=1.0)
+    assert not _exists(path)
+
+
+async def test_price_calls_run_in_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def recorder(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        calls.append(func.__name__)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", recorder)
+    store = _store(tmp_path)
+    await store.save_steam_prices({"A": 1}, now=1.0)
+    await store.save_skinport_prices({"A": 1}, now=1.0)
+    await store.load_prices()
+    await store.last_update("steam")
+    assert calls == ["_save_prices", "_save_prices", "_load_prices", "_last_update"]
+
+
+async def test_old_database_gains_prices_table(tmp_path: Path) -> None:
+    path = tmp_path / "links.sqlite3"
+    _create_old_database(path)
+    store = SqliteLinkStore(path)
+    assert await store.load_prices() == {}
+    await store.save_steam_prices({"A": 1}, now=1.0)
+    assert await store.get(1) == STEAM_A

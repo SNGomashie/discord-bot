@@ -3,17 +3,28 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Protocol
+
+from ninja_bot.cs2.prices import Prices, PriceSource
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS links (discord_id INTEGER PRIMARY KEY, steam64_id TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS posted_matches"
     " (match_id TEXT PRIMARY KEY, posted_at REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS seeded_players (steam64_id TEXT PRIMARY KEY)",
+    "CREATE TABLE IF NOT EXISTS prices (market_hash_name TEXT PRIMARY KEY,"
+    " steam_minor INTEGER, skinport_minor INTEGER,"
+    " steam_updated_at REAL, skinport_updated_at REAL)",
 )
+
+# Each source only ever touches its own two columns.
+_PRICE_COLUMNS: dict[PriceSource, tuple[str, str]] = {
+    "steam": ("steam_minor", "steam_updated_at"),
+    "skinport": ("skinport_minor", "skinport_updated_at"),
+}
 
 # Stays well below SQLite's bound-parameter limit (999 on old builds).
 IN_CHUNK_SIZE = 500
@@ -52,7 +63,10 @@ class MatchLog(Protocol):
 
 
 class SqliteLinkStore:
-    """Links, posted matches and seeded players in one SQLite file; disk work runs in a thread."""
+    """Links, posted matches, seeded players and prices in one SQLite file.
+
+    Disk work runs in a thread. Also implements `PriceStore` (cs2/prices.py).
+    """
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
@@ -146,6 +160,36 @@ class SqliteLinkStore:
                 (MAX_POSTED_MATCHES,),
             )
 
+    def _load_prices(self) -> dict[str, Prices]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT market_hash_name, steam_minor, skinport_minor FROM prices"
+            ).fetchall()
+        return {
+            str(name): Prices(
+                steam=None if steam is None else int(steam),
+                skinport=None if skinport is None else int(skinport),
+            )
+            for name, steam, skinport in rows
+        }
+
+    def _save_prices(self, source: PriceSource, prices: list[tuple[str, int]], now: float) -> None:
+        price_column, time_column = _PRICE_COLUMNS[source]
+        with closing(self._connect()) as conn, conn:
+            conn.executemany(
+                f"INSERT INTO prices (market_hash_name, {price_column}, {time_column})"
+                " VALUES (?, ?, ?) ON CONFLICT (market_hash_name) DO UPDATE SET"
+                f" {price_column} = excluded.{price_column},"
+                f" {time_column} = excluded.{time_column}",
+                [(name, minor, now) for name, minor in prices],
+            )
+
+    def _last_update(self, source: PriceSource) -> float | None:
+        _, time_column = _PRICE_COLUMNS[source]
+        with closing(self._connect()) as conn:
+            row = conn.execute(f"SELECT MAX({time_column}) FROM prices").fetchone()
+        return None if row is None or row[0] is None else float(row[0])
+
     async def get(self, discord_id: int) -> str | None:
         return await asyncio.to_thread(self._get, discord_id)
 
@@ -180,3 +224,17 @@ class SqliteLinkStore:
         if not match_ids:
             return
         await asyncio.to_thread(self._mark_posted, list(match_ids))
+
+    async def load_prices(self) -> dict[str, Prices]:
+        return await asyncio.to_thread(self._load_prices)
+
+    async def save_steam_prices(self, prices: Mapping[str, int], now: float) -> None:
+        if prices:
+            await asyncio.to_thread(self._save_prices, "steam", list(prices.items()), now)
+
+    async def save_skinport_prices(self, prices: Mapping[str, int], now: float) -> None:
+        if prices:
+            await asyncio.to_thread(self._save_prices, "skinport", list(prices.items()), now)
+
+    async def last_update(self, source: PriceSource) -> float | None:
+        return await asyncio.to_thread(self._last_update, source)

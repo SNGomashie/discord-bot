@@ -441,13 +441,14 @@ A GM (whoever runs the command) starts a poll to find a date for a game session.
 
 The bot keeps three SQLite databases under `DATA_DIR`. Each is created on first use (the directory too).
 
-The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds three tables:
+The CS2 database at `<DATA_DIR>/cs2.sqlite3` holds four tables:
 
 | Table | Columns | Purpose |
 |---|---|---|
 | `links` | `discord_id` (primary key), `steam64_id` | Who linked which Steam account. |
 | `posted_matches` | `match_id` (primary key), `posted_at` | Matches already auto-posted; pruned to the newest 500. |
 | `seeded_players` | `steam64_id` (primary key) | Players whose old matches were recorded silently. |
+| `prices` | `market_hash_name` (primary key), `steam_minor`, `skinport_minor`, `steam_updated_at`, `skinport_updated_at` | Skin prices from the Steam Market and Skinport in minor units of the configured currency (cents), with the time each source last saved that row (Unix timestamps). Each source only updates its own columns, so a failed refresh of one never clears the other's prices; items missing from a refresh keep their old price. |
 
 The activity database at `<DATA_DIR>/activity.sqlite3` holds three tables:
 
@@ -526,7 +527,7 @@ src/ninja_bot/
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (Steam name lookups),
-                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
+                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), prices (Prices, PriceBook, PriceStore), cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
   sessions/       session poll logic: slots (weekday/time/date parsing, excluded days, candidate slots), players (the `players` mention list), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
