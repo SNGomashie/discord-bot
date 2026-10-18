@@ -104,3 +104,8 @@
 - Decisions: client lives in its own module so inventory.py stays network-free. A body that reaches the cap is refused (`_OversizeBodyError` in the default fetch, `>= MAX_INVENTORY_BYTES` for injected bodies) instead of parsing truncated JSON. No redirects (Steam redirects private/odd requests to HTML = ApiError). Timeout 15 s. All ApiErrors use `INVENTORY_ERROR_MESSAGE`.
 - Needs manual check: real Steam responses for private (403) / empty (`total_inventory_count: 0`) inventories (US-016 capture script).
 - **Learnings:** reuse `read_capped`/`READ_CHUNK_BYTES` from resolver.py; the fake aiohttp session pattern from tests/test_cs2_resolver.py is copied into the inventory client tests (FakeContent.read raises to prove `read_capped` is used).
+
+## 2026-10-18 - US-003
+- Added `src/ninja_bot/cs2/inventory_cache.py` (`CachedInventoryProvider`, `INVENTORY_TTL_SECONDS` 1800, `PRIVATE_TTL_SECONDS` 600, `MIN_FETCH_INTERVAL_SECONDS` 4, `RATE_LIMIT_BACKOFF_SECONDS` 300), tests `tests/test_cs2_inventory_cache.py`; CLAUDE.md architecture, README Caching row + layout block.
+- Decisions: own module (not cache.py) so cache.py doesn't pull in the aiohttp inventory client. Private entries store the error message and re-raise a fresh `PrivateInventoryError`. Cache and backoff are re-checked after taking the lock (concurrent misses for one id fetch once). Spacing is measured from the start of the previous fetch (also failed ones). Backoff raises `RateLimitedError(INVENTORY_RATE_LIMITED_MESSAGE)`; cache hits (and negative entries) still work during backoff.
+- **Learnings:** inject `sleep` as a fake that advances the fake clock, so spacing assertions read off the inner provider's call times.
