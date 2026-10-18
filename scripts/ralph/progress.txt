@@ -158,3 +158,8 @@
 - Decisions: an empty price book skips the inventory fetch entirely (no Steam call, profile unchanged). Private inventory logs at debug, timeout/other errors at warning with only the exception type. Cooldown unchanged: the profile post alone decides it.
 - **Learnings:** with a synchronous fake `get_profile` that raises, the inventory task is cancelled before it starts, so assert `asyncio.all_tasks() == {current_task()}` rather than a "cancelled" flag.
 - Needs manual check: see docs/manual-checks.md `/inventory` (the two `/profile` lines).
+
+## 2026-10-18 - US-013
+- Added `src/ninja_bot/cs2/match_skins.py` (`fetch_match_inventories(provider, steam_ids, budget_seconds, clock)`, `MATCH_SKINS_BUDGET_SECONDS` 30), tests `tests/test_cs2_match_skins.py`; CLAUDE.md architecture, README layout block.
+- Decisions: sequential fetches (the cached provider paces misses 4 s apart anyway); the budget is only checked before starting a fetch (`clock() >= deadline` = stop), a running fetch is not cut off (the inventory client has its own 15 s timeout). Private = skipped silently, any other exception logged by type name and skipped, `RateLimitedError` = stop. Ids deduped with `dict.fromkeys`.
+- **Learnings:** tests drive the budget with a fake clock the fake provider advances per call (`step`).
