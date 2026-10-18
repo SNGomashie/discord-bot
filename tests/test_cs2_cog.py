@@ -25,6 +25,7 @@ from ninja_bot.cogs.cs2 import (
     MAX_MATCH_ID_LENGTH,
     NOTHING_TO_UNLINK_MESSAGE,
     PRICES_LOADING_MESSAGE,
+    PROFILE_TOP_SKINS,
     UNLINKED_MESSAGE,
     Cs2,
     SkinSources,
@@ -46,9 +47,12 @@ from ninja_bot.cs2.embed import (
     NOBODY_LINKED_MESSAGE,
     RATINGS_FIELD,
     TEAM_NAMES,
+    TOP_SKINS_FIELD,
     TOTAL_WORTH_FIELD,
+    WORTH_FIELD,
     YOUR_TEAM,
     build_match_embed,
+    build_profile_embed,
 )
 from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.inventory import InventoryItem, ItemKind
@@ -1994,3 +1998,121 @@ async def test_cog_unload_closes_inventories_when_stats_close_fails() -> None:
     with pytest.raises(RuntimeError):
         await cog.cog_unload()
     assert inventories.close_calls == 1
+
+
+# --- /profile with skins ---
+
+
+class SlowInventories(FakeInventories):
+    """Never answers until cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = False
+
+    async def get_inventory(self, steam64_id: str) -> list[InventoryItem]:
+        self.calls.append(steam64_id)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return []
+
+
+def skins_profile_cog(
+    profile: Profile,
+    inventories: FakeInventories | None = None,
+    book: PriceBook | None = None,
+    **stats_kwargs: Any,
+) -> tuple[Cs2, FakeStats, FakeInventories, UserCooldown]:
+    stats = FakeStats(profile, **stats_kwargs)
+    inventories = inventories or FakeInventories()
+    cooldown = UserCooldown(COOLDOWN_SECONDS, FakeClock())
+    skins = SkinSources(
+        inventories,
+        book if book is not None else priced_book(),
+        CURRENCIES[DEFAULT_CURRENCY],
+    )
+    cog = Cs2(stats, MemoryLinkStore({USER_ID: FIXTURE_STEAM_ID}), cooldown, skins=skins)
+    return cog, stats, inventories, cooldown
+
+
+async def test_profile_shows_skins(fixture_profile: Profile) -> None:
+    items = [skin_item(), skin_item("M4A4 | Howl (Minimal Wear)")]
+    cog, stats, inventories, cooldown = skins_profile_cog(fixture_profile, FakeInventories(items))
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    embed = posted_embed(interaction)
+    assert inventories.calls == [FIXTURE_STEAM_ID]
+    assert stats.profile_calls == [FIXTURE_STEAM_ID]
+    assert RATINGS_FIELD in field_names(embed)
+    assert "€12.30" in field_value(embed, WORTH_FIELD)
+    assert "Redline" in field_value(embed, TOP_SKINS_FIELD)
+    assert "Howl" not in field_value(embed, TOP_SKINS_FIELD)  # unpriced
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_profile_top_skins_capped(fixture_profile: Profile) -> None:
+    names = [f"Skin {i}" for i in range(PROFILE_TOP_SKINS + 2)]
+    book = PriceBook({name: Prices(steam=100 + i, skinport=None) for i, name in enumerate(names)})
+    cog, _, _, _ = skins_profile_cog(
+        fixture_profile, FakeInventories([skin_item(n) for n in names]), book
+    )
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    top = field_value(posted_embed(interaction), TOP_SKINS_FIELD)
+    assert top.count("\n") == PROFILE_TOP_SKINS - 1
+    assert names[-1] in top and names[0] not in top
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PrivateInventoryError(), RateLimitedError(), ApiError(), RuntimeError("boom")],
+)
+async def test_profile_without_skins_on_inventory_error(
+    fixture_profile: Profile, error: Exception
+) -> None:
+    cog, _, inventories, cooldown = skins_profile_cog(fixture_profile, FakeInventories(error=error))
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    embed = posted_embed(interaction)
+    assert inventories.calls == [FIXTURE_STEAM_ID]
+    assert embed.to_dict() == build_profile_embed(fixture_profile).to_dict()
+    assert cooldown.try_acquire(USER_ID) > 0  # kept: the profile was posted
+
+
+async def test_profile_without_skins_on_timeout(
+    fixture_profile: Profile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cs2_cog, "SKIN_FETCH_TIMEOUT_SECONDS", 0.01)
+    inventories = SlowInventories()
+    cog, _, _, cooldown = skins_profile_cog(fixture_profile, inventories)
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    embed = posted_embed(interaction)
+    assert embed.to_dict() == build_profile_embed(fixture_profile).to_dict()
+    assert inventories.cancelled
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_profile_prices_loading_skips_inventory(fixture_profile: Profile) -> None:
+    cog, _, inventories, cooldown = skins_profile_cog(fixture_profile, book=PriceBook())
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    embed = posted_embed(interaction)
+    assert inventories.calls == []
+    assert embed.to_dict() == build_profile_embed(fixture_profile).to_dict()
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_profile_error_cancels_inventory_fetch(fixture_profile: Profile) -> None:
+    inventories = SlowInventories()
+    cog, _, _, cooldown = skins_profile_cog(
+        fixture_profile, inventories, error=PlayerNotFoundError()
+    )
+    interaction = make_interaction()
+    await cog.handle_profile(interaction)
+    interaction.followup.send.assert_awaited_once_with(PlayerNotFoundError().message)
+    assert asyncio.all_tasks() == {asyncio.current_task()}  # the inventory task is gone
+    assert cooldown.try_acquire(USER_ID) == 0

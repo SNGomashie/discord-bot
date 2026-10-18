@@ -41,7 +41,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/link` | `steam` (SteamID64, profile link or custom URL name) | private | 15 s, only after valid input; not refunded |
 | `/unlink` | none | private | none |
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
-| `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
+| `/profile` | `player` (default you); also shows inventory worth and top 3 skins | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
 | `/inventory` | `player` (default you) or `steam` (SteamID64, profile link or custom URL name) | public (input errors and "prices still loading" are private) | 30 s, its own; refunded unless an embed was posted |
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
@@ -241,6 +241,13 @@ Ties go to more kills, then to the name.
 
 `/profile [player]` posts a player's profile (public). The title is their name, and the embed has: **Ranks** (Premier rating, FACEIT level, Leetify rating, whichever are known), **Winrate**, **Matches**, **Ratings** (10-character bars: aim, positioning and utility out of 100, clutch and opening on a signed scale) and **Recent form**. Missing data is left out.
 
+Skins: the player's Steam inventory is fetched at the same time as the profile and adds two fields at the end:
+
+- **Inventory worth:** `Steam €X · Skinport €Y`, the same totals as [/inventory](#inventory) ("No marketable items in this inventory." when there are none).
+- **Top skins:** the 3 priciest priced skins, in the same format and order as the `/inventory` top list.
+
+The skins are an extra: if the inventory is private, Steam rate limits or fails, the skin prices are still loading after a restart (then Steam isn't asked at all), or the inventory takes longer than 15 seconds, the profile is posted without these fields and the cooldown works as usual. Inventories use the same cache as `/inventory`.
+
 ### /leaderboard
 
 `/leaderboard [metric]` ranks the linked players by one metric: Leetify rating (default), aim, positioning, utility, clutch, opening duels or winrate. The reply is public.
@@ -300,7 +307,7 @@ where the cause is `missing` (not found), `not a text channel`, `missing View Ch
 
 ## Skins
 
-The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory; the prices are kept up to date in the background.
+The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory and [/profile](#profile) adds a player's worth and top 3 skins; the prices are kept up to date in the background.
 
 | Source | What it is | Refreshed | How |
 |---|---|---|---|

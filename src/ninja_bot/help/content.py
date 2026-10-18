@@ -133,10 +133,12 @@ COMMANDS: tuple[CommandHelp, ...] = (
     CommandHelp(
         name="profile",
         group=CS2,
-        summary="Show a player's Leetify profile: ranks, winrate, ratings and recent form.",
+        summary="Show a player's Leetify profile: ranks, winrate, ratings, form and skins.",
         details=(
             "Shows the Leetify profile of you or another member: ranks, winrate, "
-            "number of matches, skill ratings and the results of recent matches. "
+            "number of matches, skill ratings and the results of recent matches, plus "
+            "what their CS2 inventory is worth and their top 3 skins. The skins are left "
+            "out if the inventory is private, Steam is slow or skin prices are still loading. "
             "The player must have linked their account with /link."
         ),
         examples=(

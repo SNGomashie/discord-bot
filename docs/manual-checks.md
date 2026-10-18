@@ -60,6 +60,8 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] `/inventory player:@friend` and `/inventory steam:<custom URL name>` work; giving both is refused privately
 - [ ] A private inventory gets the private-inventory reply; a second `/inventory` within 30 s is refused, but not after an error
 - [ ] Spot-check one top item's prices against the Steam Market and Skinport pages
+- [ ] `/profile` once prices are loaded: `Inventory worth` and `Top skins` (3 skins) at the end, matching `/inventory`
+- [ ] `/profile` for a player with a private inventory, and right after a restart (prices loading): the profile is posted without the skin fields, not delayed
 
 ## Auto-posts (with `CS2_CHANNEL_ID` set)
 

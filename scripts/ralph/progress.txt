@@ -152,3 +152,9 @@
 - Decisions: "prices loading" is checked before the cooldown (pre-defer, so it can be ephemeral; = "refunded"). Vanity names are resolved after the public defer (like /link), so resolver errors are public followups and refund. Title name = member display name, else the typed SteamID64/custom URL name (no Steam persona lookup). Embed url = `steamcommunity.com/profiles/<id>`. An empty inventory posts the empty embed and keeps the cooldown.
 - Without an explicit `skins=`, the cog builds a default `SkinSources` (lazy client, the price_updates book or an empty one, EUR), so older tests/constructors keep working.
 - Needs manual check: see docs/manual-checks.md `/inventory`.
+
+## 2026-10-18 - US-012
+- `/profile` now adds skins: `_profile_deferred` -> `_fetch_profile_and_skins` (profile + `_profile_skins_or_none` task at once, like `_fetch_match_and_profile`; a profile error cancels the inventory task) -> `build_profile_embed(profile, ProfileSkins)`. Constants `SKIN_FETCH_TIMEOUT_SECONDS` 15 (`asyncio.wait_for`, read at call time; tests monkeypatch it) and `PROFILE_TOP_SKINS` 3 in cogs/cs2.py. Tests in tests/test_cs2_cog.py (`skins_profile_cog`, `SlowInventories`); README (table, `/profile`, Skins intro), help `profile` entry, docs/manual-checks.md, CLAUDE.md cog entry.
+- Decisions: an empty price book skips the inventory fetch entirely (no Steam call, profile unchanged). Private inventory logs at debug, timeout/other errors at warning with only the exception type. Cooldown unchanged: the profile post alone decides it.
+- **Learnings:** with a synchronous fake `get_profile` that raises, the inventory task is cancelled before it starts, so assert `asyncio.all_tasks() == {current_task()}` rather than a "cancelled" flag.
+- Needs manual check: see docs/manual-checks.md `/inventory` (the two `/profile` lines).

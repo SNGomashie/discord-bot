@@ -19,6 +19,7 @@ from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     INVENTORY_TOP_ITEMS,
+    ProfileSkins,
     build_announcement_embed,
     build_inventory_embed,
     build_leaderboard_embed,
@@ -35,6 +36,7 @@ from ninja_bot.cs2.models import (
     Match,
     NoMatchesError,
     NotLinkedError,
+    PrivateInventoryError,
     Profile,
     RateLimitedError,
 )
@@ -92,6 +94,9 @@ PRICES_LOADING_MESSAGE = (
     "Skin prices are still loading after a restart. Try again in a few minutes."
 )
 STEAM_PROFILE_URL = "https://steamcommunity.com/profiles/{steam64_id}"
+# /profile adds skins only when they arrive in time; a slow Steam never holds it up longer.
+SKIN_FETCH_TIMEOUT_SECONDS = 15.0
+PROFILE_TOP_SKINS = 3
 # Discord display names are cached briefly to save REST calls; a 404 for a shorter time.
 MEMBER_NAME_TTL_SECONDS = 300.0
 MEMBER_MISSING_TTL_SECONDS = 60.0
@@ -651,10 +656,13 @@ class Cs2(commands.Cog):
         )
 
     async def _profile_deferred(self, interaction: discord.Interaction, steam64_id: str) -> bool:
-        """Fetch and post the profile; True only if the embed was posted."""
+        """Fetch and post the profile; True only if the embed was posted.
+
+        The inventory is fetched alongside the profile; without it the profile is unchanged.
+        """
         try:
-            profile = await self.stats.get_profile(steam64_id)
-            embed = build_profile_embed(profile)
+            profile, skins = await self._fetch_profile_and_skins(steam64_id)
+            embed = build_profile_embed(profile, skins)
         except Cs2Error as exc:
             await _send_safely(interaction.followup.send(exc.message))
             return False
@@ -663,6 +671,38 @@ class Cs2(commands.Cog):
             await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
             return False
         return await _send_safely(interaction.followup.send(embed=embed))
+
+    async def _fetch_profile_and_skins(
+        self, steam64_id: str
+    ) -> tuple[Profile, ProfileSkins | None]:
+        """Fetch both at once; a profile error wins and the inventory request is cancelled."""
+        if self.skins.book.is_empty:
+            # Without prices there is nothing to show, so Steam isn't asked at all.
+            return await self.stats.get_profile(steam64_id), None
+        skins_task = asyncio.create_task(self._profile_skins_or_none(steam64_id))
+        try:
+            return await self.stats.get_profile(steam64_id), await skins_task
+        finally:
+            skins_task.cancel()
+            await asyncio.gather(skins_task, return_exceptions=True)
+
+    async def _profile_skins_or_none(self, steam64_id: str) -> ProfileSkins | None:
+        """The player's inventory worth and top skins, or None if it can't be had in time."""
+        try:
+            items = await asyncio.wait_for(
+                self.skins.inventories.get_inventory(steam64_id), SKIN_FETCH_TIMEOUT_SECONDS
+            )
+        except PrivateInventoryError:
+            log.debug("Posting profile without skins: the inventory is private")
+            return None
+        except TimeoutError:
+            log.warning("Posting profile without skins: the Steam inventory timed out")
+            return None
+        except Exception as exc:
+            log.warning("Posting profile without skins: %s", type(exc).__name__)
+            return None
+        valuation = value_inventory(items, self.skins.book, PROFILE_TOP_SKINS)
+        return ProfileSkins(valuation, self.skins.currency)
 
     async def _leaderboard_deferred(self, interaction: discord.Interaction, metric: Metric) -> bool:
         """Fetch every linked profile and post the ranking; True only if players were shown."""
