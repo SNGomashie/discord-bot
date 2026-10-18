@@ -11,8 +11,13 @@ from ninja_bot.cs2.awards import Award, compute_awards
 from ninja_bot.cs2.embed import (
     AWARDS_FIELD,
     BREAKDOWN_FIELD,
+    EMPTY_INVENTORY_MESSAGE,
     FORM_FIELD,
     FRIENDS_FIELD,
+    INVENTORY_COLOUR,
+    INVENTORY_TOP_FIELD,
+    INVENTORY_TOP_ITEMS,
+    ITEMS_FIELD,
     LEADERBOARD_CONTINUED_FIELD,
     LEADERBOARD_FIELD,
     MATCHES_FIELD,
@@ -24,10 +29,16 @@ from ninja_bot.cs2.embed import (
     RANKS_FIELD,
     RATINGS_FIELD,
     SQUAD_FIELD,
+    TOP_SKINS_FIELD,
+    TOTAL_WORTH_FIELD,
     UNRANKED,
     WINRATE_FIELD,
+    WORTH_FIELD,
     YOUR_TEAM,
+    MatchSkins,
+    ProfileSkins,
     build_announcement_embed,
+    build_inventory_embed,
     build_leaderboard_embed,
     build_match_embed,
     build_profile_embed,
@@ -35,8 +46,10 @@ from ninja_bot.cs2.embed import (
     format_friends,
     format_leaderboard_row,
     format_player_stats,
+    format_prices,
     format_ranks,
     format_rating_bars,
+    skins_field_lines,
 )
 from ninja_bot.cs2.formatting import (
     BAR_EMPTY,
@@ -58,7 +71,9 @@ from ninja_bot.cs2.models import (
     parse_match,
     parse_profile,
 )
+from ninja_bot.cs2.prices import CURRENCIES, Prices
 from ninja_bot.cs2.squad import LeaderboardRow, Metric, SquadMember, Trend, metric_label
+from ninja_bot.cs2.valuation import Valuation, ValuedItem
 
 FIXTURES = Path(__file__).parent / "fixtures" / "leetify"
 
@@ -1117,3 +1132,200 @@ def test_announcement_limits_ten_players_five_squad_members() -> None:
     assert len(_fields(embed)[SQUAD_FIELD].splitlines()) == 5
     tables = _fields(embed)["Team A"] + _fields(embed)["Team B"]
     assert len(_highlighted(tables)) == 5
+
+
+# --- skins ---
+
+EUR = CURRENCIES["EUR"]
+LONG_SKIN = "★ StatTrak™ Butterfly Knife | Case Hardened (Battle-Scarred) " + "x" * 80
+
+
+def _valued(
+    name: str, steam: int | None, skinport: int | None, count: int = 1, owner: str | None = None
+) -> ValuedItem:
+    return ValuedItem(name, count, Prices(steam, skinport), owner)
+
+
+def _valuation(*top: ValuedItem, item_count: int = 10, priced_count: int = 8) -> Valuation:
+    return Valuation(
+        steam_total=123_450,
+        skinport_total=100_005,
+        item_count=item_count,
+        priced_count=priced_count,
+        top=top,
+    )
+
+
+def test_format_prices() -> None:
+    assert format_prices(Prices(1230, 1005), EUR) == "Steam €12.30 · Skinport €10.05"
+    assert format_prices(Prices(None, 1005), EUR) == "Steam n/a · Skinport €10.05"
+    assert format_prices(Prices(), EUR) == "Steam n/a · Skinport n/a"
+
+
+def test_skins_field_lines_without_owners() -> None:
+    items = [_valued("AK-47 | Redline (Field-Tested)", 1230, 1005, count=2, owner="1")]
+    assert skins_field_lines(items, EUR) == (
+        "**AK-47 \\| Redline \\(Field-Tested\\)** ×2 · Steam €12.30 · Skinport €10.05"
+    )
+
+
+def test_skins_field_lines_with_owners() -> None:
+    items = [
+        _valued("Knife", 50_000, None, owner="1"),
+        _valued("Gloves", 40_000, 39_000, owner="2"),
+    ]
+    lines = skins_field_lines(items, EUR, {"1": "Ann_ie"}).splitlines()
+    assert lines[0] == "**Knife** · Steam €500.00 · Skinport n/a · Ann\\_ie"
+    assert lines[1] == "**Gloves** · Steam €400.00 · Skinport €390.00"
+
+
+def test_skins_field_lines_truncate_long_names() -> None:
+    line = skins_field_lines([_valued(LONG_SKIN, 1, 1)], EUR)
+    assert "…" in line
+    assert "x" * 80 not in line
+
+
+def test_skins_field_lines_drop_whole_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embed_module, "FIELD_VALUE_LIMIT", 120)
+    items = [_valued(f"Skin {i}", 100, 100) for i in range(10)]
+    value = skins_field_lines(items, EUR)
+    assert len(value) <= 120
+    assert value.splitlines()[-1].startswith("+") and value.endswith(" more")
+    assert all(line.startswith("**Skin") for line in value.splitlines()[:-1])
+
+
+def test_inventory_embed() -> None:
+    top = tuple(_valued(f"Skin {i}", 1000 - i, None) for i in range(7))
+    embed = build_inventory_embed("Ann*ie", _valuation(*top), EUR, "https://example.com/x")
+    assert embed.title == "CS2 inventory: Ann\\*ie"
+    assert embed.url == "https://example.com/x"
+    assert embed.colour == INVENTORY_COLOUR
+    fields = _fields(embed)
+    assert fields[TOTAL_WORTH_FIELD] == "Steam €1,234.50 · Skinport €1,000.05"
+    assert fields[ITEMS_FIELD] == "10 marketable · 2 without a price"
+    assert len(fields[INVENTORY_TOP_FIELD].splitlines()) == INVENTORY_TOP_ITEMS
+    assert INVENTORY_TOP_FIELD == "Top 5 items"
+    _assert_no_empty_fields(embed)
+
+
+def test_inventory_embed_without_priced_skins_skips_top_field() -> None:
+    embed = build_inventory_embed("Ann", _valuation(), EUR)
+    assert embed.url is None
+    assert INVENTORY_TOP_FIELD not in _fields(embed)
+    _assert_no_empty_fields(embed)
+
+
+def test_inventory_embed_empty() -> None:
+    embed = build_inventory_embed("Ann", _valuation(item_count=0, priced_count=0), EUR)
+    assert embed.description == EMPTY_INVENTORY_MESSAGE
+    assert not embed.fields
+
+
+def test_inventory_embed_limits() -> None:
+    top = tuple(_valued(LONG_SKIN + str(i), 10**12, 10**12, count=999) for i in range(5))
+    embed = build_inventory_embed("x" * 300, _valuation(*top), EUR)
+    assert len(embed) <= 6000
+    assert len(embed.title or "") <= 256
+    for field in embed.fields:
+        assert len(field.value or "") <= 1024
+
+
+def test_profile_embed_without_skins_is_unchanged(profile: Profile) -> None:
+    assert build_profile_embed(profile, None).to_dict() == build_profile_embed(profile).to_dict()
+
+
+def test_profile_embed_with_skins(profile: Profile) -> None:
+    skins = ProfileSkins(_valuation(_valued("Knife", 50_000, 49_000)), EUR)
+    embed = build_profile_embed(profile, skins)
+    fields = _fields(embed)
+    assert fields[WORTH_FIELD] == "Steam €1,234.50 · Skinport €1,000.05"
+    assert fields[TOP_SKINS_FIELD] == "**Knife** · Steam €500.00 · Skinport €490.00"
+    assert [f.name for f in embed.fields][-2:] == [WORTH_FIELD, TOP_SKINS_FIELD]
+    assert len(embed) <= 6000
+
+
+def test_profile_embed_with_empty_inventory(profile: Profile) -> None:
+    skins = ProfileSkins(_valuation(item_count=0, priced_count=0), EUR)
+    fields = _fields(build_profile_embed(profile, skins))
+    assert fields[WORTH_FIELD] == EMPTY_INVENTORY_MESSAGE
+    assert TOP_SKINS_FIELD not in fields
+
+
+def test_match_embed_without_skins_is_unchanged(match: Match, profile: Profile) -> None:
+    focus = match.players[0].steam64_id
+    awards = compute_awards(match)
+    plain = build_match_embed(match, awards, focus, profile)
+    assert build_match_embed(match, awards, focus, profile, None, None).to_dict() == (
+        plain.to_dict()
+    )
+
+
+def test_match_embed_with_skins_names_owners_without_mentions() -> None:
+    players = (_player(1, 2), _player(2, 3, name=None), _player(3, 3))
+    match = _squad_match(*players)
+    items = [
+        _valued("Knife", 50_000, None, owner=players[0].steam64_id),
+        _valued("Gloves", 40_000, None, owner=players[1].steam64_id),
+        _valued("AWP", 30_000, None, owner="76561190000000099"),
+    ]
+    identities = {players[0].steam64_id: _identity(players[0], "Ann")}
+    embed = build_match_embed(match, [], identities=identities, skins=MatchSkins(items, EUR))
+    lines = _fields(embed)[TOP_SKINS_FIELD].splitlines()
+    assert lines[0].endswith(" · Ann")
+    assert lines[1].endswith(" · " + escape_name(players[1].steam64_id))
+    assert lines[2] == "**AWP** · Steam €300.00 · Skinport n/a"
+    assert "<@" not in _fields(embed)[TOP_SKINS_FIELD]
+
+
+def test_match_embed_with_no_skins_has_no_field(match: Match) -> None:
+    embed = build_match_embed(match, [], skins=MatchSkins([], EUR))
+    assert TOP_SKINS_FIELD not in _fields(embed)
+
+
+@pytest.mark.parametrize("identities", [None, {}])
+def test_announcement_without_skins_is_unchanged(
+    match: Match, identities: dict[str, Identity] | None
+) -> None:
+    awards = compute_awards(match)
+    squad = [_member(match.players[0])]
+    plain = build_announcement_embed(match, awards, squad, identities)
+    with_none = build_announcement_embed(match, awards, squad, identities, None)
+    assert with_none.to_dict() == plain.to_dict()
+
+
+def test_announcement_with_skins_is_last_field_without_mentions() -> None:
+    players = (_player(1, 2), _player(2, 3))
+    match = _squad_match(*players)
+    items = [_valued("Knife", 50_000, 1, owner=players[1].steam64_id)]
+    embed = build_announcement_embed(match, [], [_member(players[0])], skins=MatchSkins(items, EUR))
+    assert embed.fields[-1].name == TOP_SKINS_FIELD
+    assert embed.fields[-1].value == "**Knife** · Steam €500.00 · Skinport €0.01 · player2"
+
+
+def test_match_skins_with_long_names_fit_limits(profile: Profile) -> None:
+    players = tuple(_player(i, 2 + i % 2, name="N" * 200) for i in range(10))
+    match = _squad_match(*players)
+    identities = {p.steam64_id: _identity(p, "D" * 200) for p in players}
+    items = [_valued(LONG_SKIN, 10**12, 10**12, count=999, owner=p.steam64_id) for p in players[:3]]
+    for embed in (
+        build_match_embed(
+            match,
+            compute_awards(match),
+            players[0].steam64_id,
+            profile,
+            identities,
+            MatchSkins(items, EUR),
+        ),
+        build_announcement_embed(
+            match,
+            compute_awards(match),
+            [_member(p) for p in players],
+            identities,
+            MatchSkins(items, EUR),
+        ),
+    ):
+        assert len(embed) <= 6000
+        value = _fields(embed)[TOP_SKINS_FIELD]
+        assert len(value) <= 1024
+        assert len(value.splitlines()) == 3
+        assert "<@" not in value

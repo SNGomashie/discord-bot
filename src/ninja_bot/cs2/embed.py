@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 
 import discord
 
@@ -15,6 +16,7 @@ from ninja_bot.cs2.formatting import (
 )
 from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.models import Match, MatchOutcome, PlayerMatchStats, Profile, Ranks
+from ninja_bot.cs2.prices import Currency, Prices, format_price
 from ninja_bot.cs2.squad import (
     LeaderboardRow,
     Metric,
@@ -23,6 +25,7 @@ from ninja_bot.cs2.squad import (
     format_trend,
     metric_label,
 )
+from ninja_bot.cs2.valuation import Valuation, ValuedItem
 
 # Discord embed limits.
 TITLE_LIMIT = 256
@@ -58,6 +61,34 @@ NOBODY_LINKED_MESSAGE = "Nobody is linked yet. Use `/link` to link your Steam ac
 SCORE_MAX = 100.0
 SIGNED_RATING_MAX = 0.2
 
+TOP_SKINS_FIELD = "Top skins"
+WORTH_FIELD = "Inventory worth"
+TOTAL_WORTH_FIELD = "Total worth"
+ITEMS_FIELD = "Items"
+INVENTORY_TOP_ITEMS = 5
+INVENTORY_TOP_FIELD = f"Top {INVENTORY_TOP_ITEMS} items"
+INVENTORY_COLOUR = discord.Colour.dark_gold()
+EMPTY_INVENTORY_MESSAGE = "No marketable items in this inventory."
+# Long enough for `★ StatTrak™ Butterfly Knife | Case Hardened (Battle-Scarred)`.
+SKIN_NAME_LENGTH = 64
+
+
+@dataclass(frozen=True)
+class MatchSkins:
+    """The priciest skins of a match's players (`ValuedItem.owner` = steam64 id)."""
+
+    items: Sequence[ValuedItem]
+    currency: Currency
+
+
+@dataclass(frozen=True)
+class ProfileSkins:
+    """One player's inventory worth and top skins."""
+
+    valuation: Valuation
+    currency: Currency
+
+
 OUTCOME_COLOURS: dict[MatchOutcome | None, discord.Colour] = {
     "win": discord.Colour.green(),
     "loss": discord.Colour.red(),
@@ -72,6 +103,7 @@ def build_match_embed(
     focus_steam_id: str | None = None,
     profile: Profile | None = None,
     identities: Mapping[str, Identity] | None = None,
+    skins: MatchSkins | None = None,
 ) -> discord.Embed:
     """One embed for a whole match: score, team tables, awards and the focus player.
 
@@ -84,6 +116,7 @@ def build_match_embed(
 
     The focus player's stats (and, with a profile, their Leetify breakdown and recent
     form) are only shown when they played in the match. Missing data is left out.
+    With `skins`, a `Top skins` field lists them with their owners.
     """
     focus = next((p for p in match.players if p.steam64_id == focus_steam_id), None)
     embed = discord.Embed(
@@ -107,6 +140,7 @@ def build_match_embed(
             _add_field(embed, BREAKDOWN_FIELD, format_breakdown(profile))
             if profile.recent_matches:
                 _add_field(embed, FORM_FIELD, form_strip(profile.recent_matches))
+    _add_match_skins(embed, match, identities or {}, skins)
     return embed
 
 
@@ -115,6 +149,7 @@ def build_announcement_embed(
     awards: Sequence[Award],
     squad: Sequence[SquadMember],
     identities: Mapping[str, Identity] | None = None,
+    skins: MatchSkins | None = None,
 ) -> discord.Embed:
     """An auto-posted scoreboard: like `build_match_embed`, but for the whole squad.
 
@@ -126,7 +161,8 @@ def build_announcement_embed(
 
     `identities` is authoritative when given: squad members without one (e.g. they left
     the server) are listed by Steam name without a mention. With `identities=None`
-    (resolution failed) every squad member keeps a mention.
+    (resolution failed) every squad member keeps a mention. With `skins`, a `Top skins`
+    field lists them with their owners (names only, no mentions).
     """
     in_match = {p.steam64_id: p for p in match.players}
     members = [m for m in squad if m.steam64_id in in_match]
@@ -139,7 +175,95 @@ def build_announcement_embed(
     highlight = {p.steam64_id for p in players}
     _add_tables_and_awards(embed, match, awards, identities or {}, highlight=highlight)
     _add_field(embed, SQUAD_FIELD, format_squad(members, in_match, identities), inline=False)
+    _add_match_skins(embed, match, identities or {}, skins)
     return embed
+
+
+def _add_match_skins(
+    embed: discord.Embed,
+    match: Match,
+    identities: Mapping[str, Identity],
+    skins: MatchSkins | None,
+) -> None:
+    """The `Top skins` field; owners by display name, else Steam name, else steam64 id."""
+    if skins is None:
+        return
+    owner_names = {p.steam64_id: p.name or p.steam64_id for p in match.players}
+    owner_names.update({steam_id: i.display_name for steam_id, i in identities.items()})
+    _add_field(
+        embed,
+        TOP_SKINS_FIELD,
+        skins_field_lines(skins.items, skins.currency, owner_names),
+        inline=False,
+    )
+
+
+def format_prices(prices: Prices, currency: Currency) -> str:
+    """`Steam €12.30 · Skinport €10.05`; a missing source shows `n/a`."""
+    return (
+        f"Steam {format_price(prices.steam, currency)}"
+        f" · Skinport {format_price(prices.skinport, currency)}"
+    )
+
+
+def skins_field_lines(
+    valued: Sequence[ValuedItem],
+    currency: Currency,
+    owner_names: Mapping[str, str] | None = None,
+) -> str:
+    """One `**Name** ×2 · Steam €X · Skinport €Y · Owner` line per item (unit prices).
+
+    The owner is shown only with `owner_names` (steam64 id -> name; unknown owners are
+    left out). Whole lines are dropped from the bottom (`+N more`) to fit the field.
+    """
+    lines: list[str] = []
+    for item in valued:
+        line = f"**{escape_name(item.name, SKIN_NAME_LENGTH)}**"
+        if item.count > 1:
+            line += f" ×{item.count}"
+        line += f" · {format_prices(item.prices, currency)}"
+        owner = None if owner_names is None or item.owner is None else owner_names.get(item.owner)
+        if owner is not None:
+            line += f" · {escape_name(owner)}"
+        lines.append(line)
+    return _fit_lines(lines, FIELD_VALUE_LIMIT)
+
+
+def build_inventory_embed(
+    name: str, valuation: Valuation, currency: Currency, steam_url: str | None = None
+) -> discord.Embed:
+    """`/inventory`: total worth per source, item counts and the top skins.
+
+    An inventory without marketable items gets `EMPTY_INVENTORY_MESSAGE` instead.
+    """
+    embed = discord.Embed(
+        title=_truncate(f"CS2 inventory: {escape_name(name)}", TITLE_LIMIT),
+        colour=INVENTORY_COLOUR,
+        url=steam_url,
+    )
+    if valuation.item_count == 0:
+        embed.description = EMPTY_INVENTORY_MESSAGE
+        return embed
+    _add_field(embed, TOTAL_WORTH_FIELD, format_worth(valuation, currency), inline=False)
+    _add_field(embed, ITEMS_FIELD, format_item_counts(valuation), inline=False)
+    _add_field(
+        embed,
+        INVENTORY_TOP_FIELD,
+        skins_field_lines(valuation.top[:INVENTORY_TOP_ITEMS], currency),
+        inline=False,
+    )
+    return embed
+
+
+def format_worth(valuation: Valuation, currency: Currency) -> str:
+    """Both totals: `Steam €X · Skinport €Y`."""
+    return format_prices(Prices(valuation.steam_total, valuation.skinport_total), currency)
+
+
+def format_item_counts(valuation: Valuation) -> str:
+    """`12 marketable · 2 without a price` (units, not stacks)."""
+    unpriced = valuation.item_count - valuation.priced_count
+    return f"{valuation.item_count:,} marketable · {unpriced:,} without a price"
 
 
 def squad_outcome(match: Match, players: Sequence[PlayerMatchStats]) -> MatchOutcome | None:
@@ -316,8 +440,12 @@ def format_breakdown(profile: Profile) -> str:
     return "\n".join(lines)
 
 
-def build_profile_embed(profile: Profile) -> discord.Embed:
-    """A player's ranks, winrate, Leetify rating bars and recent form; missing data is omitted."""
+def build_profile_embed(profile: Profile, skins: ProfileSkins | None = None) -> discord.Embed:
+    """A player's ranks, winrate, Leetify rating bars and recent form; missing data is omitted.
+
+    With `skins`, an `Inventory worth` field (`EMPTY_INVENTORY_MESSAGE` without marketable
+    items) and a `Top skins` field are added at the end.
+    """
     embed = discord.Embed(
         title=escape_name(profile.name or profile.steam64_id),
         colour=PROFILE_COLOUR,
@@ -331,6 +459,19 @@ def build_profile_embed(profile: Profile) -> discord.Embed:
     _add_field(embed, RATINGS_FIELD, format_rating_bars(profile), inline=False)
     if profile.recent_matches:
         _add_field(embed, FORM_FIELD, form_strip(profile.recent_matches), inline=False)
+    if skins is not None:
+        worth = (
+            format_worth(skins.valuation, skins.currency)
+            if skins.valuation.item_count
+            else EMPTY_INVENTORY_MESSAGE
+        )
+        _add_field(embed, WORTH_FIELD, worth, inline=False)
+        _add_field(
+            embed,
+            TOP_SKINS_FIELD,
+            skins_field_lines(skins.valuation.top, skins.currency),
+            inline=False,
+        )
     return embed
 
 
