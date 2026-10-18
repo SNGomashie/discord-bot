@@ -34,7 +34,9 @@ from ninja_bot.cs2.models import (
     RateLimitedError,
 )
 from ninja_bot.cs2.poller import MatchPoller, NewMatch
+from ninja_bot.cs2.prices import CURRENCIES, PRICE_CHECK_SECONDS, PriceBook, PriceRefresher
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
+from ninja_bot.cs2.skinport import SkinportClient
 from ninja_bot.cs2.squad import (
     Metric,
     fetch_squad,
@@ -48,6 +50,7 @@ from ninja_bot.cs2.steam import (
     VanityName,
     parse_steam_target,
 )
+from ninja_bot.cs2.steam_market import SteamMarketClient
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import PostChannelResolver, send_safely
@@ -84,6 +87,14 @@ class AutoPost:
     poller: MatchPoller
     channel_id: int | None
     poll_seconds: float
+
+
+@dataclass(frozen=True)
+class PriceUpdates:
+    """What the background price loop needs; it waits for the bot before the first refresh."""
+
+    bot: commands.Bot
+    refresher: PriceRefresher
 
 
 def linked_message(name: str, steam64_id: str | None = None) -> str:
@@ -191,6 +202,7 @@ class Cs2(commands.Cog):
         leaderboard_cooldown: UserCooldown | None = None,
         auto_post: AutoPost | None = None,
         members: MemberCache | None = None,
+        price_updates: PriceUpdates | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -219,8 +231,12 @@ class Cs2(commands.Cog):
         )
         # Discord member names for scoreboards and auto-posts; in memory only.
         self.members = members if members is not None else MemberCache()
+        # Steam Market + Skinport prices for skin values; None = no price loop (tests).
+        self.price_updates = price_updates
 
     async def cog_load(self) -> None:
+        if self.price_updates is not None:
+            self.price_loop.start()
         if self.auto_post is None or self.auto_post.channel_id is None:
             log.debug("CS2_CHANNEL_ID is not set; CS2 auto-posts are off")
             return
@@ -229,10 +245,30 @@ class Cs2(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.poll_loop.cancel()
+        self.price_loop.cancel()
         try:
             await self.stats.aclose()
         finally:
-            await self.resolver.aclose()
+            try:
+                await self.resolver.aclose()
+            finally:
+                if self.price_updates is not None:
+                    await self.price_updates.refresher.aclose()
+
+    @tasks.loop(seconds=PRICE_CHECK_SECONDS)
+    async def price_loop(self) -> None:
+        if self.price_updates is not None:
+            await self.price_updates.refresher.run_cycle()
+
+    @price_loop.before_loop
+    async def _before_price_loop(self) -> None:
+        if self.price_updates is None:
+            return
+        await self.price_updates.bot.wait_until_ready()
+        try:
+            await self.price_updates.refresher.load()
+        except Exception as exc:
+            log.warning("Could not load stored skin prices (%s)", type(exc).__name__)
 
     @tasks.loop(seconds=300)
     async def poll_loop(self) -> None:
@@ -611,6 +647,11 @@ async def setup(bot: NinjaBot) -> None:
         bot.config.cs2_channel_id,
         bot.config.cs2_poll_seconds,
     )
+    currency = CURRENCIES[bot.config.skin_currency]
+    price_updates = PriceUpdates(
+        bot,
+        PriceRefresher(PriceBook(), store, SteamMarketClient(currency), SkinportClient(currency)),
+    )
     await bot.add_cog(
         Cs2(
             client,
@@ -620,5 +661,6 @@ async def setup(bot: NinjaBot) -> None:
             SteamCommunityResolver(),
             UserCooldown(LEADERBOARD_COOLDOWN_SECONDS),
             auto_post,
+            price_updates=price_updates,
         )
     )

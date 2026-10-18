@@ -20,6 +20,7 @@ It does five things:
 - [/download](#download)
 - [CS2 stats](#cs2-stats)
 - [Auto-posted matches](#auto-posted-matches)
+- [Skins](#skins)
 - [Activity tracking](#activity-tracking)
 - [Session polls](#session-polls)
 - [/help](#help)
@@ -296,6 +297,20 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 
 where the cause is `missing` (not found), `not a text channel`, `missing View Channel, Send Messages or Embed Links`, or `unavailable (Discord error)` (Discord failed to look the channel up, e.g. an outage; the next cycle tries again). The warning repeats only after the channel has worked again.
 
+## Skins
+
+The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). The commands that show them are still being built; for now the bot only keeps prices up to date in the background.
+
+| Source | What it is | Refreshed | How |
+|---|---|---|---|
+| Steam Market | The lowest Steam Community Market listing (wallet money) | Every 24 hours; an incomplete crawl is retried after 1 hour | Crawls the CS2 market listing pages one at a time, 5 seconds apart (about 25 minutes for the whole market). If Steam rate limits a page it waits and retries (60 s, 120 s, 180 s); if it gives up, the prices it got so far are saved. |
+| Skinport | The lowest Skinport listing (real money, so usually cheaper) | Every hour | One bulk request for all CS2 items. |
+
+- The bot checks every 10 minutes what is due. Nothing needs a command or a setting, and nothing is posted.
+- Prices are saved in `cs2.sqlite3` (see [Data and storage](#data-and-storage)) and loaded on start, so a restart doesn't wait for a new crawl. When a source fails, its old prices stay and the other source is not affected; a failed Skinport refresh is tried again on the next check.
+- Items without a listing have no price for that source (shown as `n/a`).
+- After a restart, a Steam crawl that was incomplete before the restart is only retried 24 hours after it saved (the retry time is kept in memory).
+
 ## Activity tracking
 
 The bot records how long each member spends in voice channels. It always runs; there is nothing to turn on.
@@ -528,7 +543,7 @@ src/ninja_bot/
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (Steam name lookups),
-                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), prices (Prices, PriceBook, PriceStore), skinport (Skinport bulk prices), steam_market (Steam Market price crawl), cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
+                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), prices (Prices, PriceBook, PriceStore, PriceRefresher), skinport (Skinport bulk prices), steam_market (Steam Market price crawl), cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
   sessions/       session poll logic: slots (weekday/time/date parsing, excluded days, candidate slots), players (the `players` mention list), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/

@@ -1,8 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import logging
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol
+
+log = logging.getLogger(__name__)
+
+# How often the cog's loop checks what is due, and how old each source may get.
+PRICE_CHECK_SECONDS = 600
+SKINPORT_REFRESH_SECONDS = 3600
+STEAM_REFRESH_SECONDS = 86400
+# An incomplete Steam crawl (error or rate limit part-way) is retried sooner.
+STEAM_RETRY_SECONDS = 3600
 
 
 # Currencies both price sources support. Steam ids are the Steam Web API
@@ -99,3 +110,121 @@ class PriceBook:
     def update_skinport(self, mapping: Mapping[str, int]) -> None:
         for name, minor in mapping.items():
             self._prices[name] = replace(self._prices.get(name, Prices()), skinport=minor)
+
+
+class SteamCrawl(Protocol):
+    """What `PriceRefresher` reads from a Steam Market crawl (`steam_market.CrawlResult`)."""
+
+    @property
+    def prices(self) -> Mapping[str, int]: ...
+
+    @property
+    def complete(self) -> bool: ...
+
+
+class SteamPriceSource(Protocol):
+    """`steam_market.SteamMarketClient`; `crawl` never raises `Cs2Error`."""
+
+    async def crawl(self) -> SteamCrawl: ...
+
+    async def aclose(self) -> None: ...
+
+
+class SkinportPriceSource(Protocol):
+    """`skinport.SkinportClient`; `get_prices` raises `Cs2Error` on failure."""
+
+    async def get_prices(self) -> dict[str, int]: ...
+
+    async def aclose(self) -> None: ...
+
+
+class PriceRefresher:
+    """Keeps a `PriceBook` and the `PriceStore` fresh from both sources, independently.
+
+    Skinport is due when never saved or older than `SKINPORT_REFRESH_SECONDS`; Steam when
+    never saved or older than `STEAM_REFRESH_SECONDS`, and `STEAM_RETRY_SECONDS` after an
+    incomplete crawl (whatever it gathered is saved). A failing source keeps its old prices.
+    """
+
+    def __init__(
+        self,
+        book: PriceBook,
+        store: PriceStore,
+        steam_client: SteamPriceSource,
+        skinport_client: SkinportPriceSource,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.book = book
+        self._store = store
+        self._steam = steam_client
+        self._skinport = skinport_client
+        self._clock = clock
+        self._skinport_updated: float | None = None
+        # When the next Steam crawl is due; None = due now.
+        self._steam_next: float | None = None
+
+    async def load(self) -> None:
+        """Fill the book from the store and take the last update times from it."""
+        prices = await self._store.load_prices()
+        self.book.update_steam({name: p.steam for name, p in prices.items() if p.steam is not None})
+        self.book.update_skinport(
+            {name: p.skinport for name, p in prices.items() if p.skinport is not None}
+        )
+        self._skinport_updated = await self._store.last_update("skinport")
+        steam_updated = await self._store.last_update("steam")
+        self._steam_next = None if steam_updated is None else steam_updated + STEAM_REFRESH_SECONDS
+
+    def due(self) -> list[PriceSource]:
+        """The sources to refresh now, Skinport first (one quick call before the long crawl)."""
+        now = self._clock()
+        sources: list[PriceSource] = []
+        if (
+            self._skinport_updated is None
+            or now - self._skinport_updated >= SKINPORT_REFRESH_SECONDS
+        ):
+            sources.append("skinport")
+        if self._steam_next is None or now >= self._steam_next:
+            sources.append("steam")
+        return sources
+
+    async def refresh_skinport(self) -> None:
+        """One bulk Skinport call; raises `Cs2Error` (nothing changed) when it fails."""
+        prices = await self._skinport.get_prices()
+        now = self._clock()
+        self.book.update_skinport(prices)
+        if prices:
+            self._skinport_updated = now
+        await self._store.save_skinport_prices(prices, now)
+
+    async def refresh_steam(self) -> None:
+        """Crawl the Steam Market and save what it got, even when the crawl stopped early."""
+        result = await self._steam.crawl()
+        now = self._clock()
+        if result.complete and result.prices:
+            self._steam_next = now + STEAM_REFRESH_SECONDS
+        else:
+            log.info("Steam Market crawl incomplete; retrying in %d s", STEAM_RETRY_SECONDS)
+            self._steam_next = now + STEAM_RETRY_SECONDS
+        self.book.update_steam(result.prices)
+        await self._store.save_steam_prices(result.prices, now)
+
+    async def run_cycle(self) -> None:
+        """Refresh whatever is due; never raises, and one source failing never stops the other."""
+        try:
+            sources = self.due()
+        except Exception as exc:
+            log.warning("Could not check price refresh times (%s)", type(exc).__name__)
+            return
+        for source in sources:
+            refresh = self.refresh_skinport if source == "skinport" else self.refresh_steam
+            try:
+                await refresh()
+            except Exception as exc:
+                log.warning("Refreshing %s prices failed (%s)", source, type(exc).__name__)
+
+    async def aclose(self) -> None:
+        """Close both clients, the second even if the first fails."""
+        try:
+            await self._steam.aclose()
+        finally:
+            await self._skinport.aclose()
