@@ -38,6 +38,8 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] `/scoreboard`: all ten players are in the team tables, not just you
 - [ ] `/scoreboard player:@friend` and `/scoreboard match:<id>`: that player's and that match's scoreboard
 - [ ] `/scoreboard match:nonsense`: "match not found" reply
+- [ ] `/scoreboard` once prices are loaded: a `Top skins` field at the end with 3 skins and owner names (Discord names for linked friends), no pings; run again within 30 min and it is posted faster (cached inventories)
+- [ ] `/scoreboard` right after a restart (prices loading): no `Top skins` field, no delay
 - [ ] Match with two linked friends: their Discord names in the tables, a `Friends in this match` line with mentions that don't ping
 - [ ] Linked friend who left the server: Steam name instead, not in the friends line
 - [ ] Player with no team in the Leetify data (if one turns up): listed under `Other players`
@@ -71,6 +73,7 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] `/link` a new account that has older matches: none of its old matches are posted
 - [ ] A linked friend who left the server finishes a match: the post lists their Steam name in the `Squad` field without a mention
 - [ ] Failed full-match lookup: the post is delayed to a later cycle, not posted partial
+- [ ] Auto-post once prices are loaded: `Top skins` field at the end with owners, no pings; the post arrives at most about 30 s later than without skins
 - [ ] Wrong channel ID or missing Embed Links: one warning in the log, no crash
 - [ ] Leetify rate limit: one skipped cycle (see the log), then posting resumes. If it can't be triggered, note it as unverifiable (covered by unit tests)
 

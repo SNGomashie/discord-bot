@@ -212,6 +212,7 @@ The embed is titled `<map> - <score>:<score>` and stamped with the match's finis
 5. **The focus player's stats**: K/D/A, ADR, HS%, rating, preaim (degrees), reaction time (ms) and multi-kills.
 6. **Leetify breakdown**: aim, positioning and utility (0 to 100), clutch and opening (signed ratings).
 7. **Recent form**: the newest 5 results as 🟩 win, 🟥 loss, 🟨 tie or ⬜ unknown, with the average rating.
+8. **Top skins**: the 3 priciest priced skins across the inventories of everyone in the match, as `**Skin** · Steam €X · Skinport €Y · Owner` (owner by Discord display name for linked members, else Steam name; never a mention). See [Skins in match posts](#skins-in-match-posts).
 
 Detailed stats, the breakdown and form are only shown for the focus player, not for every friend.
 
@@ -221,6 +222,7 @@ Things worth knowing:
 - Friends appear by Discord display name. Members are looked up through the REST API (`fetch_member`, at most 10 lookups per scoreboard), so no extra intent or permission is needed. A linked friend who left the server falls back to their Steam name.
 - Player names from Leetify are escaped, so markdown in a name is shown as plain text.
 - The match and the profile are fetched at the same time. If only the profile fails, the scoreboard is still posted without the breakdown and form.
+- The skins are fetched after the match, so a scoreboard can take up to about 30 seconds longer when the inventories aren't cached yet.
 
 **Awards** (at most 5 per match and at most 2 per player). Categories are checked in this order, and one with no qualifier is skipped, so the last ones only show up when earlier ones are missing:
 
@@ -298,6 +300,7 @@ With `CS2_CHANNEL_ID` set, the bot checks Leetify every `CS2_POLL_SECONDS` (defa
 - **Rate limits:** when Leetify rate limits the bot, it posts what it already has, skips the next cycle, and then resumes from the player where it stopped, so every friend gets checked.
 - **Posted matches are remembered** in `cs2.sqlite3` (the newest 500), so a restart never reposts them. A match is marked as posted even if sending it failed, so a broken post is not retried every cycle.
 - Matches can take a while to appear on Leetify after they end, and players with a private Leetify profile are never posted.
+- **Top skins:** the post ends with the match's 3 priciest skins and their owners, like [/scoreboard](#scoreboard) (see [Skins in match posts](#skins-in-match-posts)). Gathering them never stops or delays the posting rules above: without skins the post is the same as before, and the match is marked as posted either way.
 
 **Channel requirements.** Auto-posts are normal messages, not interaction replies, so the channel permissions matter here. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links in that channel. The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. If something is wrong the bot logs one warning per problem and posts nothing:
 
@@ -307,7 +310,7 @@ where the cause is `missing` (not found), `not a text channel`, `missing View Ch
 
 ## Skins
 
-The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory and [/profile](#profile) adds a player's worth and top 3 skins; the prices are kept up to date in the background.
+The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory, [/profile](#profile) adds a player's worth and top 3 skins, and [/scoreboard](#scoreboard) and [auto-posted matches](#auto-posted-matches) show the 3 priciest skins in the match; the prices are kept up to date in the background.
 
 | Source | What it is | Refreshed | How |
 |---|---|---|---|
@@ -318,6 +321,14 @@ The bot values CS2 skins with two price sources side by side, both in `SKIN_CURR
 - Prices are saved in `cs2.sqlite3` (see [Data and storage](#data-and-storage)) and loaded on start, so a restart doesn't wait for a new crawl. When a source fails, its old prices stay and the other source is not affected; a failed Skinport refresh is tried again on the next check.
 - Items without a listing have no price for that source (shown as `n/a`).
 - After a restart, a Steam crawl that was incomplete before the restart is only retried 24 hours after it saved (the retry time is kept in memory).
+
+### Skins in match posts
+
+`/scoreboard` and auto-posted matches end with a `Top skins` field: the 3 priciest priced skins across the inventories of every player in the match (linked or not), ranked by Steam price (Skinport when Steam has none), each with its owner. The same skin owned by two players is listed once per owner.
+
+- Inventories are fetched one player at a time through the same cache as `/inventory` (cache misses at least 4 seconds apart), within a 30-second budget (`MATCH_SKINS_BUDGET_SECONDS` in `cs2/match_skins.py`): no new inventory is fetched once it is used up, so with a cold cache only the first players of a 10-player match (at most about 8) are included.
+- Private inventories and players Steam fails for are skipped. If Steam rate limits a fetch, the remaining players are skipped.
+- No field when no skins were found: all inventories private or empty, nothing priced, Steam unavailable, or the prices still loading after a restart (then Steam isn't asked at all). The rest of the embed is unchanged.
 
 ### /inventory
 
@@ -556,6 +567,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
 - **Large inventories:** `/inventory` fetches one page of up to 2000 items, so anything beyond that is not valued.
+- **Match skins are partial:** the `Top skins` of a scoreboard or auto-post only cover public inventories, and only the players fetched within the 30-second budget (a cold 10-player match needs about 40 seconds, so the last players are left out until their inventories are cached). A scoreboard can take up to about 30 seconds longer because of it.
 - **One download at a time**, bot-wide, with no persistent queue.
 - **Voice only:** activity counts time connected to voice channels. Text messages, reactions, streaming and camera time are not counted (Toasty `;pokemon` replies are the only messages read).
 - **No history before the feature:** Discord keeps no voice history, so tracking starts when the bot first runs with this feature; earlier months are empty.

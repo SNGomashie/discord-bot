@@ -19,6 +19,7 @@ from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     INVENTORY_TOP_ITEMS,
+    MatchSkins,
     ProfileSkins,
     build_announcement_embed,
     build_inventory_embed,
@@ -31,6 +32,7 @@ from ninja_bot.cs2.identities import Identity, MemberLookup, resolve_identities
 from ninja_bot.cs2.inventory import InventoryProvider
 from ninja_bot.cs2.inventory_cache import CachedInventoryProvider
 from ninja_bot.cs2.inventory_client import SteamInventoryClient
+from ninja_bot.cs2.match_skins import MATCH_SKINS_BUDGET_SECONDS, fetch_match_inventories
 from ninja_bot.cs2.models import (
     Cs2Error,
     Match,
@@ -66,7 +68,7 @@ from ninja_bot.cs2.steam import (
 )
 from ninja_bot.cs2.steam_market import SteamMarketClient
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
-from ninja_bot.cs2.valuation import value_inventory
+from ninja_bot.cs2.valuation import match_top_skins, value_inventory
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import PostChannelResolver, send_safely
 
@@ -362,8 +364,9 @@ class Cs2(commands.Cog):
         try:
             match = new_match.match
             identities = await self._match_identities_or_none(channel.guild, match)
+            skins = await self._match_skins_or_none(match)
             embed = build_announcement_embed(
-                match, compute_awards(match), new_match.squad, identities=identities
+                match, compute_awards(match), new_match.squad, identities=identities, skins=skins
             )
             # Squad members are shown as mentions; render them, but never ping anyone.
             await _send_safely(
@@ -640,8 +643,14 @@ class Cs2(commands.Cog):
         try:
             match, profile = await self._fetch_match_and_profile(steam64_id, game_id)
             identities = await self._match_identities_or_none(interaction.guild, match)
+            skins = await self._match_skins_or_none(match)
             embed = build_match_embed(
-                match, compute_awards(match), steam64_id, profile, identities=identities
+                match,
+                compute_awards(match),
+                steam64_id,
+                profile,
+                identities=identities,
+                skins=skins,
             )
         except Cs2Error as exc:
             await _send_safely(interaction.followup.send(exc.message))
@@ -703,6 +712,27 @@ class Cs2(commands.Cog):
             return None
         valuation = value_inventory(items, self.skins.book, PROFILE_TOP_SKINS)
         return ProfileSkins(valuation, self.skins.currency)
+
+    async def _match_skins_or_none(self, match: Match) -> MatchSkins | None:
+        """The priciest skins among the match's players, or None if there are none to show.
+
+        Inventories are gathered within `MATCH_SKINS_BUDGET_SECONDS`; skins are an extra,
+        so any failure leaves the match embed unchanged.
+        """
+        if self.skins.book.is_empty:
+            # Without prices there is nothing to show, so Steam isn't asked at all.
+            return None
+        try:
+            inventories = await fetch_match_inventories(
+                self.skins.inventories,
+                [player.steam64_id for player in match.players],
+                MATCH_SKINS_BUDGET_SECONDS,
+            )
+            top = match_top_skins(inventories, self.skins.book)
+        except Exception as exc:
+            log.warning("Posting match without skins: %s", type(exc).__name__)
+            return None
+        return MatchSkins(top, self.skins.currency) if top else None
 
     async def _leaderboard_deferred(self, interaction: discord.Interaction, metric: Metric) -> bool:
         """Fetch every linked profile and post the ranking; True only if players were shown."""

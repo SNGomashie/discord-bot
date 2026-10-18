@@ -124,7 +124,11 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "/scoreboard",
             "/scoreboard player:@friend",
         ),
-        notes=("Linked members are shown with their server names in the tables.",),
+        notes=(
+            "Linked members are shown with their server names in the tables.",
+            "Also lists the 3 priciest skins in the match and who owns them (public "
+            "inventories only, so it can take up to 30 seconds longer).",
+        ),
         parameter_notes={
             "player": "A server member who used /link. Leave it empty for yourself.",
             "match": "A Leetify match id. Leave it empty for the latest match.",

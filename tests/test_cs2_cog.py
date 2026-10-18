@@ -54,6 +54,7 @@ from ninja_bot.cs2.embed import (
     build_match_embed,
     build_profile_embed,
 )
+from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.identities import Identity
 from ninja_bot.cs2.inventory import InventoryItem, ItemKind
 from ninja_bot.cs2.inventory_cache import CachedInventoryProvider
@@ -2116,3 +2117,115 @@ async def test_profile_error_cancels_inventory_fetch(fixture_profile: Profile) -
     interaction.followup.send.assert_awaited_once_with(PlayerNotFoundError().message)
     assert asyncio.all_tasks() == {asyncio.current_task()}  # the inventory task is gone
     assert cooldown.try_acquire(USER_ID) == 0
+
+
+class MatchInventories(FakeInventories):
+    """One inventory per steam64 id (empty for the rest); optionally slow."""
+
+    def __init__(self, by_id: Mapping[str, list[InventoryItem]], delay: float = 0) -> None:
+        super().__init__()
+        self.by_id = by_id
+        self.delay = delay
+
+    async def get_inventory(self, steam64_id: str) -> list[InventoryItem]:
+        self.calls.append(steam64_id)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return list(self.by_id.get(steam64_id, []))
+
+
+def skins_scoreboard_cog(
+    match: Match,
+    profile: Profile,
+    inventories: FakeInventories,
+    book: PriceBook | None = None,
+) -> tuple[Cs2, UserCooldown]:
+    stats = FakeStats(profile, matches=[match])
+    cooldown = UserCooldown(COOLDOWN_SECONDS, FakeClock())
+    skins = SkinSources(
+        inventories,
+        book if book is not None else priced_book(),
+        CURRENCIES[DEFAULT_CURRENCY],
+    )
+    store = MemoryLinkStore({USER_ID: FIXTURE_STEAM_ID})
+    return Cs2(stats, store, cooldown, skins=skins), cooldown
+
+
+def plain_scoreboard(match: Match, profile: Profile) -> dict[str, Any]:
+    return build_match_embed(match, compute_awards(match), FIXTURE_STEAM_ID, profile).to_dict()
+
+
+async def test_scoreboard_shows_top_skins_with_owner(
+    match: Match, fixture_profile: Profile
+) -> None:
+    owner = match.players[-1]
+    inventories = MatchInventories({owner.steam64_id: [skin_item()]})
+    cog, cooldown = skins_scoreboard_cog(match, fixture_profile, inventories)
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction)
+    embed = posted_embed(interaction)
+    assert inventories.calls == [p.steam64_id for p in match.players]
+    assert field_names(embed)[-1] == TOP_SKINS_FIELD
+    value = field_value(embed, TOP_SKINS_FIELD)
+    assert "Redline" in value and "€12.30" in value
+    assert escape_name(owner.name or owner.steam64_id) in value
+    assert "<@" not in value
+    allowed = interaction.followup.send.call_args.kwargs["allowed_mentions"]
+    assert allowed.to_dict() == discord.AllowedMentions.none().to_dict()
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+@pytest.mark.parametrize(
+    "inventories",
+    [
+        FakeInventories(error=RuntimeError("boom")),
+        FakeInventories(error=PrivateInventoryError()),
+        FakeInventories(error=RateLimitedError()),
+        FakeInventories(items=[]),
+    ],
+)
+async def test_scoreboard_without_skins_is_unchanged(
+    match: Match, fixture_profile: Profile, inventories: FakeInventories
+) -> None:
+    cog, cooldown = skins_scoreboard_cog(match, fixture_profile, inventories)
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction)
+    assert posted_embed(interaction).to_dict() == plain_scoreboard(match, fixture_profile)
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_scoreboard_skins_failure_is_unchanged(
+    match: Match, fixture_profile: Profile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> list[Any]:
+        raise RuntimeError("bad book")
+
+    monkeypatch.setattr(cs2_cog, "match_top_skins", broken)
+    cog, _ = skins_scoreboard_cog(match, fixture_profile, FakeInventories())
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction)
+    assert posted_embed(interaction).to_dict() == plain_scoreboard(match, fixture_profile)
+
+
+async def test_scoreboard_prices_loading_skips_inventories(
+    match: Match, fixture_profile: Profile
+) -> None:
+    inventories = FakeInventories()
+    cog, _ = skins_scoreboard_cog(match, fixture_profile, inventories, PriceBook())
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction)
+    assert inventories.calls == []
+    assert posted_embed(interaction).to_dict() == plain_scoreboard(match, fixture_profile)
+
+
+async def test_scoreboard_skins_respect_budget(
+    match: Match, fixture_profile: Profile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cs2_cog, "MATCH_SKINS_BUDGET_SECONDS", 0.15)
+    first = match.players[0].steam64_id
+    inventories = MatchInventories({first: [skin_item()]}, delay=0.1)
+    cog, _ = skins_scoreboard_cog(match, fixture_profile, inventories)
+    interaction = make_interaction()
+    await cog.handle_scoreboard(interaction)
+    assert len(inventories.calls) == 2
+    assert "Redline" in field_value(posted_embed(interaction), TOP_SKINS_FIELD)

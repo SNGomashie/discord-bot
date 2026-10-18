@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from ninja_bot.cogs.cs2 import AutoPost, Cs2
+from ninja_bot.cogs import cs2 as cs2_cog
+from ninja_bot.cogs.cs2 import AutoPost, Cs2, SkinSources
 from ninja_bot.cs2.awards import compute_awards
 from ninja_bot.cs2.channels import (
     CHANNEL_MISSING,
@@ -14,10 +15,12 @@ from ninja_bot.cs2.channels import (
     CHANNEL_NOT_TEXT,
     CHANNEL_UNAVAILABLE,
 )
-from ninja_bot.cs2.embed import build_announcement_embed
+from ninja_bot.cs2.embed import TOP_SKINS_FIELD, build_announcement_embed
 from ninja_bot.cs2.identities import Identity
+from ninja_bot.cs2.inventory import InventoryItem, ItemKind
 from ninja_bot.cs2.models import Match, PlayerMatchStats, TeamScore
 from ninja_bot.cs2.poller import NewMatch, PollResult
+from ninja_bot.cs2.prices import CURRENCIES, DEFAULT_CURRENCY, PriceBook, Prices
 from ninja_bot.cs2.squad import SquadMember
 
 STEAM_A = "76561198000000001"
@@ -132,9 +135,10 @@ def make_cog(
     bot: MagicMock,
     channel_id: int | None = CHANNEL_ID,
     poll_seconds: float = 60,
+    skins: SkinSources | None = None,
 ) -> Cs2:
     auto_post = AutoPost(bot, poller, channel_id, poll_seconds)  # type: ignore[arg-type]
-    return Cs2(MagicMock(), MemoryLinks({1: STEAM_A}), auto_post=auto_post)
+    return Cs2(MagicMock(), MemoryLinks({1: STEAM_A}), auto_post=auto_post, skins=skins)
 
 
 def sent_embeds(channel: MagicMock) -> list[discord.Embed]:
@@ -431,3 +435,131 @@ async def test_loop_not_started_without_auto_post() -> None:
     cog = Cs2(MagicMock(), MemoryLinks())
     await cog.cog_load()
     assert not cog.poll_loop.is_running()
+
+
+SKIN_NAME = "AK-47 | Redline (Field-Tested)"
+SKIN = InventoryItem(
+    market_hash_name=SKIN_NAME,
+    name=SKIN_NAME,
+    item_type="Classified Rifle",
+    marketable=True,
+    colour=None,
+    kind=ItemKind.SKIN,
+)
+
+
+class FakeInventories:
+    def __init__(
+        self,
+        by_id: dict[str, list[InventoryItem]],
+        error: Exception | None = None,
+        delay: float = 0,
+    ) -> None:
+        self.by_id = by_id
+        self.error = error
+        self.delay = delay
+        self.calls: list[str] = []
+
+    async def get_inventory(self, steam64_id: str) -> list[InventoryItem]:
+        self.calls.append(steam64_id)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        return list(self.by_id.get(steam64_id, []))
+
+    async def aclose(self) -> None:
+        pass
+
+
+def skin_sources(inventories: FakeInventories, book: PriceBook | None = None) -> SkinSources:
+    if book is None:
+        book = PriceBook({SKIN_NAME: Prices(steam=1230, skinport=1005)})
+    return SkinSources(inventories, book, CURRENCIES[DEFAULT_CURRENCY])
+
+
+def plain_announcement(match: NewMatch) -> dict[str, Any]:
+    identities = {STEAM_A: Identity(STEAM_A, 1, "Member1")}
+    embed = build_announcement_embed(
+        match.match, compute_awards(match.match), match.squad, identities=identities
+    )
+    return embed.to_dict()
+
+
+async def test_announcement_shows_top_skins_with_owners() -> None:
+    events: list[str] = []
+    channel = make_channel(events)
+    match = new_match("m1")
+    inventories = FakeInventories({STEAM_A: [SKIN], STEAM_B: [SKIN]})
+    cog = make_cog(FakePoller(events, [match]), make_bot(channel), skins=skin_sources(inventories))
+    await cog.run_poll_cycle()
+    assert inventories.calls == [STEAM_A, STEAM_B]
+    [embed] = sent_embeds(channel)
+    field = embed.fields[-1]
+    assert field.name == TOP_SKINS_FIELD
+    value = field.value or ""
+    assert "Redline" in value
+    assert "Member1" in value and "P2" in value  # identity name, else Steam name
+    assert "<@" not in value
+    allowed = channel.send.call_args.kwargs["allowed_mentions"]
+    assert allowed.to_dict() == discord.AllowedMentions.none().to_dict()
+    assert events == [f"send {embed.title}", "confirm m1"]
+
+
+async def test_announcement_without_skins_on_inventory_failure() -> None:
+    events: list[str] = []
+    channel = make_channel(events)
+    match = new_match("m1")
+    inventories = FakeInventories({}, error=RuntimeError("steam down"))
+    poller = FakePoller(events, [match])
+    cog = make_cog(poller, make_bot(channel), skins=skin_sources(inventories))
+    await cog.run_poll_cycle()
+    [embed] = sent_embeds(channel)
+    assert embed.to_dict() == plain_announcement(match)
+    assert poller.confirmed == ["m1"]
+
+
+async def test_announcement_skins_error_is_still_posted_and_confirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> list[Any]:
+        raise RuntimeError("bad book")
+
+    monkeypatch.setattr(cs2_cog, "match_top_skins", broken)
+    events: list[str] = []
+    channel = make_channel(events)
+    match = new_match("m1")
+    inventories = FakeInventories({STEAM_A: [SKIN]})
+    cog = make_cog(FakePoller(events, [match]), make_bot(channel), skins=skin_sources(inventories))
+    await cog.run_poll_cycle()
+    [embed] = sent_embeds(channel)
+    assert embed.to_dict() == plain_announcement(match)
+    assert events == [f"send {embed.title}", "confirm m1"]
+
+
+async def test_announcement_prices_loading_skips_inventories() -> None:
+    events: list[str] = []
+    channel = make_channel(events)
+    match = new_match("m1")
+    inventories = FakeInventories({STEAM_A: [SKIN]})
+    skins = skin_sources(inventories, PriceBook())
+    cog = make_cog(FakePoller(events, [match]), make_bot(channel), skins=skins)
+    await cog.run_poll_cycle()
+    assert inventories.calls == []
+    [embed] = sent_embeds(channel)
+    assert embed.to_dict() == plain_announcement(match)
+
+
+async def test_announcement_skins_respect_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cs2_cog, "MATCH_SKINS_BUDGET_SECONDS", 0.05)
+    events: list[str] = []
+    channel = make_channel(events)
+    match = new_match("m1")
+    inventories = FakeInventories({STEAM_A: [SKIN], STEAM_B: [SKIN]}, delay=0.1)
+    cog = make_cog(FakePoller(events, [match]), make_bot(channel), skins=skin_sources(inventories))
+    await cog.run_poll_cycle()
+    assert inventories.calls == [STEAM_A]
+    [embed] = sent_embeds(channel)
+    value = embed.fields[-1].value or ""
+    assert embed.fields[-1].name == TOP_SKINS_FIELD
+    assert "Member1" in value and "P2" not in value
