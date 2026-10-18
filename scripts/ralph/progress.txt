@@ -1,6 +1,7 @@
 # Ralph progress log — started 2026-10-18 (feature: cs2-skins; patterns carried over)
 
 ## Codebase Patterns
+- New slash command: besides `help/content.py`, add its name to `EXPECTED_NAMES` in tests/test_help_content.py and the set in tests/test_help_cog.py `test_command_infos_from_tree`.
 - Local-time splitting: `periods.split_local(start, end, tz, "hour"|"day")` yields (piece_start, piece_end, local) in real seconds with the DST no-advance guard; use it instead of hand-rolled cursor loops. On the fall-back day the repeated 02:00 hour is one 2-hour piece (local.hour 2).
 - Auto-post channels (src/ninja_bot/posting.py): `PostChannelResolver(bot, warning_template, channel_id).resolve()` is the one get_channel -> fetch_channel -> is_post_channel -> channel_problem flow (warn once per cause, cleared on success; non-NotFound/Forbidden HTTP errors = `CHANNEL_UNAVAILABLE`). Cogs build it only when the channel id is set (`self._post_channel` None = auto-post off) and keep a local `_send_safely` that just binds the `send_safely(send, what)` log label.
 - Help (tasks/prd-help-command.md): every /help string lives in `src/ninja_bot/help/content.py` (`COMMANDS` of `CommandHelp`, `GROUPS`, text constants incl. `OTHER_GROUP_TITLE`, `SUGGESTIONS_TEXT` `{names}`/`NO_SUGGESTIONS` for the `{suggestions}` slot, `PUBLIC_COOLDOWN_MESSAGE` with `{seconds}`/`{unit}`). Tests import the constants and check structure only, never prose. content.py must not import discord/ninja_bot (checked with ast in tests/test_help_content.py).
