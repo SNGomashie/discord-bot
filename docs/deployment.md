@@ -164,6 +164,8 @@ LEETIFY_API_KEY=<leetify api key>
 # ACTIVITY_TIMEZONE=Europe/Amsterdam
 # Optional: session poll time zone (default: ACTIVITY_TIMEZONE).
 # SESSIONS_TIMEZONE=Europe/Amsterdam
+# Optional: skin price currency (AUD, CAD, CHF, EUR, GBP, USD; default EUR).
+# SKIN_CURRENCY=EUR
 # Optional: track Toasty ;pokemon catches (enable Message Content Intent in the portal first).
 # TOASTY_BOT_ID=<toasty user id>
 ```
@@ -271,6 +273,7 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | `ACTIVITY_CHANNEL_ID` | optional | optional | Channel for the automatic monthly activity report (previous month, posted once after the month ends in `ACTIVITY_TIMEZONE`). Unset = no monthly auto-post. The bot needs View Channel, Send Messages (Send Messages in Threads for a thread) and Embed Links there |
 | `ACTIVITY_TIMEZONE` | optional | optional | IANA time zone name for activity month boundaries. Default `UTC`; an unknown name is a `ConfigError` at startup |
 | `SESSIONS_TIMEZONE` | optional | optional | IANA time zone name for session poll slot times. Default: the value of `ACTIVITY_TIMEZONE`; an unknown name is a `ConfigError` at startup |
+| `SKIN_CURRENCY` | optional | optional | Currency for skin prices: `AUD`, `CAD`, `CHF`, `EUR`, `GBP` or `USD` (case-insensitive). Default `EUR`; any other value is a `ConfigError` at startup |
 | `TOASTY_BOT_ID` | optional | optional | User ID of the Toasty bot. Set = track `;pokemon` catches and request the Message Content intent, which must also be enabled in the Developer Portal. Unset = no Toasty tracking |
 
 ## 6. Troubleshooting

@@ -5,6 +5,8 @@ import zoneinfo
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from ninja_bot.cs2.prices import CURRENCIES, DEFAULT_CURRENCY
+
 
 class ConfigError(RuntimeError):
     pass
@@ -24,6 +26,7 @@ class Config:
     activity_timezone: str = "UTC"
     toasty_bot_id: int | None = None
     sessions_timezone: str = "UTC"
+    skin_currency: str = DEFAULT_CURRENCY
 
     @property
     def is_dev(self) -> bool:
@@ -54,6 +57,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     sessions_timezone = _parse_timezone(source, "SESSIONS_TIMEZONE", activity_timezone)
     # Toasty ;pokemon tracking; set = Message Content intent requested.
     toasty_bot_id = _parse_optional_positive_int(source, "TOASTY_BOT_ID")
+    # Skin price currency (Steam Market and Skinport).
+    skin_currency = _parse_currency(source, "SKIN_CURRENCY", DEFAULT_CURRENCY)
     return Config(
         environment=environment,
         token=token,
@@ -67,6 +72,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         activity_timezone=activity_timezone,
         toasty_bot_id=toasty_bot_id,
         sessions_timezone=sessions_timezone,
+        skin_currency=skin_currency,
     )
 
 
@@ -97,3 +103,14 @@ def _parse_timezone(source: Mapping[str, str], key: str, default: str) -> str:
     except (zoneinfo.ZoneInfoNotFoundError, ValueError):
         raise ConfigError(f"{key} must be an IANA time zone name, got {raw!r}") from None
     return raw
+
+
+def _parse_currency(source: Mapping[str, str], key: str, default: str) -> str:
+    raw = source.get(key, "").strip()
+    if not raw:
+        return default
+    code = raw.upper()
+    if code not in CURRENCIES:
+        allowed = ", ".join(sorted(CURRENCIES))
+        raise ConfigError(f"{key} must be one of {allowed}, got {raw!r}")
+    return code

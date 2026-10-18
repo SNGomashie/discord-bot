@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from ninja_bot.cs2.prices import PriceBook, Prices
+from ninja_bot.cs2.prices import (
+    CURRENCIES,
+    DEFAULT_CURRENCY,
+    PriceBook,
+    Prices,
+    format_price,
+)
 
 
 def test_prices_default_to_none() -> None:
@@ -55,3 +61,34 @@ def test_prices_are_frozen() -> None:
     prices = Prices(steam=1)
     with pytest.raises(AttributeError):
         prices.steam = 2  # type: ignore[misc]
+
+
+def test_currency_table() -> None:
+    assert {"USD", "EUR", "GBP"} <= set(CURRENCIES)
+    assert DEFAULT_CURRENCY in CURRENCIES
+    for code, currency in CURRENCIES.items():
+        assert currency.code == code == currency.skinport_code
+    assert CURRENCIES["USD"].steam_id == 1
+    assert CURRENCIES["GBP"].steam_id == 2
+    assert CURRENCIES["EUR"].steam_id == 3
+    assert len({currency.steam_id for currency in CURRENCIES.values()}) == len(CURRENCIES)
+
+
+@pytest.mark.parametrize(
+    ("minor", "code", "expected"),
+    [
+        (123450, "EUR", "€1,234.50"),
+        (0, "EUR", "€0.00"),
+        (5, "USD", "$0.05"),
+        (99, "GBP", "£0.99"),
+        (123456789, "USD", "$1,234,567.89"),
+        (-250, "EUR", "-€2.50"),
+        (1000, "CHF", "CHF 10.00"),
+    ],
+)
+def test_format_price(minor: int, code: str, expected: str) -> None:
+    assert format_price(minor, CURRENCIES[code]) == expected
+
+
+def test_format_price_none() -> None:
+    assert format_price(None, CURRENCIES["EUR"]) == "n/a"

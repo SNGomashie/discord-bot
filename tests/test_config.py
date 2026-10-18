@@ -158,3 +158,19 @@ def test_message_content_intent_only_with_toasty(toasty: str | None, expected: b
     default = discord.Intents.default()
     default.message_content = expected
     assert bot.intents == default
+
+
+def test_skin_currency_defaults_to_eur() -> None:
+    assert load_config(dict(PROD)).skin_currency == "EUR"
+    assert load_config({**PROD, "SKIN_CURRENCY": "  "}).skin_currency == "EUR"
+
+
+@pytest.mark.parametrize(("value", "expected"), [("usd", "USD"), (" Gbp ", "GBP"), ("EUR", "EUR")])
+def test_skin_currency_is_case_insensitive(value: str, expected: str) -> None:
+    assert load_config({**PROD, "SKIN_CURRENCY": value}).skin_currency == expected
+
+
+@pytest.mark.parametrize("value", ["SEK", "euro", "€", "1"])
+def test_skin_currency_invalid_raises(value: str) -> None:
+    with pytest.raises(ConfigError, match="SKIN_CURRENCY"):
+        load_config({**PROD, "SKIN_CURRENCY": value})
