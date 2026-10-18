@@ -1,157 +1,298 @@
 {
   "project": "ninja-discord-bot",
-  "branchName": "ralph/session-polls",
-  "description": "Review follow-ups for session polls: lone-GM auto-close, serialised votes and joins, late reminders, empty Save, stale refresh, repairing failed outcome posts, cancel cleanup and per-cycle state reads",
+  "branchName": "ralph/cs2-skins",
+  "description": "CS2 skins: Steam inventory + Steam Market/Skinport prices shown side by side; top 3 priciest skins of everyone in a match summary and top skins in /profile; /inventory and /skinboard commands",
   "userStories": [
     {
       "id": "US-001",
-      "title": "A lone GM doesn't close the round",
-      "description": "As a GM, I want the poll to wait for other players after I vote, so that my own vote doesn't close or burn a round.",
+      "title": "Inventory models and parsing",
+      "description": "As a developer, I need to turn a Steam inventory response into typed items so later features can value them.",
       "acceptanceCriteria": [
-        "`scoring.all_voted` returns False unless at least `MIN_PLAYERS_TO_AUTO_CLOSE` (new constant, 2) players have joined and none is pending; the docstring says why",
-        "`should_auto_close` therefore returns `None` (or `\"deadline\"` when due) for a poll with only the GM joined; a manual close by the GM and a deadline close still work and evaluate normally",
-        "Tests: GM alone has voted gives no `all_voted`; GM plus one player both voted gives `all_voted`; GM alone with an elapsed deadline gives `\"deadline\"`; a manual close with only the GM still evaluates; all existing scoring tests still pass",
-        "Docs: `README.md` Session polls section says a round closes by itself only once at least two players (the GM and one more) have all voted",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "New `src/ninja_bot/cs2/inventory.py` with frozen dataclass `InventoryItem` (`market_hash_name`, `name`, `item_type`, `marketable`, `colour`, `kind`) and `parse_inventory(payload) -> list[InventoryItem]`, joining `assets` to `descriptions` by `classid` + `instanceid`",
+        "`kind` is an enum `ItemKind` (`SKIN` for weapons, knives and gloves; `OTHER` for stickers, cases, charms, graffiti, music kits etc.), derived from the item `tags` (category `Type`) with a documented fallback on `type`",
+        "An empty or `null` inventory parses to an empty list; malformed payloads raise `ApiError` (reuse `models.py` error types)",
+        "Hand-written fixture `tests/fixtures/steam/inventory.json` (weapon skin, knife, gloves, sticker, case, a non-marketable item, a stacked case) and tests in `tests/test_cs2_inventory.py` covering each kind, stacks and malformed input",
+        "Add `PrivateInventoryError(Cs2Error)` to `models.py` with a user-facing message",
+        "Docs: CLAUDE.md architecture entry for `inventory.py`",
+        "Typecheck, lint and tests pass (`./scripts/check.sh`)",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 1,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-002",
-      "title": "Serialise joins, leaves and votes with close and confirm",
-      "description": "As a player, I want my vote or join to be either counted in the round or refused, never recorded after the round was evaluated.",
+      "title": "SteamInventoryClient",
+      "description": "As a developer, I need a client that fetches a player's CS2 inventory so commands and auto-posts can value it.",
       "acceptanceCriteria": [
-        "In `SessionService`, `join` (including its prefill), `leave` and `submit_vote` run under the same `self._lock` as `close_round`, `confirm` and `cancel_poll`, and read the poll status inside the lock; the lock is never taken twice in one call path (no deadlock: helpers called under the lock don't acquire it)",
-        "A vote or join arriving after the round was evaluated returns `POLL_CLOSED` and writes nothing",
-        "`join` no longer mistakes a lost race for a full poll: because the call now runs under the lock, a `False` from `store.join` can only mean the poll is full; add a short comment saying so and a test with two concurrent `asyncio.gather` joins by the same user (one `JOINED`, one `ALREADY_JOINED`, never `FULL` on a poll with space)",
-        "Test: a vote started concurrently with `close_round` (use a store whose `record_votes` awaits an `asyncio.Event`) is either counted in the evaluated round or returns `POLL_CLOSED`, and `confirm` afterwards offers exactly the slots the result showed",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "`InventoryProvider` Protocol (`get_inventory(steam64_id) -> list[InventoryItem]`, `aclose`) in `inventory.py`",
+        "`SteamInventoryClient` with injectable fetch (same `FetchResponse`/`FetchFn` shape as `client.py`), lazy aiohttp session, timeout, `aclose`",
+        "Requests `https://steamcommunity.com/inventory/<id>/730/2?l=english&count=2000`; bodies read with `read_capped` from `resolver.py` with an explicit cap (a constant, larger than the resolver's), never a single `content.read(n)`",
+        "Status mapping: 403 -> `PrivateInventoryError`; 429 -> `RateLimitedError`; 404 and an empty inventory -> empty list; timeouts, network errors, other statuses, undecodable bodies -> `ApiError`",
+        "The steam64 id is validated (digits, `parse_steam_id`-style) before it goes into the URL",
+        "Tests in `tests/test_cs2_inventory_client.py` using the `StubFetch` pattern: success, each status, timeout, oversize body, invalid id",
+        "Docs: CLAUDE.md architecture",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 2,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-003",
-      "title": "Re-check the auto-close reason under the lock",
-      "description": "As a GM, I want a round to close on \"everyone voted\" or \"deadline\" only if that is still true when it closes.",
+      "title": "Cached and paced inventory provider",
+      "description": "As a developer, I need inventory lookups cached and rate-paced so Steam's per-IP limit is respected.",
       "acceptanceCriteria": [
-        "`close_round` with reason `\"all_voted\"` or `\"deadline\"` recomputes `should_auto_close(poll, players, slot_ids, votes, now)` inside the lock; when it returns `None` the round stays open and `close_round` returns a new frozen `NotReady(poll)` outcome (added to the `RoundOutcome` union)",
-        "`\"manual\"` is unchanged (permission check, no readiness check)",
-        "The cog (`close_and_post`, `advance_if_ready`, `_close_due_rounds`) treats `NotReady` like `NotVoting`: nothing is posted, nothing raises",
-        "Tests: a player joins between the unlocked read and the locked close (simulate by joining inside a fake store hook) so `all_voted` is no longer true and the round stays open; a `\"deadline\"` close attempted before the deadline (fake clock) stays open; `NotReady` posts nothing in the cog; a still-true reason closes as before",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "`CachedInventoryProvider(InventoryProvider)` wrapping the client with a `TtlCache` (`INVENTORY_TTL_SECONDS` = 1800, success only; private and other errors are never cached except as below)",
+        "Private inventories are cached for a shorter `PRIVATE_TTL_SECONDS` (600) as a negative entry so a match with private players does not re-fetch them",
+        "An `asyncio.Lock` serialises cache misses and waits at least `MIN_FETCH_INTERVAL_SECONDS` (4) between network fetches (injectable clock and sleep); cache hits never wait",
+        "After a `RateLimitedError`, further network fetches fail fast with `RateLimitedError` for `RATE_LIMIT_BACKOFF_SECONDS` (300) without calling Steam",
+        "`aclose` delegates to the wrapped provider",
+        "Tests in `tests/test_cs2_inventory_cache.py`: hit, miss, spacing, negative cache, backoff, aclose delegation",
+        "Docs: CLAUDE.md architecture; README Caching table gets a row (TTL values taken from the constants)",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-004",
-      "title": "No instant reminder for a late-confirmed session",
-      "description": "As a player, I want reminders only for the moments that are still ahead when the session is confirmed.",
+      "title": "Price types, store and PriceBook",
+      "description": "As a developer, I need prices persisted and quickly looked up so valuing an inventory needs no network call.",
       "acceptanceCriteria": [
-        "`SessionStore.confirm` takes `now` and, in the same transaction that inserts the session, marks every `REMINDER_OFFSETS` offset with `start - offset <= now` as already handled (rows in `session_reminders`), without posting; `SessionService.confirm` passes `self.clock()`",
-        "A session confirmed 5 h before its start: the 24 h reminder is never posted, the 1 h reminder is; confirmed 30 min before: neither is posted; confirmed 3 days ahead: both are",
-        "The `reminders.py` logic for downtime catch-up is unchanged (the closest missed reminder is still sent late)",
-        "Tests on the real `SqliteSessionStore` (`tmp_path`) and through `SessionNotifier.due_reminders` with a fake clock for the three cases above; the store Protocol, fakes in the tests and docstrings updated",
-        "Docs: `README.md` reminders bullet says reminders whose time has already passed when the session is confirmed are skipped (the announcement covers them); `docs/manual-checks.md` reminder check adjusted",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "New `src/ninja_bot/cs2/prices.py` with `Prices(steam: int | None, skinport: int | None)` (minor units of the configured currency) and `PriceBook` (in-memory `dict[str, Prices]`, `get(name)`, `is_empty`, `has_steam`, `has_skinport`, `update_steam(mapping)`, `update_skinport(mapping)`)",
+        "`PriceStore` Protocol (`load_prices`, `save_steam_prices`, `save_skinport_prices`, `last_update(source)`) implemented by `SqliteLinkStore` in `cs2/store.py` using a lazy `prices` table (`market_hash_name` primary key, `steam_minor`, `skinport_minor`, `steam_updated_at`, `skinport_updated_at`), blocking calls via `asyncio.to_thread` like the existing methods",
+        "Saving one source never clears the other source's column",
+        "Tests in `tests/test_cs2_prices.py` and `tests/test_cs2_store.py` (extend): round trip, partial update, empty table",
+        "Docs: README Data and storage (new table), CLAUDE.md architecture; `docs/deployment.md` backup notes if they list tables",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-005",
-      "title": "Refuse an empty Save",
-      "description": "As a player, I don't want to be counted as having voted \"no to everything\" because I pressed Save too early.",
+      "title": "SKIN_CURRENCY config",
+      "description": "As the bot owner, I want to choose the price currency so prices match what we use.",
       "acceptanceCriteria": [
-        "In `sessions/views.py`, **Save** with both selections empty does not stop the view and does not call `on_save`; it replies ephemerally with a new content constant (e.g. `VOTE_EMPTY_MESSAGE`: pick at least one slot, or press **None of these work**) and the form stays usable",
-        "**None of these work** still records an all-No vote and **Save** with at least one selection still works; a user whose stored votes pre-filled the selects can Save unchanged",
-        "Tests: empty Save refused and view still open, non-empty Save, none-of-these, pre-filled Save, constant lives in `sessions/content.py`",
-        "Docs: `README.md` Vote button bullet mentions the prompt for an empty Save; `docs/manual-checks.md` vote-view check added",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "`Config.skin_currency` from env `SKIN_CURRENCY` (default `EUR`, case-insensitive); an invalid value raises the same config error type as other bad values (see `_parse_timezone`)",
+        "A `Currency` table in `prices.py` (code, symbol, Steam currency id, Skinport code) containing only currencies both Steam and Skinport support (at least USD, EUR, GBP; each id/code verified against the Steam and Skinport docs and noted in a comment)",
+        "`format_price(minor, currency)` formats minor units with the symbol (`€1,234.50`), `None` -> `n/a`",
+        "Tests in `tests/test_config.py` and `tests/test_cs2_prices.py`",
+        "Docs: README Configuration table, `.env.example`, `docs/deployment.md` settings reference",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-006",
-      "title": "A refresh never restores buttons or touches closed polls",
-      "description": "As a player, I don't want a closed round's message to show live buttons again.",
+      "title": "Skinport price client",
+      "description": "As a developer, I need to fetch Skinport prices in one bulk call.",
       "acceptanceCriteria": [
-        "`refresh_poll_message` returns without editing when the poll's status is not `voting`",
-        "The refresh edit sends only the new embed (and `allowed_mentions`), never `view=`: the poll buttons are static, so omitting the view leaves them as Discord has them, and a late refresh can't bring back buttons that a close removed",
-        "The vote-save path and any other caller keep working unchanged",
-        "Tests: refresh on a voting poll edits with an embed and no `view` kwarg; on `awaiting_confirm`, `confirmed`, `failed` and `cancelled` polls it edits nothing; a refresh racing a close (close edit then refresh) leaves `view=None` as the last view state seen by the fake message",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "`uv add Brotli` (so aiohttp can decode `Content-Encoding: br`); `uv.lock` committed",
+        "`SkinportClient` with injectable fetch, sending `Accept-Encoding: br` and a descriptive `User-Agent`; calls `https://api.skinport.com/v1/items?app_id=730&currency=<code>&tradable=0`",
+        "`parse_skinport(payload, currency) -> dict[str, int]` maps `market_hash_name` to `min_price` in minor units; items with a null `min_price` are omitted; the minor-unit conversion uses `Decimal` (no float drift)",
+        "The body (about 10 MB decoded) is read with `read_capped` and an explicit cap constant (`SKINPORT_MAX_BODY_BYTES`, 32 MiB); 429 -> `RateLimitedError`; other failures -> `ApiError`",
+        "Hand-written fixture `tests/fixtures/skinport/items.json` (priced item, null price item, stack of items) and tests in `tests/test_cs2_skinport.py`",
+        "Docs: CLAUDE.md architecture",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-007",
-      "title": "Store the result message and detect unposted messages",
-      "description": "As a developer, I need the store to know which poll messages were really posted so that a failed send can be repaired and a cancel can find every message.",
+      "title": "Steam Market price client",
+      "description": "As a developer, I need to crawl the Steam Market price list gently so we have wallet-value prices.",
       "acceptanceCriteria": [
-        "`polls` gets `result_message_id INTEGER NULL` (the result message with the Confirm buttons); `Poll` gets `result_message_id: int | None`; `_POLL_COLUMNS`, the row mapper and the schema are updated (no migration: the table has never shipped); `set_result_message(poll_id, message_id)` is added to the Protocol and `SqliteSessionStore`",
-        "`advance_round` now **replaces** `message_id` with its argument (default `None`) instead of keeping the old one, so `message_id IS NULL` on a voting poll in round 2 or later means \"the round message was never posted\"; `result_message_id` is reset to NULL when a poll enters `awaiting_confirm`",
-        "`polls_missing_messages() -> list[Poll]` returns voting polls with `round_number > 1` and `message_id IS NULL`, and `awaiting_confirm` polls with `result_message_id IS NULL`, oldest first (round 1 is excluded: a failed first post is already discarded by `_discard`)",
-        "`confirm`'s session keeps `message_id` as the poll's voting message as before",
-        "Tests on the real store: set/get of the result message, `advance_round` clears `message_id` and a later `set_poll_message` sets it, the new query returns exactly the two cases and not round-1 polls or polls whose messages are set, restart persistence; fakes and the Protocol docs updated",
-        "Docs: `README.md` Data and storage `polls` row lists `result_message_id`",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "`SteamMarketClient` with injectable fetch, `fetch_page(start) -> MarketPage(total_count, prices)` for `https://steamcommunity.com/market/search/render/?appid=730&norender=1&sort_column=price&sort_order=desc&start=<n>&count=100&currency=<steam id>`",
+        "`parse_market_page` maps `hash_name` to `sell_price` (minor units); entries with a missing or zero price are omitted; `success: false` or a malformed body raises `ApiError`",
+        "A `crawl(on_page)` method walks the pages with `MIN_PAGE_INTERVAL_SECONDS` (5) between requests (injectable sleep), stops at `total_count` or `MAX_PAGES` (500), and retries a 429 page after a backoff, giving up after `MAX_RETRIES` and returning the pages gathered so far with a flag that the crawl was incomplete",
+        "Hand-written fixture `tests/fixtures/steam/market_search.json` and tests in `tests/test_cs2_steam_market.py`: parsing, pagination, 429 backoff, incomplete crawl",
+        "Docs: CLAUDE.md architecture",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-008",
-      "title": "Repair a failed outcome post and cancel result messages",
-      "description": "As a GM, I want a poll to recover when Discord rejected the result or next-round message, and I want a cancel to remove every live button.",
+      "title": "PriceRefresher",
+      "description": "As a user, I want prices kept fresh automatically without anyone running a command.",
       "acceptanceCriteria": [
-        "`SessionService.rebuild_outcome(poll_id) -> RoundFits | RoundAdvanced | None` rebuilds, without changing any state, the outcome for a poll in `awaiting_confirm` (the fitting top slots, as `confirm` evaluates them) or a voting round-2+ poll (current slots and pending players); `None` for anything else",
-        "The cog holds one `asyncio.Lock` (`_outcome_lock`) around `close_and_post`, `handle_close`'s close-and-post, and the repair, so a repair can't run between a close and its post",
-        "`_post_result` stores the sent message's id with `set_result_message`; `_post_next_round` already stores the new `message_id`",
-        "`repair_missing_messages()` runs at the start of each notify cycle: for each poll from `polls_missing_messages()`, under the lock, re-read the poll, skip it if the message now exists or the channel is unusable (`_channel`), otherwise rebuild the outcome and post it exactly like the first time, also marking the previous poll message closed when it has an id; errors are logged per poll and never raise",
-        "Nudges are skipped for a voting poll without `message_id`",
-        "`handle_session_cancel` for a poll also edits `result_message_id` (when set) with the cancelled text and `view=None`, in addition to `message_id`",
-        "Tests: a failing channel on the first `_post_result` leaves the poll `awaiting_confirm` without a result id, and the next cycle (channel working) posts the result once and stores its id; same for a failed next-round post; no double post when the first send succeeded; repair skipped when the channel is unusable; the lock serialises a close and a repair; cancel of an `awaiting_confirm` poll edits both messages; no nudge without a poll message",
-        "Docs: `README.md` Session polls section (\"Channel gone\" / failure handling) says a result or next-round message that could not be sent is retried every 60 s; `docs/manual-checks.md` gets a check (revoke Send Messages, close a round, restore it, see the message appear)",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "`PriceRefresher(book, store, steam_client, skinport_client, clock)` in `prices.py` with `refresh_skinport()` and `refresh_steam()`; each updates the book and the store, and a failure of one source never affects the other or clears existing prices",
+        "`due()` decides what is due: Skinport when missing or older than `SKINPORT_REFRESH_SECONDS` (3600), Steam when missing or older than `STEAM_REFRESH_SECONDS` (86400); an incomplete Steam crawl still saves what it got and retries after `STEAM_RETRY_SECONDS` (3600)",
+        "`load()` fills the `PriceBook` from the store at start",
+        "`run_cycle()` never raises (each step guarded and logged without secrets)",
+        "The cog starts a `tasks.loop` (every 10 minutes) running `run_cycle`; started in `cog_load`/`setup` and cancelled in `cog_unload`; clients are closed in `cog_unload`",
+        "Tests in `tests/test_cs2_price_refresher.py` with fake clients and clock: due logic, independent failures, incomplete crawl",
+        "Docs: README feature section stub \"Skins\" explaining the price sources and refresh intervals (values from constants); CLAUDE.md architecture",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 8,
-      "passes": true,
+      "passes": false,
       "notes": ""
     },
     {
       "id": "US-009",
-      "title": "Read each poll's state once per notify cycle",
-      "description": "As the owner, I want the 60-second loop to stay cheap as polls accumulate.",
+      "title": "Valuation",
+      "description": "As a developer, I need a pure function that values an inventory so every command and embed shares one definition.",
       "acceptanceCriteria": [
-        "`SessionStore` gets `round_state(poll_id, round_number) -> tuple[list[int], list[PollSlot], dict[tuple[int, int], Vote]]` reading players, slots and votes over one connection (one `asyncio.to_thread` hop); `SessionService.round_state` uses it",
-        "`run_notify_cycle` reads the state of every voting poll once and passes it to both the auto-close decision and the nudge decision (`SessionNotifier.due_nudges` accepts an optional mapping of precomputed states and falls back to reading them when absent); a poll closed during the cycle is not nudged in that cycle",
-        "Behaviour is otherwise unchanged: all existing notify, nudge and deadline tests still pass",
-        "Tests: with N voting polls the cycle makes at most one `round_state` store call per poll (counting fake store); a poll closed by the deadline is not nudged in the same cycle; `due_nudges` without the mapping still works",
-        "Typecheck passes",
-        "`./scripts/check.sh` passes"
+        "New `src/ninja_bot/cs2/valuation.py` with `ValuedItem` (item name, count, `Prices`, owner steam64 id optional) and `Valuation(steam_total, skinport_total, item_count, priced_count, top)`",
+        "`value_inventory(items, book, top_n)` ignores non-marketable items, groups stacks by `market_hash_name`, counts every marketable item towards the totals (price x count, per source, a missing price contributes 0 to that source's total), and builds `top` only from `ItemKind.SKIN` items",
+        "`top` is ranked by Steam price falling back to Skinport price, ties broken by name; items with no price at all are excluded from `top` and counted in `item_count - priced_count`",
+        "`match_top_skins(inventories: Mapping[str, list[InventoryItem]], book, top_n=3)` returns `ValuedItem`s with the owner steam64 id, ranked the same way, across all given inventories",
+        "Tests in `tests/test_cs2_valuation.py`: stacks, fallbacks, one-source-only, ties, empty inventories, non-marketable",
+        "Docs: CLAUDE.md architecture",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
       ],
       "priority": 9,
-      "passes": true,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Skin embed pieces",
+      "description": "As a user, I want skin prices shown clearly with both sources side by side.",
+      "acceptanceCriteria": [
+        "`format_prices(prices, currency)` -> `Steam €12.30 · Skinport €10.05` (`n/a` for a missing source) in `cs2/formatting.py` or `embed.py`",
+        "`skins_field_lines(valued, currency, owner_names=None)` builds the lines for a `Top skins` field: item name (via `escape_name`, `max_length` chosen to fit), prices, and the owner name when `owner_names` is given; capped with `fit_lines`-style `+N more` and `FIELD_VALUE_LIMIT`",
+        "`build_inventory_embed(name, valuation, currency, steam_url?)` for `/inventory`: title with the escaped name, `Total worth` field (`Steam €X · Skinport €Y`), `Items` field (marketable count, unpriced count), `Top 5 items` field; empty inventory -> description message",
+        "`build_profile_embed`, `build_match_embed` and `build_announcement_embed` accept an optional `skins` argument (default `None`) that adds the `Top skins` field (and, for the profile, a worth line); with `None` their output is unchanged (existing tests untouched and passing)",
+        "Embed tests in `tests/test_cs2_embed.py` (extend): each builder with and without skins, long names truncated, field limits respected, no mentions in match posts",
+        "Docs: CLAUDE.md `embed.py` entry",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "/inventory command",
+      "description": "As a user, I want to run `/inventory` to see the worth and the top 5 items of my inventory, another member's, or any Steam profile.",
+      "acceptanceCriteria": [
+        "`/inventory [player] [steam]`: `player` is a `discord.Member`, `steam` is a Steam profile URL, SteamID64 or custom URL name; giving both is rejected ephemerally; giving neither uses the caller",
+        "`steam` is parsed with `parse_steam_target` and, for a custom URL name, `resolver.resolve_vanity` (same errors/messages as `/link`); a `player` or the caller without a link gets the existing not-linked message",
+        "Uses the shared price book; when it is empty the reply (ephemeral) says prices are still loading and the cooldown is refunded",
+        "Private inventory -> `PrivateInventoryError` message; rate limited -> the existing rate-limit wording; other failures -> `GENERIC_ERROR_MESSAGE`; none leak internals",
+        "Own `UserCooldown` (`INVENTORY_COOLDOWN_SECONDS` = 30), refunded unless an embed was posted; defers publicly; embeds are sent with `AllowedMentions.none()`",
+        "Cog wiring in `setup`: `CachedInventoryProvider(SteamInventoryClient())`, `PriceBook`, `PriceRefresher`; `cog_unload` closes the inventory provider",
+        "`help/content.py` entry for `inventory`; `tests/test_help_drift.py` passes (Discord-side `description=` on the command and both parameters)",
+        "Cog tests in `tests/test_cs2_cog.py` (extend, fakes for inventory and prices): self, member, Steam URL, vanity, both given, not linked, private, prices loading, cooldown refund",
+        "Docs: README commands table row, a `### /inventory` section (parameters, formats, cooldown and refund rules, reply visibility, errors, caveats), Error replies table, `docs/manual-checks.md` section, CLAUDE.md cog entry",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Skins in /profile",
+      "description": "As a user, I want `/profile` to show my inventory worth and my top 3 skins.",
+      "acceptanceCriteria": [
+        "`_profile_deferred` fetches the inventory in the same flow, valued with the price book, and passes `skins` to `build_profile_embed`",
+        "If the inventory is private, rate limited, fails, or prices are not loaded, the profile is posted unchanged (the failure is logged at debug/warning without secrets) and the cooldown behaviour is unchanged",
+        "The inventory fetch has a timeout (`SKIN_FETCH_TIMEOUT_SECONDS`, 15) so a slow Steam never delays the profile by more than that",
+        "Cog tests: skins shown, private inventory, error, timeout, prices loading",
+        "Docs: README `/profile` section and commands table description, `help/content.py` `profile` entry (details mention skins), `docs/manual-checks.md`",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Match top-3 skins helper",
+      "description": "As a developer, I need one helper that gathers inventories of everyone in a match within a time budget.",
+      "acceptanceCriteria": [
+        "`fetch_match_inventories(provider, steam_ids, budget_seconds, clock)` in a cs2 module (no discord import) returns `dict[steam_id, list[InventoryItem]]` with the players that were fetched; private, unavailable and rate-limited players are skipped; it stops starting new fetches once the budget (`MATCH_SKINS_BUDGET_SECONDS`, 30) is used up and returns what it has",
+        "Rate limited -> stop immediately (no more calls); never raises",
+        "Ids are deduplicated, order preserved",
+        "Tests in `tests/test_cs2_match_skins.py`: all public, mixed private, budget exhausted, rate limited, duplicates",
+        "Docs: CLAUDE.md architecture",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "title": "Top skins in /scoreboard and auto-posts",
+      "description": "As a user, I want match summaries to show the 3 priciest skins in the match.",
+      "acceptanceCriteria": [
+        "`_scoreboard_deferred` and `_announce` call `fetch_match_inventories` for all players of the match (`match.players` steam ids), `match_top_skins`, and pass `skins` (with owner names from the match's player names via `clean`/`escape_name`) to `build_match_embed` / `build_announcement_embed`",
+        "Skin failures or an empty result leave the embed unchanged; the `confirm` call in the poller and the posting path behave exactly as before",
+        "No mentions are added by the skins field; `AllowedMentions.none()` stays",
+        "When the price book is empty the skins step is skipped without fetching inventories",
+        "Cog and autopost tests (`tests/test_cs2_cog.py`, `tests/test_cs2_autopost.py`): field present with owners, field absent on failure, price book empty -> no inventory calls, budget respected",
+        "Docs: README `/scoreboard` numbered list and \"Auto-posted matches\" section, Known limitations (public inventories only, ~40 s cold, budget), `help/content.py` `scoreboard` entry, `docs/manual-checks.md`",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "/skinboard",
+      "description": "As a user, I want a leaderboard of inventory worth across the linked members of the server.",
+      "acceptanceCriteria": [
+        "`/skinboard` lists linked guild members ranked by inventory worth (Steam total first, Skinport total next to it), shared ranks for ties (reuse `rank_squad`/`LeaderboardRow` from `squad.py` if the shape fits, otherwise add `rank_worth` beside it), capped at `SKINBOARD_LIMIT` (25) members like `/leaderboard`",
+        "Private or failed inventories are skipped and counted in a footer note (`n skipped`), never failing the command",
+        "Defers publicly, `AllowedMentions.none()`, own cooldown (`SKINBOARD_COOLDOWN_SECONDS` = 300) refunded unless posted; prices loading -> ephemeral message and refund",
+        "A time budget like US-013 bounds the fetching; the result says if it was cut short",
+        "`build_skinboard_embed` in `embed.py` with an empty-state description, names via `escape_name`",
+        "`help/content.py` entry; `tests/test_help_drift.py` passes",
+        "Tests: ranking, ties, skipped, cap, budget, cooldown refund, empty state",
+        "Docs: README commands table row and `### /skinboard` section, `docs/manual-checks.md`, CLAUDE.md",
+        "`./scripts/check.sh` passes (ruff check, ruff format --check, mypy strict, pytest)",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-016",
+      "title": "Capture script and final docs",
+      "description": "As the maintainer, I want to verify the hand-written fixtures against the real services and have all docs match the final code.",
+      "acceptanceCriteria": [
+        "`scripts/capture_steam.py` (manual, dev-only, like `scripts/capture_leetify.py`) fetches one public inventory (SteamID given as an argument), one Steam Market page and the Skinport list into `data/steam-capture/`, anonymising the SteamID; it never reads `.env` or prints tokens",
+        "README: feature bullet at the top, a complete `### Skins` section (price sources, refresh intervals, currency, `n/a`, top-list rules), Configuration, Data and storage, Caching, Error replies, Known limitations (private inventories, storage units, name-only pricing, first crawl ~30 min, Steam IP limit, `min_price` listings), Layout block, Development (the new script)",
+        "CLAUDE.md Architecture lists every new module and the cog changes",
+        "`docs/deployment.md` (env var, outbound access to `steamcommunity.com` and `api.skinport.com`, backup note), `docs/manual-checks.md` (checklist for all skin features including a mix of public/private inventories), `.env.example`",
+        "`CHANGELOG.md` entry is deferred to the PR (per workflow) but the \"Known follow-ups\" are listed in `progress.txt`",
+        "README relative links and anchors resolve; every constant quoted in the docs is read from the code",
+        "`./scripts/check.sh` passes",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
       "notes": ""
     }
   ]
