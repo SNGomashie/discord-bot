@@ -18,13 +18,18 @@ from ninja_bot.cs2.cache import CachedStatsProvider, TtlCache
 from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
+    INVENTORY_TOP_ITEMS,
     build_announcement_embed,
+    build_inventory_embed,
     build_leaderboard_embed,
     build_match_embed,
     build_profile_embed,
 )
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.identities import Identity, MemberLookup, resolve_identities
+from ninja_bot.cs2.inventory import InventoryProvider
+from ninja_bot.cs2.inventory_cache import CachedInventoryProvider
+from ninja_bot.cs2.inventory_client import SteamInventoryClient
 from ninja_bot.cs2.models import (
     Cs2Error,
     Match,
@@ -34,7 +39,14 @@ from ninja_bot.cs2.models import (
     RateLimitedError,
 )
 from ninja_bot.cs2.poller import MatchPoller, NewMatch
-from ninja_bot.cs2.prices import CURRENCIES, PRICE_CHECK_SECONDS, PriceBook, PriceRefresher
+from ninja_bot.cs2.prices import (
+    CURRENCIES,
+    DEFAULT_CURRENCY,
+    PRICE_CHECK_SECONDS,
+    Currency,
+    PriceBook,
+    PriceRefresher,
+)
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
 from ninja_bot.cs2.skinport import SkinportClient
 from ninja_bot.cs2.squad import (
@@ -52,6 +64,7 @@ from ninja_bot.cs2.steam import (
 )
 from ninja_bot.cs2.steam_market import SteamMarketClient
 from ninja_bot.cs2.store import LinkStore, SqliteLinkStore
+from ninja_bot.cs2.valuation import value_inventory
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import PostChannelResolver, send_safely
 
@@ -73,6 +86,12 @@ LEADERBOARD_COOLDOWN_SECONDS = 30.0
 ALL_PROFILES_FAILED_MESSAGE = (
     "Couldn't load any linked player's Leetify profile. Please try again later."
 )
+INVENTORY_COOLDOWN_SECONDS = 30.0
+INVENTORY_BOTH_TARGETS_MESSAGE = "Pick either `player` or `steam`, not both."
+PRICES_LOADING_MESSAGE = (
+    "Skin prices are still loading after a restart. Try again in a few minutes."
+)
+STEAM_PROFILE_URL = "https://steamcommunity.com/profiles/{steam64_id}"
 # Discord display names are cached briefly to save REST calls; a 404 for a shorter time.
 MEMBER_NAME_TTL_SECONDS = 300.0
 MEMBER_MISSING_TTL_SECONDS = 60.0
@@ -95,6 +114,15 @@ class PriceUpdates:
 
     bot: commands.Bot
     refresher: PriceRefresher
+
+
+@dataclass(frozen=True)
+class SkinSources:
+    """Inventories and the shared price book for the skin commands."""
+
+    inventories: InventoryProvider
+    book: PriceBook
+    currency: Currency
 
 
 def linked_message(name: str, steam64_id: str | None = None) -> str:
@@ -203,6 +231,8 @@ class Cs2(commands.Cog):
         auto_post: AutoPost | None = None,
         members: MemberCache | None = None,
         price_updates: PriceUpdates | None = None,
+        skins: SkinSources | None = None,
+        inventory_cooldown: UserCooldown | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -233,6 +263,22 @@ class Cs2(commands.Cog):
         self.members = members if members is not None else MemberCache()
         # Steam Market + Skinport prices for skin values; None = no price loop (tests).
         self.price_updates = price_updates
+        # Inventories are cached and paced; the book is the one the price loop fills.
+        self.skins = (
+            skins
+            if skins is not None
+            else SkinSources(
+                CachedInventoryProvider(SteamInventoryClient()),
+                price_updates.refresher.book if price_updates is not None else PriceBook(),
+                CURRENCIES[DEFAULT_CURRENCY],
+            )
+        )
+        # An inventory lookup can cost a slow Steam request, so it gets its own cooldown.
+        self.inventory_cooldown = (
+            inventory_cooldown
+            if inventory_cooldown is not None
+            else UserCooldown(INVENTORY_COOLDOWN_SECONDS)
+        )
 
     async def cog_load(self) -> None:
         if self.price_updates is not None:
@@ -246,14 +292,18 @@ class Cs2(commands.Cog):
     async def cog_unload(self) -> None:
         self.poll_loop.cancel()
         self.price_loop.cancel()
-        try:
-            await self.stats.aclose()
-        finally:
+        closers = [self.stats.aclose, self.resolver.aclose, self.skins.inventories.aclose]
+        if self.price_updates is not None:
+            closers.append(self.price_updates.refresher.aclose)
+        # Every client is closed even if one fails; the first error is raised afterwards.
+        error: Exception | None = None
+        for close in closers:
             try:
-                await self.resolver.aclose()
-            finally:
-                if self.price_updates is not None:
-                    await self.price_updates.refresher.aclose()
+                await close()
+            except Exception as exc:
+                error = error or exc
+        if error is not None:
+            raise error
 
     @tasks.loop(seconds=PRICE_CHECK_SECONDS)
     async def price_loop(self) -> None:
@@ -361,6 +411,21 @@ class Cs2(commands.Cog):
         chosen = Metric(metric.value) if metric is not None else Metric.RATING
         await self.handle_leaderboard(interaction, chosen)
 
+    @app_commands.command(
+        name="inventory", description="Show what a CS2 inventory is worth and its top items"
+    )
+    @app_commands.describe(
+        player="Whose inventory to show (defaults to you)",
+        steam="Any Steam profile: SteamID64, custom URL name or steamcommunity.com link",
+    )
+    async def inventory(
+        self,
+        interaction: discord.Interaction,
+        player: discord.Member | None = None,
+        steam: app_commands.Range[str, 1, MAX_STEAM_INPUT_LENGTH] | None = None,
+    ) -> None:
+        await self.handle_inventory(interaction, player, steam)
+
     @app_commands.command(name="unlink", description="Remove your linked Steam account")
     async def unlink(self, interaction: discord.Interaction) -> None:
         await self.handle_unlink(interaction)
@@ -460,6 +525,64 @@ class Cs2(commands.Cog):
             interaction,
             lambda: self._leaderboard_deferred(interaction, metric),
             self.leaderboard_cooldown,
+        )
+
+    async def handle_inventory(
+        self,
+        interaction: discord.Interaction,
+        player: discord.Member | None = None,
+        steam: str | None = None,
+    ) -> None:
+        if player is not None and steam is not None:
+            await interaction.response.send_message(INVENTORY_BOTH_TARGETS_MESSAGE, ephemeral=True)
+            return
+        try:
+            if steam is not None:
+                target: SteamId | VanityName = parse_steam_target(steam)
+                name = target.value
+            else:
+                member = player if player is not None else interaction.user
+                target = SteamId(await self._linked_steam_id(interaction, member))
+                name = member.display_name
+        except Exception as exc:
+            await self._reply_lookup_error(interaction, exc)
+            return
+        if self.skins.book.is_empty:
+            # Checked before the cooldown, so the caller can retry as soon as prices load.
+            await interaction.response.send_message(PRICES_LOADING_MESSAGE, ephemeral=True)
+            return
+        await self._run_with_cooldown(
+            interaction,
+            lambda: self._inventory_deferred(interaction, target, name),
+            self.inventory_cooldown,
+        )
+
+    async def _inventory_deferred(
+        self, interaction: discord.Interaction, target: SteamId | VanityName, name: str
+    ) -> bool:
+        """Fetch, value and post an inventory; True only if the embed was posted."""
+        try:
+            if isinstance(target, VanityName):
+                steam64_id = await self.resolver.resolve_vanity(target.value)
+            else:
+                steam64_id = target.value
+            items = await self.skins.inventories.get_inventory(steam64_id)
+            valuation = value_inventory(items, self.skins.book, INVENTORY_TOP_ITEMS)
+            embed = build_inventory_embed(
+                name,
+                valuation,
+                self.skins.currency,
+                STEAM_PROFILE_URL.format(steam64_id=steam64_id),
+            )
+        except Cs2Error as exc:
+            await _send_safely(interaction.followup.send(exc.message))
+            return False
+        except Exception:
+            log.exception("Unexpected error building a CS2 inventory")
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
+            return False
+        return await _send_safely(
+            interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         )
 
     async def _reply_lookup_error(self, interaction: discord.Interaction, exc: Exception) -> None:
@@ -648,10 +771,12 @@ async def setup(bot: NinjaBot) -> None:
         bot.config.cs2_poll_seconds,
     )
     currency = CURRENCIES[bot.config.skin_currency]
+    book = PriceBook()
     price_updates = PriceUpdates(
         bot,
-        PriceRefresher(PriceBook(), store, SteamMarketClient(currency), SkinportClient(currency)),
+        PriceRefresher(book, store, SteamMarketClient(currency), SkinportClient(currency)),
     )
+    skins = SkinSources(CachedInventoryProvider(SteamInventoryClient()), book, currency)
     await bot.add_cog(
         Cs2(
             client,
@@ -662,5 +787,7 @@ async def setup(bot: NinjaBot) -> None:
             UserCooldown(LEADERBOARD_COOLDOWN_SECONDS),
             auto_post,
             price_updates=price_updates,
+            skins=skins,
+            inventory_cooldown=UserCooldown(INVENTORY_COOLDOWN_SECONDS),
         )
     )

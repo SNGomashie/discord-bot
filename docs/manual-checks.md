@@ -53,6 +53,14 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] With a private Leetify profile linked: that player is missing and the footer says `Skipped: 1 (private or unavailable)`
 - [ ] Mentions in the list don't ping anyone
 
+## /inventory
+
+- [ ] After a fresh start (empty `prices` table), `/inventory` says prices are still loading (private), and can be run again right away
+- [ ] Once prices are loaded: `/inventory` shows your total worth, item counts and top 5 skins with Steam and Skinport prices; the title links to your Steam profile
+- [ ] `/inventory player:@friend` and `/inventory steam:<custom URL name>` work; giving both is refused privately
+- [ ] A private inventory gets the private-inventory reply; a second `/inventory` within 30 s is refused, but not after an error
+- [ ] Spot-check one top item's prices against the Steam Market and Skinport pages
+
 ## Auto-posts (with `CS2_CHANNEL_ID` set)
 
 - [ ] A linked player finishes a new match: one post in the channel within a poll interval or two (once Leetify has the match), with `▸` highlights and the `Squad` field, without pinging anyone

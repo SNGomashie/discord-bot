@@ -20,6 +20,7 @@ EXPECTED_NAMES = {
     "scoreboard",
     "profile",
     "leaderboard",
+    "inventory",
     "activity",
     "myactivity",
     "session_poll",

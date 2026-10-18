@@ -43,6 +43,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/scoreboard` | `player` (default you), `match` (a Leetify match id, default latest) | public | 10 s, shared with `/profile`; refunded unless an embed was posted |
 | `/profile` | `player` (default you) | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
+| `/inventory` | `player` (default you) or `steam` (SteamID64, profile link or custom URL name) | public (input errors and "prices still loading" are private) | 30 s, its own; refunded unless an embed was posted |
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336), `exclude` (days to skip), `players` (mentions) | public poll (errors are private); Join/Leave/Vote and refused Close round/Confirm replies are private; round results and confirmed sessions are posted publicly | 30 s; refunded unless the poll was posted |
@@ -299,7 +300,7 @@ where the cause is `missing` (not found), `not a text channel`, `missing View Ch
 
 ## Skins
 
-The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). The commands that show them are still being built; for now the bot only keeps prices up to date in the background.
+The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory; the prices are kept up to date in the background.
 
 | Source | What it is | Refreshed | How |
 |---|---|---|---|
@@ -310,6 +311,39 @@ The bot values CS2 skins with two price sources side by side, both in `SKIN_CURR
 - Prices are saved in `cs2.sqlite3` (see [Data and storage](#data-and-storage)) and loaded on start, so a restart doesn't wait for a new crawl. When a source fails, its old prices stay and the other source is not affected; a failed Skinport refresh is tried again on the next check.
 - Items without a listing have no price for that source (shown as `n/a`).
 - After a restart, a Steam crawl that was incomplete before the restart is only retried 24 hours after it saved (the retry time is kept in memory).
+
+### /inventory
+
+`/inventory [player] [steam]` shows what a CS2 inventory is worth and its 5 priciest skins. The reply is public.
+
+| Option | What it does |
+|---|---|
+| neither | Your own linked account (see [/link](#link-and-unlink)). |
+| `player` | A server member who used `/link`. |
+| `steam` | Any Steam profile, linked or not: a SteamID64, a `steamcommunity.com/profiles/<id>` or `/id/<name>` link, or a custom URL name (same formats and 200-character limit as `/link`). A custom URL name is looked up on Steam after the reply is deferred. |
+
+Giving both `player` and `steam` gets the private reply "Pick either `player` or `steam`, not both."
+
+The embed is titled `CS2 inventory: <name>` (the member's display name, or the SteamID64 / custom URL name you typed) and links to the Steam profile:
+
+- **Total worth:** `Steam €X · Skinport €Y`, the sum of each marketable item's price per source. Stacks count every unit. An item without a price for a source adds nothing to that total.
+- **Items:** `N marketable · M without a price` (in units; non-marketable items such as medals and coins are ignored).
+- **Top 5 items:** skins only (weapons, knives, gloves; no stickers, cases or charms) that have a price, most expensive first by Steam price (Skinport when Steam has none), as `**Name** ×N · Steam €X · Skinport €Y`. `×N` only shows for more than one of the same skin; a missing source shows `n/a`.
+- An inventory without marketable items says "No marketable items in this inventory."
+
+Cooldown and refunds: `/inventory` has its own 30-second cooldown (separate from the other CS2 commands). It is taken after the input and link checks and refunded unless the embed was posted. While the price book is still empty after a restart, the private reply is "Skin prices are still loading after a restart. Try again in a few minutes." and no cooldown is used.
+
+Errors (after the defer, so they are public like the other CS2 commands):
+
+| Situation | Reply |
+|---|---|
+| Private inventory | "That Steam inventory is private, so its skins can't be shown. Set the inventory to public in the Steam privacy settings to show it." |
+| Steam rate limits inventory requests | "Steam is rate limiting inventory requests right now. Try again in a few minutes." |
+| Steam unreachable or unexpected response | "Steam sent an inventory we couldn't read. Try again later." |
+| Custom URL name problems | Same replies as `/link` (see [/link and /unlink](#link-and-unlink)). |
+| Anything else | "Something went wrong while fetching CS2 stats. Please try again later." |
+
+Caveats: inventories are cached for 30 minutes (private ones for 10), so a trade can take a while to show up; see [Caching](#caching). Prices are unit prices of the cheapest listing, not what an item would actually sell for. Inventories of more than 2000 items are only valued for the first 2000.
 
 ## Activity tracking
 
@@ -514,6 +548,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Fixed limits:** the 3-hour age limit, the 3-per-cycle cap and the 25-player leaderboard cap are constants, not settings.
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
+- **Large inventories:** `/inventory` fetches one page of up to 2000 items, so anything beyond that is not valued.
 - **One download at a time**, bot-wide, with no persistent queue.
 - **Voice only:** activity counts time connected to voice channels. Text messages, reactions, streaming and camera time are not counted (Toasty `;pokemon` replies are the only messages read).
 - **No history before the feature:** Discord keeps no voice history, so tracking starts when the bot first runs with this feature; earlier months are empty.

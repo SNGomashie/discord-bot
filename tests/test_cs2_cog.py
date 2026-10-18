@@ -18,12 +18,16 @@ from ninja_bot.cogs.cs2 import (
     COOLDOWN_SECONDS,
     GENERIC_ERROR_MESSAGE,
     INVALID_MATCH_ID_MESSAGE,
+    INVENTORY_BOTH_TARGETS_MESSAGE,
+    INVENTORY_COOLDOWN_SECONDS,
     LEADERBOARD_COOLDOWN_SECONDS,
     LINK_COOLDOWN_SECONDS,
     MAX_MATCH_ID_LENGTH,
     NOTHING_TO_UNLINK_MESSAGE,
+    PRICES_LOADING_MESSAGE,
     UNLINKED_MESSAGE,
     Cs2,
+    SkinSources,
     clean_match_id,
     cooldown_message,
     linked_message,
@@ -35,15 +39,21 @@ from ninja_bot.cs2.cache import CachedStatsProvider
 from ninja_bot.cs2.client import FetchResponse, LeetifyClient
 from ninja_bot.cs2.embed import (
     BREAKDOWN_FIELD,
+    EMPTY_INVENTORY_MESSAGE,
     FRIENDS_FIELD,
+    INVENTORY_TOP_FIELD,
     LEADERBOARD_FIELD,
     NOBODY_LINKED_MESSAGE,
     RATINGS_FIELD,
     TEAM_NAMES,
+    TOTAL_WORTH_FIELD,
     YOUR_TEAM,
     build_match_embed,
 )
 from ninja_bot.cs2.identities import Identity
+from ninja_bot.cs2.inventory import InventoryItem, ItemKind
+from ninja_bot.cs2.inventory_cache import CachedInventoryProvider
+from ninja_bot.cs2.inventory_client import INVENTORY_RATE_LIMITED_MESSAGE, SteamInventoryClient
 from ninja_bot.cs2.models import (
     ApiError,
     Cs2Error,
@@ -53,6 +63,7 @@ from ninja_bot.cs2.models import (
     NoMatchesError,
     NotLinkedError,
     PlayerNotFoundError,
+    PrivateInventoryError,
     PrivateProfileError,
     Profile,
     RateLimitedError,
@@ -61,6 +72,7 @@ from ninja_bot.cs2.models import (
     parse_match,
     parse_profile,
 )
+from ninja_bot.cs2.prices import CURRENCIES, DEFAULT_CURRENCY, PriceBook, Prices
 from ninja_bot.cs2.resolver import SteamCommunityResolver
 from ninja_bot.cs2.squad import Metric, metric_label
 from ninja_bot.cs2.steam import MAX_STEAM_INPUT_LENGTH
@@ -730,6 +742,13 @@ async def test_setup_registers_cog(tmp_path: Path) -> None:
     assert cog.auto_post.poll_seconds == 300
     assert cog.auto_post.poller._provider is cog.stats
     assert cog.auto_post.poller._store is cog.links
+    assert isinstance(cog.skins.inventories, CachedInventoryProvider)
+    assert isinstance(cog.skins.inventories._inner, SteamInventoryClient)
+    assert cog.price_updates is not None
+    assert cog.skins.book is cog.price_updates.refresher.book
+    assert cog.skins.currency == CURRENCIES["EUR"]
+    assert cog.inventory_cooldown.per_seconds == INVENTORY_COOLDOWN_SECONDS == 30
+    assert cog.inventory_cooldown is not cog.cooldown
 
 
 async def test_setup_passes_channel_config(tmp_path: Path) -> None:
@@ -1718,3 +1737,260 @@ def test_leaderboard_option_metadata() -> None:
     assert [(c.name, c.value) for c in metric.choices] == [
         (metric_label(m), m.value) for m in Metric
     ]
+
+
+SKIN_NAME = "AK-47 | Redline (Field-Tested)"
+
+
+def skin_item(name: str = SKIN_NAME) -> InventoryItem:
+    return InventoryItem(
+        market_hash_name=name,
+        name=name,
+        item_type="Classified Rifle",
+        marketable=True,
+        colour=None,
+        kind=ItemKind.SKIN,
+    )
+
+
+class FakeInventories:
+    def __init__(
+        self, items: list[InventoryItem] | None = None, error: Exception | None = None
+    ) -> None:
+        self.items = items if items is not None else [skin_item()]
+        self.error = error
+        self.calls: list[str] = []
+        self.close_calls = 0
+
+    async def get_inventory(self, steam64_id: str) -> list[InventoryItem]:
+        self.calls.append(steam64_id)
+        if self.error is not None:
+            raise self.error
+        return list(self.items)
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+def priced_book() -> PriceBook:
+    return PriceBook({SKIN_NAME: Prices(steam=1230, skinport=1005)})
+
+
+def inventory_cog(
+    links: dict[int, str] | None = None,
+    inventories: FakeInventories | None = None,
+    book: PriceBook | None = None,
+    resolver: FakeResolver | None = None,
+) -> tuple[Cs2, FakeInventories, FakeResolver, UserCooldown]:
+    inventories = inventories or FakeInventories()
+    resolver = resolver or FakeResolver(steam64_id=OTHER_STEAM_ID)
+    cooldown = UserCooldown(INVENTORY_COOLDOWN_SECONDS, FakeClock())
+    skins = SkinSources(
+        inventories,
+        book if book is not None else priced_book(),
+        CURRENCIES[DEFAULT_CURRENCY],
+    )
+    cog = Cs2(
+        FakeStats(),
+        MemoryLinkStore(links if links is not None else {USER_ID: STEAM_ID}),
+        resolver=resolver,
+        skins=skins,
+        inventory_cooldown=cooldown,
+    )
+    return cog, inventories, resolver, cooldown
+
+
+OTHER_STEAM_ID = "76561198000000099"
+
+
+async def test_inventory_own() -> None:
+    cog, inventories, resolver, cooldown = inventory_cog()
+    interaction = make_interaction()
+    await Cs2.inventory.callback(cog, interaction)
+    assert inventories.calls == [STEAM_ID]
+    assert resolver.calls == []
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    embed = posted_embed(interaction)
+    assert embed.title == "CS2 inventory: Caller"
+    assert embed.url == f"https://steamcommunity.com/profiles/{STEAM_ID}"
+    assert "€12.30" in field_value(embed, TOTAL_WORTH_FIELD)
+    assert SKIN_NAME.split(" |")[0] in field_value(embed, INVENTORY_TOP_FIELD)
+    _, kwargs = followup_reply(interaction)
+    assert kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_inventory_other_member() -> None:
+    cog, inventories, _, _ = inventory_cog({USER_ID: STEAM_ID, OTHER_USER_ID: OTHER_STEAM_ID})
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, make_member())
+    assert inventories.calls == [OTHER_STEAM_ID]
+    assert posted_embed(interaction).title == "CS2 inventory: Friend"
+
+
+@pytest.mark.parametrize(
+    "steam",
+    [OTHER_STEAM_ID, f"https://steamcommunity.com/profiles/{OTHER_STEAM_ID}/"],
+)
+async def test_inventory_steam_id_needs_no_link(steam: str) -> None:
+    cog, inventories, resolver, _ = inventory_cog(links={})
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, steam=steam)
+    assert inventories.calls == [OTHER_STEAM_ID]
+    assert resolver.calls == []
+    assert posted_embed(interaction).title == f"CS2 inventory: {OTHER_STEAM_ID}"
+
+
+async def test_inventory_vanity_is_resolved_after_defer() -> None:
+    cog, inventories, resolver, _ = inventory_cog(links={})
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, steam=f"https://steamcommunity.com/id/{VANITY_NAME}")
+    interaction.response.defer.assert_awaited_once()
+    assert resolver.calls == [VANITY_NAME]
+    assert inventories.calls == [OTHER_STEAM_ID]
+    embed = posted_embed(interaction)
+    assert embed.title is not None and VANITY_NAME.replace("_", "\\_") in embed.title
+
+
+@pytest.mark.parametrize("error", [VanityNotFoundError(), SteamLookupError()])
+async def test_inventory_vanity_errors_refund(error: Cs2Error) -> None:
+    cog, inventories, _, cooldown = inventory_cog(resolver=FakeResolver(error=error))
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, steam=VANITY_NAME)
+    args, _ = followup_reply(interaction)
+    assert args == (error.message,)
+    assert inventories.calls == []
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_inventory_both_targets_rejected() -> None:
+    cog, inventories, _, cooldown = inventory_cog()
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, make_member(), STEAM_ID)
+    args, kwargs = reply(interaction)
+    assert args == (INVENTORY_BOTH_TARGETS_MESSAGE,)
+    assert kwargs["ephemeral"] is True
+    assert inventories.calls == []
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_inventory_invalid_steam_input_is_ephemeral() -> None:
+    cog, inventories, _, _ = inventory_cog()
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, steam="not a steam account!")
+    args, kwargs = reply(interaction)
+    assert args == (InvalidSteamIdError.default_message,)
+    assert kwargs["ephemeral"] is True
+    assert inventories.calls == []
+
+
+async def test_inventory_not_linked_self() -> None:
+    cog, inventories, _, _ = inventory_cog(links={})
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction)
+    args, kwargs = reply(interaction)
+    assert args == (NotLinkedError.default_message,)
+    assert kwargs["ephemeral"] is True
+    assert inventories.calls == []
+
+
+async def test_inventory_not_linked_other() -> None:
+    cog, _, _, _ = inventory_cog()
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction, make_member())
+    args, _ = reply(interaction)
+    assert args == (not_linked_message("Friend"),)
+
+
+async def test_inventory_prices_loading_is_ephemeral_without_cooldown() -> None:
+    cog, inventories, _, cooldown = inventory_cog(book=PriceBook())
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction)
+    args, kwargs = reply(interaction)
+    assert args == (PRICES_LOADING_MESSAGE,)
+    assert kwargs["ephemeral"] is True
+    interaction.response.defer.assert_not_awaited()
+    assert inventories.calls == []
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PrivateInventoryError(), RateLimitedError(INVENTORY_RATE_LIMITED_MESSAGE), ApiError()],
+)
+async def test_inventory_errors_reply_and_refund(error: Cs2Error) -> None:
+    cog, _, _, cooldown = inventory_cog(inventories=FakeInventories(error=error))
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction)
+    args, _ = followup_reply(interaction)
+    assert args == (error.message,)
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_inventory_unexpected_error_is_generic(caplog: pytest.LogCaptureFixture) -> None:
+    cog, _, _, cooldown = inventory_cog(inventories=FakeInventories(error=RuntimeError("secret")))
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction)
+    args, _ = followup_reply(interaction)
+    assert args == (GENERIC_ERROR_MESSAGE,)
+    assert "Unexpected error building a CS2 inventory" in caplog.text
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_inventory_send_failure_refunds() -> None:
+    cog, _, _, cooldown = inventory_cog()
+    interaction = make_interaction()
+    interaction.followup.send = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=500), "boom")
+    )
+    await cog.handle_inventory(interaction)
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_inventory_cooldown_blocks_second_use() -> None:
+    cog, inventories, _, _ = inventory_cog()
+    await cog.handle_inventory(make_interaction())
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction)
+    args, kwargs = reply(interaction)
+    assert args == (cooldown_message(INVENTORY_COOLDOWN_SECONDS),)
+    assert kwargs["ephemeral"] is True
+    assert len(inventories.calls) == 1
+
+
+async def test_inventory_cooldown_is_separate_from_stats_cooldown() -> None:
+    cog, _, _, _ = inventory_cog()
+    assert cog.inventory_cooldown is not cog.cooldown
+
+
+async def test_inventory_empty_inventory_posts_and_holds_cooldown() -> None:
+    cog, _, _, cooldown = inventory_cog(inventories=FakeInventories(items=[]))
+    interaction = make_interaction()
+    await cog.handle_inventory(interaction)
+    assert posted_embed(interaction).description == EMPTY_INVENTORY_MESSAGE
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+def test_inventory_option_metadata() -> None:
+    command = Cs2.inventory
+    assert command.description
+    player = command._params["player"]
+    steam = command._params["steam"]
+    assert not player.required and not steam.required
+    assert str(player.description) and str(steam.description)
+    assert steam.to_dict()["max_length"] == MAX_STEAM_INPUT_LENGTH
+
+
+async def test_cog_unload_closes_inventories() -> None:
+    cog, inventories, resolver, _ = inventory_cog()
+    await cog.cog_unload()
+    assert inventories.close_calls == 1
+    assert resolver.close_calls == 1
+
+
+async def test_cog_unload_closes_inventories_when_stats_close_fails() -> None:
+    cog, inventories, _, _ = inventory_cog()
+    cog.stats.aclose = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await cog.cog_unload()
+    assert inventories.close_calls == 1

@@ -167,6 +167,33 @@ COMMANDS: tuple[CommandHelp, ...] = (
         },
     ),
     CommandHelp(
+        name="inventory",
+        group=CS2,
+        summary="Show what a CS2 inventory is worth and its five priciest items.",
+        details=(
+            "Shows the total worth of a CS2 inventory at Steam Market and Skinport prices, "
+            "how many marketable items it has and the top 5 items. "
+            "Use your own linked account, another member's, or any Steam profile."
+        ),
+        examples=(
+            "/inventory",
+            "/inventory player:@friend",
+            "/inventory steam:https://steamcommunity.com/id/yourname",
+        ),
+        notes=(
+            "The Steam inventory must be public.",
+            "Prices refresh in the background; right after a restart they may still be loading.",
+            "Inventories are cached for 30 minutes.",
+        ),
+        parameter_notes={
+            "player": "A server member who used /link. Leave both empty for yourself.",
+            "steam": (
+                "A 17-digit SteamID64, a steamcommunity.com profile link or a custom URL name. "
+                "Use player or steam, not both."
+            ),
+        },
+    ),
+    CommandHelp(
         name="activity",
         group=ACTIVITY,
         summary="Show who spent the most time in voice this month, plus awards and shame.",
@@ -322,7 +349,8 @@ OVERVIEW_INTRO = "Everything this bot can do. All commands are slash commands."
 GETTING_STARTED_TITLE = "Getting started"
 GETTING_STARTED = (
     "Link your Steam account with /link, then use /scoreboard, /profile and /leaderboard "
-    "for CS2 stats. Use /activity and /myactivity to see who spends the most time in voice. "
+    "for CS2 stats and /inventory for skin prices. "
+    "Use /activity and /myactivity to see who spends the most time in voice. "
     "Use /session_poll to find a date for a game session and /sessions to see what is planned. "
     "Use /download to get a video or its audio as a file."
 )
