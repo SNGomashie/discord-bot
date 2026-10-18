@@ -21,6 +21,7 @@ from ninja_bot.cs2.squad import (
     LeaderboardRow,
     Metric,
     SquadMember,
+    WorthRow,
     format_metric_value,
     format_trend,
     metric_label,
@@ -71,6 +72,8 @@ INVENTORY_COLOUR = discord.Colour.dark_gold()
 EMPTY_INVENTORY_MESSAGE = "No marketable items in this inventory."
 # Long enough for `★ StatTrak™ Butterfly Knife | Case Hardened (Battle-Scarred)`.
 SKIN_NAME_LENGTH = 64
+SKINBOARD_TITLE = "CS2 skinboard: inventory worth"
+NO_PUBLIC_INVENTORIES_MESSAGE = "No linked member has a public inventory to rank."
 
 
 @dataclass(frozen=True)
@@ -253,6 +256,42 @@ def build_inventory_embed(
         inline=False,
     )
     return embed
+
+
+def build_skinboard_embed(
+    rows: Sequence[WorthRow],
+    currency: Currency,
+    empty_message: str = NO_PUBLIC_INVENTORIES_MESSAGE,
+) -> discord.Embed:
+    """`/skinboard`: one line per member, richest first (medals for the top 3).
+
+    Lines are packed like `/leaderboard`, at most `MAX_LEADERBOARD_ROWS` (`+N more` footer);
+    no rows = `empty_message`. Send with `AllowedMentions.none()`.
+    """
+    embed = discord.Embed(title=SKINBOARD_TITLE, colour=INVENTORY_COLOUR)
+    if not rows:
+        embed.description = empty_message
+        return embed
+    lines = [format_skinboard_row(row, currency) for row in rows[:MAX_LEADERBOARD_ROWS]]
+    for index, chunk in enumerate(pack_lines(lines, FIELD_VALUE_LIMIT)):
+        name = LEADERBOARD_FIELD if index == 0 else LEADERBOARD_CONTINUED_FIELD
+        embed.add_field(name=name, value=chunk, inline=False)
+    hidden = len(rows) - MAX_LEADERBOARD_ROWS
+    if hidden > 0:
+        embed.set_footer(text=f"+{hidden} more")
+    return embed
+
+
+def format_skinboard_row(row: WorthRow, currency: Currency) -> str:
+    """`🥇 <@id> Name · Steam **€1,234.50** · Skinport €1,100.00`."""
+    entry = row.entry
+    text = f"{MEDALS.get(row.rank, f'{row.rank}.')} <@{entry.discord_id}>"
+    if entry.name:
+        text += f" {escape_name(entry.name)}"
+    return (
+        f"{text} · Steam **{format_price(entry.steam_total, currency)}**"
+        f" · Skinport {format_price(entry.skinport_total, currency)}"
+    )
 
 
 def format_worth(valuation: Valuation, currency: Currency) -> str:

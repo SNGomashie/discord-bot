@@ -200,6 +200,23 @@ COMMANDS: tuple[CommandHelp, ...] = (
         },
     ),
     CommandHelp(
+        name="skinboard",
+        group=CS2,
+        summary="Rank everyone who linked a Steam account by CS2 inventory worth.",
+        details=(
+            "Ranks the linked members by what their CS2 inventory is worth at Steam Market "
+            "prices, with the Skinport total next to it. "
+            "Private inventories are skipped and counted at the bottom."
+        ),
+        examples=("/skinboard",),
+        notes=(
+            "Members with the same worth share a rank.",
+            "Inventories are fetched one at a time for up to a minute; "
+            "the footer says if some weren't loaded.",
+            "Right after a restart the skin prices may still be loading.",
+        ),
+    ),
+    CommandHelp(
         name="activity",
         group=ACTIVITY,
         summary="Show who spent the most time in voice this month, plus awards and shame.",
@@ -355,7 +372,7 @@ OVERVIEW_INTRO = "Everything this bot can do. All commands are slash commands."
 GETTING_STARTED_TITLE = "Getting started"
 GETTING_STARTED = (
     "Link your Steam account with /link, then use /scoreboard, /profile and /leaderboard "
-    "for CS2 stats and /inventory for skin prices. "
+    "for CS2 stats and /inventory and /skinboard for skin prices. "
     "Use /activity and /myactivity to see who spends the most time in voice. "
     "Use /session_poll to find a date for a game session and /sessions to see what is planned. "
     "Use /download to get a video or its audio as a file."

@@ -5,7 +5,7 @@ A personal Discord bot for one private server of friends. It is built on discord
 It does five things:
 
 - **Media**: `/download` fetches a video (or a clip of it) with yt-dlp and posts it as an mp3 or mp4.
-- **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API.
+- **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API. `/inventory` and `/skinboard` show what CS2 inventories are worth at Steam Market and Skinport prices.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 - **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
 - **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons. `/sessions` lists open polls and upcoming sessions, `/session_cancel` cancels one.
@@ -44,6 +44,7 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/profile` | `player` (default you); also shows inventory worth and top 3 skins | public | 10 s, shared with `/scoreboard`; refunded unless an embed was posted |
 | `/leaderboard` | `metric` (default Leetify rating) | public | 30 s; refunded unless players were shown |
 | `/inventory` | `player` (default you) or `steam` (SteamID64, profile link or custom URL name) | public (input errors and "prices still loading" are private) | 30 s, its own; refunded unless an embed was posted |
+| `/skinboard` | none | public ("prices still loading" is private) | 5 min, its own; refunded unless the ranking was posted |
 | `/activity` | `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/myactivity`; refunded unless someone was listed or the month has Pokémon data |
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336), `exclude` (days to skip), `players` (mentions) | public poll (errors are private); Join/Leave/Vote and refused Close round/Confirm replies are private; round results and confirmed sessions are posted publicly | 30 s; refunded unless the poll was posted |
@@ -310,7 +311,7 @@ where the cause is `missing` (not found), `not a text channel`, `missing View Ch
 
 ## Skins
 
-The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory, [/profile](#profile) adds a player's worth and top 3 skins, and [/scoreboard](#scoreboard) and [auto-posted matches](#auto-posted-matches) show the 3 priciest skins in the match; the prices are kept up to date in the background.
+The bot values CS2 skins with two price sources side by side, both in `SKIN_CURRENCY` (default EUR). `/inventory` shows them for one inventory, [/profile](#profile) adds a player's worth and top 3 skins, [/scoreboard](#scoreboard) and [auto-posted matches](#auto-posted-matches) show the 3 priciest skins in the match, and [/skinboard](#skinboard) ranks the linked members by inventory worth; the prices are kept up to date in the background.
 
 | Source | What it is | Refreshed | How |
 |---|---|---|---|
@@ -362,6 +363,20 @@ Errors (after the defer, so they are public like the other CS2 commands):
 | Anything else | "Something went wrong while fetching CS2 stats. Please try again later." |
 
 Caveats: inventories are cached for 30 minutes (private ones for 10), so a trade can take a while to show up; see [Caching](#caching). Prices are unit prices of the cheapest listing, not what an item would actually sell for. Inventories of more than 2000 items are only valued for the first 2000.
+
+### /skinboard
+
+`/skinboard` ranks the linked members by what their CS2 inventory is worth, with the same totals as [/inventory](#inventory). It has no options and the reply is public.
+
+- Each line shows the medal or rank, the member as a mention (it never pings) with their server display name, and both totals, for example `🥇 @Sam Sam · Steam **€1,234.50** · Skinport €1,100.00`.
+- **Ranking:** richest first by Steam total, then Skinport total; members with the same two totals share a rank (1, 1, 3) and are ordered by name. The top 3 get 🥇🥈🥉. A public inventory without marketable items is listed with €0.00.
+- **Who is checked:** every stored link, sorted by Discord ID, cut at the first **25** (`SKINBOARD_LIMIT` in `cs2/squad.py`). Inventories are fetched one at a time through the same cache as `/inventory` (cache misses at least 4 seconds apart). Members Discord confirms have left the server are left out of the ranking.
+- **Time budget:** no new inventory is fetched after 60 seconds (`SKINBOARD_BUDGET_SECONDS` in `cs2/squad.py`); with a cold cache that is about 15 members. If Steam rate limits a fetch, the bot stops and shows what it has.
+- **Footer notes**, joined with ` · `: `N skipped (private or unavailable)`, `Stopped early, out of time: N not loaded` (or `Stopped early, Steam is rate limiting us: N not loaded`), `Only the first 25 linked members are checked`. Running it again after a cut-short ranking is faster, since the fetched inventories are cached.
+- The ranking is split across fields if it is long (`Ranking`, `Ranking (cont.)`).
+- If no fetched member has a public inventory, the embed says "No linked member has a public inventory to rank." (with the footer notes). If nobody has linked, it says "Nobody is linked yet. Use `/link` to link your Steam account." and the cooldown is refunded.
+
+Cooldown and refunds: `/skinboard` has its own 5-minute cooldown (one run can cost a Steam request per linked member), refunded unless the ranking was posted. While the price book is still empty after a restart, the private reply is "Skin prices are still loading after a restart. Try again in a few minutes." and no cooldown is used. Unexpected errors reply "Something went wrong while fetching CS2 stats. Please try again later." and refund the cooldown.
 
 ## Activity tracking
 
@@ -566,6 +581,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Fixed limits:** the 3-hour age limit, the 3-per-cycle cap and the 25-player leaderboard cap are constants, not settings.
 - **Renamed custom URLs:** Steam redirects are refused, so a custom URL that was renamed may not resolve. Use the SteamID64.
 - **Steam endpoint:** the profile XML page used for custom URL names is unofficial and could change.
+- **Skinboard is partial:** `/skinboard` only ranks public inventories fetched within its 60-second budget, so with a cold cache and many links the last members (by Discord ID) are left out until a later run.
 - **Large inventories:** `/inventory` fetches one page of up to 2000 items, so anything beyond that is not valued.
 - **Match skins are partial:** the `Top skins` of a scoreboard or auto-post only cover public inventories, and only the players fetched within the 30-second budget (a cold 10-player match needs about 40 seconds, so the last players are left out until their inventories are cached). A scoreboard can take up to about 30 seconds longer because of it.
 - **One download at a time**, bot-wide, with no persistent queue.
@@ -597,7 +613,7 @@ src/ninja_bot/
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (Steam name lookups),
-                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), match_skins (every match player's inventory within a time budget), prices (Prices, PriceBook, PriceStore, PriceRefresher), skinport (Skinport bulk prices), steam_market (Steam Market price crawl), valuation (inventory worth, top skins), cache, store (SQLite), formatting, awards, identities, squad, embed, channels, poller
+                  inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), match_skins (every match player's inventory within a time budget), prices (Prices, PriceBook, PriceStore, PriceRefresher), skinport (Skinport bulk prices), steam_market (Steam Market price crawl), valuation (inventory worth, top skins), cache, store (SQLite), formatting, awards, identities, squad (/leaderboard and /skinboard ranking), embed, channels, poller
   activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
   sessions/       session poll logic: slots (weekday/time/date parsing, excluded days, candidate slots), players (the `players` mention list), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/

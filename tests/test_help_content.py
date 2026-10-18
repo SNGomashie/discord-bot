@@ -21,6 +21,7 @@ EXPECTED_NAMES = {
     "profile",
     "leaderboard",
     "inventory",
+    "skinboard",
     "activity",
     "myactivity",
     "session_poll",

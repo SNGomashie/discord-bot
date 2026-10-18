@@ -19,6 +19,7 @@ from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.client import LeetifyClient, StatsProvider, full_match
 from ninja_bot.cs2.embed import (
     INVENTORY_TOP_ITEMS,
+    NOBODY_LINKED_MESSAGE,
     MatchSkins,
     ProfileSkins,
     build_announcement_embed,
@@ -26,6 +27,7 @@ from ninja_bot.cs2.embed import (
     build_leaderboard_embed,
     build_match_embed,
     build_profile_embed,
+    build_skinboard_embed,
 )
 from ninja_bot.cs2.formatting import escape_name
 from ninja_bot.cs2.identities import Identity, MemberLookup, resolve_identities
@@ -54,11 +56,16 @@ from ninja_bot.cs2.prices import (
 from ninja_bot.cs2.resolver import SteamCommunityResolver, SteamResolver
 from ninja_bot.cs2.skinport import SkinportClient
 from ninja_bot.cs2.squad import (
+    SKINBOARD_BUDGET_SECONDS,
     Metric,
+    WorthEntry,
+    fetch_skinboard,
     fetch_squad,
     leaderboard_notes,
     metric_label,
     rank_squad,
+    rank_worth,
+    skinboard_notes,
 )
 from ninja_bot.cs2.steam import (
     MAX_STEAM_INPUT_LENGTH,
@@ -95,6 +102,8 @@ INVENTORY_BOTH_TARGETS_MESSAGE = "Pick either `player` or `steam`, not both."
 PRICES_LOADING_MESSAGE = (
     "Skin prices are still loading after a restart. Try again in a few minutes."
 )
+# One /skinboard can cost a Steam request per link, paced 4 s apart.
+SKINBOARD_COOLDOWN_SECONDS = 300.0
 STEAM_PROFILE_URL = "https://steamcommunity.com/profiles/{steam64_id}"
 # /profile adds skins only when they arrive in time; a slow Steam never holds it up longer.
 SKIN_FETCH_TIMEOUT_SECONDS = 15.0
@@ -240,6 +249,7 @@ class Cs2(commands.Cog):
         price_updates: PriceUpdates | None = None,
         skins: SkinSources | None = None,
         inventory_cooldown: UserCooldown | None = None,
+        skinboard_cooldown: UserCooldown | None = None,
     ) -> None:
         self.stats = stats
         self.links = links
@@ -285,6 +295,11 @@ class Cs2(commands.Cog):
             inventory_cooldown
             if inventory_cooldown is not None
             else UserCooldown(INVENTORY_COOLDOWN_SECONDS)
+        )
+        self.skinboard_cooldown = (
+            skinboard_cooldown
+            if skinboard_cooldown is not None
+            else UserCooldown(SKINBOARD_COOLDOWN_SECONDS)
         )
 
     async def cog_load(self) -> None:
@@ -433,6 +448,12 @@ class Cs2(commands.Cog):
         steam: app_commands.Range[str, 1, MAX_STEAM_INPUT_LENGTH] | None = None,
     ) -> None:
         await self.handle_inventory(interaction, player, steam)
+
+    @app_commands.command(
+        name="skinboard", description="Rank everyone who linked CS2 stats by inventory worth"
+    )
+    async def skinboard(self, interaction: discord.Interaction) -> None:
+        await self.handle_skinboard(interaction)
 
     @app_commands.command(name="unlink", description="Remove your linked Steam account")
     async def unlink(self, interaction: discord.Interaction) -> None:
@@ -592,6 +613,63 @@ class Cs2(commands.Cog):
         return await _send_safely(
             interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         )
+
+    async def handle_skinboard(self, interaction: discord.Interaction) -> None:
+        if self.skins.book.is_empty:
+            # Checked before the cooldown, so the caller can retry as soon as prices load.
+            await interaction.response.send_message(PRICES_LOADING_MESSAGE, ephemeral=True)
+            return
+        await self._run_with_cooldown(
+            interaction, lambda: self._skinboard_deferred(interaction), self.skinboard_cooldown
+        )
+
+    async def _skinboard_deferred(self, interaction: discord.Interaction) -> bool:
+        """Value every linked inventory and post the ranking; True only if it was posted."""
+        currency = self.skins.currency
+        try:
+            links = await self.links.all_links()
+            if not links:
+                # The empty state is a valid reply, but it shouldn't cost the cooldown.
+                await _send_safely(
+                    interaction.followup.send(
+                        embed=build_skinboard_embed([], currency, NOBODY_LINKED_MESSAGE)
+                    )
+                )
+                return False
+            fetch = await fetch_skinboard(
+                self.skins.inventories,
+                self.skins.book,
+                links,
+                budget_seconds=SKINBOARD_BUDGET_SECONDS,
+            )
+            entries = await self._worth_entries(interaction.guild, fetch.worth)
+            embed = build_skinboard_embed(rank_worth(entries), currency)
+            notes = skinboard_notes(fetch, len(links))
+            if notes:
+                footer = [embed.footer.text] if embed.footer.text else []
+                embed.set_footer(text=" · ".join([*footer, *notes]))
+        except Exception:
+            log.exception("Unexpected error building a CS2 skinboard")
+            await _send_safely(interaction.followup.send(GENERIC_ERROR_MESSAGE))
+            return False
+        return await _send_safely(
+            interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        )
+
+    async def _worth_entries(
+        self, guild: discord.Guild | None, worth: dict[int, tuple[int, int]]
+    ) -> list[WorthEntry]:
+        """Name each member; members Discord confirms left the server are left out."""
+        if guild is None:
+            return [WorthEntry(i, None, steam, skinport) for i, (steam, skinport) in worth.items()]
+        lookup = member_lookup(guild, self.members)
+        entries: list[WorthEntry] = []
+        for discord_id, (steam, skinport) in worth.items():
+            name = await lookup(discord_id)
+            if name is None and self.members.not_members.get((guild.id, discord_id)):
+                continue
+            entries.append(WorthEntry(discord_id, name, steam, skinport))
+        return entries
 
     async def _reply_lookup_error(self, interaction: discord.Interaction, exc: Exception) -> None:
         """Ephemeral reply for a failed input check or link lookup (before the defer)."""
@@ -859,5 +937,6 @@ async def setup(bot: NinjaBot) -> None:
             price_updates=price_updates,
             skins=skins,
             inventory_cooldown=UserCooldown(INVENTORY_COOLDOWN_SECONDS),
+            skinboard_cooldown=UserCooldown(SKINBOARD_COOLDOWN_SECONDS),
         )
     )

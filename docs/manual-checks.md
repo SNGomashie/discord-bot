@@ -65,6 +65,14 @@ Things only checkable inside Discord. They are not part of `./scripts/check.sh`.
 - [ ] `/profile` once prices are loaded: `Inventory worth` and `Top skins` (3 skins) at the end, matching `/inventory`
 - [ ] `/profile` for a player with a private inventory, and right after a restart (prices loading): the profile is posted without the skin fields, not delayed
 
+## /skinboard
+
+- [ ] Right after a fresh start (empty `prices` table), `/skinboard` says prices are still loading (private), and can be run again right away
+- [ ] Once prices are loaded: `/skinboard` lists the linked members richest first with mention + display name and both totals; mentions don't ping
+- [ ] A member with a private inventory is left out and counted in the footer (`1 skipped (private or unavailable)`)
+- [ ] With a cold cache and many links the footer says `Stopped early, out of time: N not loaded`; a second run (after the 5 min cooldown) lists more members
+- [ ] A second `/skinboard` within 5 minutes is refused privately
+
 ## Auto-posts (with `CS2_CHANNEL_ID` set)
 
 - [ ] A linked player finishes a new match: one post in the channel within a poll interval or two (once Leetify has the match), with `▸` highlights and the `Squad` field, without pinging anyone

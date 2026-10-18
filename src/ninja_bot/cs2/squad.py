@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -9,7 +10,16 @@ from typing import Literal
 
 from ninja_bot.cs2.client import StatsProvider
 from ninja_bot.cs2.formatting import MISSING, format_rating
-from ninja_bot.cs2.models import Cs2Error, Profile, RateLimitedError, RecentMatch
+from ninja_bot.cs2.inventory import InventoryProvider
+from ninja_bot.cs2.models import (
+    Cs2Error,
+    PrivateInventoryError,
+    Profile,
+    RateLimitedError,
+    RecentMatch,
+)
+from ninja_bot.cs2.prices import PriceBook
+from ninja_bot.cs2.valuation import value_inventory
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +34,9 @@ _TREND_EPSILON = 1e-9
 MIN_SHOWN_STREAK = 3
 # Profiles are fetched one by one, so this bounds the requests per /leaderboard.
 MAX_LEADERBOARD_LINKS = 25
+# /skinboard: inventories are fetched one by one too (cache misses are paced 4 s apart).
+SKINBOARD_LIMIT = 25
+SKINBOARD_BUDGET_SECONDS = 60.0
 
 _ARROWS: dict[TrendDirection, str] = {"up": "↑", "down": "↓", "flat": "→"}
 _STREAK_EMOJI: dict[StreakKind, str] = {"win": "🔥", "loss": "🧊"}
@@ -260,3 +273,113 @@ def format_metric_value(metric: Metric, value: float | None) -> str:
     if metric in _SCORE_METRICS:
         return f"{value:.0f}"
     return format_rating(value)
+
+
+@dataclass(frozen=True)
+class WorthEntry:
+    """A linked member's inventory worth in minor units (`name` None = unknown)."""
+
+    discord_id: int
+    name: str | None
+    steam_total: int
+    skinport_total: int
+
+
+@dataclass(frozen=True)
+class WorthRow:
+    rank: int
+    entry: WorthEntry
+
+
+def rank_worth(entries: Sequence[WorthEntry]) -> list[WorthRow]:
+    """Rank members by Steam total, then Skinport total, richest first.
+
+    Members with the same two totals share a rank (1, 1, 3) and are ordered by name,
+    then Discord ID.
+    """
+    ordered = sorted(
+        entries,
+        key=lambda e: (
+            -e.steam_total,
+            -e.skinport_total,
+            (e.name or "").casefold(),
+            e.name or "",
+            e.discord_id,
+        ),
+    )
+    rows: list[WorthRow] = []
+    for position, entry in enumerate(ordered, start=1):
+        previous = rows[-1] if rows else None
+        if previous is not None and _worth(previous.entry) == _worth(entry):
+            rank = previous.rank
+        else:
+            rank = position
+        rows.append(WorthRow(rank, entry))
+    return rows
+
+
+def _worth(entry: WorthEntry) -> tuple[int, int]:
+    return entry.steam_total, entry.skinport_total
+
+
+@dataclass(frozen=True)
+class SkinboardFetch:
+    # Discord ID -> (steam_total, skinport_total) for the inventories fetched.
+    worth: dict[int, tuple[int, int]]
+    # Private or otherwise unavailable inventories.
+    skipped: int
+    # Links never fetched because the budget ran out or Steam rate limited us.
+    not_loaded: int
+    rate_limited: bool
+
+
+async def fetch_skinboard(
+    provider: InventoryProvider,
+    book: PriceBook,
+    links: Mapping[int, str],
+    limit: int = SKINBOARD_LIMIT,
+    budget_seconds: float = SKINBOARD_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> SkinboardFetch:
+    """Value linked inventories one by one (lowest Discord ID first, at most `limit`); never
+    raises.
+
+    Private and unavailable inventories are skipped. A `RateLimitedError` stops at once and
+    no new fetch starts once `budget_seconds` have passed; the rest count as not loaded.
+    """
+    wanted = sorted(links.items())[:limit]
+    deadline = clock() + budget_seconds
+    worth: dict[int, tuple[int, int]] = {}
+    skipped = 0
+    for index, (discord_id, steam64_id) in enumerate(wanted):
+        if clock() >= deadline:
+            log.info("Skinboard budget used up; %d not loaded", len(wanted) - index)
+            return SkinboardFetch(worth, skipped, len(wanted) - index, rate_limited=False)
+        try:
+            items = await provider.get_inventory(steam64_id)
+        except PrivateInventoryError:
+            skipped += 1
+            continue
+        except RateLimitedError:
+            log.info("Skinboard stopped early: Steam rate limit")
+            return SkinboardFetch(worth, skipped, len(wanted) - index, rate_limited=True)
+        except Exception as exc:
+            log.warning("Skinboard skipped an inventory: %s", type(exc).__name__)
+            skipped += 1
+            continue
+        valuation = value_inventory(items, book, 0)
+        worth[discord_id] = (valuation.steam_total, valuation.skinport_total)
+    return SkinboardFetch(worth, skipped, 0, rate_limited=False)
+
+
+def skinboard_notes(fetch: SkinboardFetch, total_links: int) -> list[str]:
+    """Footer notes for members missing from the skinboard."""
+    notes: list[str] = []
+    if fetch.skipped:
+        notes.append(f"{fetch.skipped} skipped (private or unavailable)")
+    if fetch.not_loaded:
+        reason = "Steam is rate limiting us" if fetch.rate_limited else "out of time"
+        notes.append(f"Stopped early, {reason}: {fetch.not_loaded} not loaded")
+    if total_links > SKINBOARD_LIMIT:
+        notes.append(f"Only the first {SKINBOARD_LIMIT} linked members are checked")
+    return notes

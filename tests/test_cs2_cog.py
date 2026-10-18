@@ -26,6 +26,7 @@ from ninja_bot.cogs.cs2 import (
     NOTHING_TO_UNLINK_MESSAGE,
     PRICES_LOADING_MESSAGE,
     PROFILE_TOP_SKINS,
+    SKINBOARD_COOLDOWN_SECONDS,
     UNLINKED_MESSAGE,
     Cs2,
     SkinSources,
@@ -44,6 +45,7 @@ from ninja_bot.cs2.embed import (
     FRIENDS_FIELD,
     INVENTORY_TOP_FIELD,
     LEADERBOARD_FIELD,
+    NO_PUBLIC_INVENTORIES_MESSAGE,
     NOBODY_LINKED_MESSAGE,
     RATINGS_FIELD,
     TEAM_NAMES,
@@ -2229,3 +2231,179 @@ async def test_scoreboard_skins_respect_budget(
     await cog.handle_scoreboard(interaction)
     assert len(inventories.calls) == 2
     assert "Redline" in field_value(posted_embed(interaction), TOP_SKINS_FIELD)
+
+
+class SkinboardInventories(FakeInventories):
+    """Items per steam id; ids in `errors` raise; `delay` seconds per call."""
+
+    def __init__(
+        self,
+        by_id: Mapping[str, list[InventoryItem]],
+        errors: Mapping[str, Exception] | None = None,
+        delay: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.by_id = dict(by_id)
+        self.errors = dict(errors or {})
+        self.delay = delay
+
+    async def get_inventory(self, steam64_id: str) -> list[InventoryItem]:
+        self.calls.append(steam64_id)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if steam64_id in self.errors:
+            raise self.errors[steam64_id]
+        return list(self.by_id.get(steam64_id, []))
+
+
+def skinboard_cog(
+    links: dict[int, str],
+    inventories: FakeInventories,
+    book: PriceBook | None = None,
+) -> tuple[Cs2, UserCooldown]:
+    cooldown = UserCooldown(SKINBOARD_COOLDOWN_SECONDS, FakeClock())
+    skins = SkinSources(
+        inventories,
+        book if book is not None else priced_book(),
+        CURRENCIES[DEFAULT_CURRENCY],
+    )
+    cog = Cs2(FakeStats(), MemoryLinkStore(links), skins=skins, skinboard_cooldown=cooldown)
+    return cog, cooldown
+
+
+SKINBOARD_LINKS = {USER_ID: STEAM_ID, FRIEND_ID: OTHER_STEAM_ID}
+
+
+async def test_skinboard_ranks_members_by_worth() -> None:
+    inventories = SkinboardInventories(
+        {STEAM_ID: [skin_item()], OTHER_STEAM_ID: [skin_item(), skin_item()]}
+    )
+    cog, cooldown = skinboard_cog(SKINBOARD_LINKS, inventories)
+    interaction = guild_interaction(MEMBERS)
+    await Cs2.skinboard.callback(cog, interaction)
+    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    lines = field_value(posted_embed(interaction), LEADERBOARD_FIELD).splitlines()
+    assert lines == [
+        f"🥇 <@{FRIEND_ID}> Gizmo · Steam **€24.60** · Skinport €20.10",
+        f"🥈 <@{USER_ID}> Sena · Steam **€12.30** · Skinport €10.05",
+    ]
+    _, kwargs = followup_reply(interaction)
+    assert kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_skinboard_ties_share_rank() -> None:
+    inventories = SkinboardInventories({STEAM_ID: [skin_item()], OTHER_STEAM_ID: [skin_item()]})
+    cog, _ = skinboard_cog(SKINBOARD_LINKS, inventories)
+    interaction = guild_interaction(MEMBERS)
+    await cog.handle_skinboard(interaction)
+    lines = field_value(posted_embed(interaction), LEADERBOARD_FIELD).splitlines()
+    assert [line.split()[0] for line in lines] == ["🥇", "🥇"]
+    assert "Gizmo" in lines[0]
+
+
+async def test_skinboard_drops_members_who_left() -> None:
+    inventories = SkinboardInventories({STEAM_ID: [skin_item()], OTHER_STEAM_ID: [skin_item()]})
+    cog, _ = skinboard_cog(SKINBOARD_LINKS, inventories)
+    interaction = guild_interaction({USER_ID: "Sena"})
+    await cog.handle_skinboard(interaction)
+    lines = field_value(posted_embed(interaction), LEADERBOARD_FIELD).splitlines()
+    assert lines == [f"🥇 <@{USER_ID}> Sena · Steam **€12.30** · Skinport €10.05"]
+
+
+async def test_skinboard_skipped_inventories_are_counted() -> None:
+    inventories = SkinboardInventories(
+        {STEAM_ID: [skin_item()]}, {OTHER_STEAM_ID: PrivateInventoryError()}
+    )
+    cog, cooldown = skinboard_cog(SKINBOARD_LINKS, inventories)
+    interaction = guild_interaction(MEMBERS)
+    await cog.handle_skinboard(interaction)
+    embed = posted_embed(interaction)
+    assert len(field_value(embed, LEADERBOARD_FIELD).splitlines()) == 1
+    assert embed.footer.text == "1 skipped (private or unavailable)"
+    assert cooldown.try_acquire(USER_ID) > 0
+
+
+async def test_skinboard_all_skipped_posts_empty_state() -> None:
+    inventories = SkinboardInventories({}, {STEAM_ID: ApiError(), OTHER_STEAM_ID: ApiError()})
+    cog, _ = skinboard_cog(SKINBOARD_LINKS, inventories)
+    interaction = guild_interaction(MEMBERS)
+    await cog.handle_skinboard(interaction)
+    embed = posted_embed(interaction)
+    assert embed.description == NO_PUBLIC_INVENTORIES_MESSAGE
+    assert embed.footer.text == "2 skipped (private or unavailable)"
+
+
+async def test_skinboard_nobody_linked_refunds() -> None:
+    inventories = SkinboardInventories({})
+    cog, cooldown = skinboard_cog({}, inventories)
+    interaction = make_interaction()
+    await cog.handle_skinboard(interaction)
+    assert posted_embed(interaction).description == NOBODY_LINKED_MESSAGE
+    assert inventories.calls == []
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_skinboard_prices_loading_is_ephemeral_without_cooldown() -> None:
+    inventories = SkinboardInventories({})
+    cog, cooldown = skinboard_cog(SKINBOARD_LINKS, inventories, PriceBook())
+    interaction = make_interaction()
+    await cog.handle_skinboard(interaction)
+    args, kwargs = reply(interaction)
+    assert args == (PRICES_LOADING_MESSAGE,)
+    assert kwargs["ephemeral"] is True
+    interaction.response.defer.assert_not_awaited()
+    assert inventories.calls == []
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_skinboard_cooldown_blocks_second_use() -> None:
+    cog, _ = skinboard_cog(SKINBOARD_LINKS, SkinboardInventories({STEAM_ID: [skin_item()]}))
+    await cog.handle_skinboard(make_interaction())
+    interaction = make_interaction()
+    await cog.handle_skinboard(interaction)
+    args, kwargs = reply(interaction)
+    assert args[0].startswith("Slow down!")
+    assert kwargs["ephemeral"] is True
+
+
+async def test_skinboard_send_failure_refunds() -> None:
+    cog, cooldown = skinboard_cog(SKINBOARD_LINKS, SkinboardInventories({STEAM_ID: []}))
+    interaction = make_interaction()
+    response = MagicMock(status=500, reason="Server Error")
+    interaction.followup.send = AsyncMock(side_effect=discord.HTTPException(response, "x"))
+    await cog.handle_skinboard(interaction)
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_skinboard_unexpected_error_is_generic_and_refunds(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> list[Any]:
+        raise RuntimeError("bad rows")
+
+    monkeypatch.setattr(cs2_cog, "rank_worth", broken)
+    cog, cooldown = skinboard_cog(SKINBOARD_LINKS, SkinboardInventories({}))
+    interaction = make_interaction()
+    await cog.handle_skinboard(interaction)
+    assert followup_reply(interaction)[0] == (GENERIC_ERROR_MESSAGE,)
+    assert "Unexpected error building a CS2 skinboard" in caplog.text
+    assert cooldown.try_acquire(USER_ID) == 0
+
+
+async def test_skinboard_respects_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cs2_cog, "SKINBOARD_BUDGET_SECONDS", 0.15)
+    links = {1: STEAM_ID, 2: OTHER_STEAM_ID, 3: FIXTURE_STEAM_ID}
+    inventories = SkinboardInventories({STEAM_ID: [skin_item()]}, delay=0.1)
+    cog, _ = skinboard_cog(links, inventories)
+    interaction = make_interaction()
+    await cog.handle_skinboard(interaction)
+    assert len(inventories.calls) == 2
+    embed = posted_embed(interaction)
+    assert embed.footer.text == "Stopped early, out of time: 1 not loaded"
+    assert "<@1>" in field_value(embed, LEADERBOARD_FIELD)
+
+
+def test_skinboard_has_no_options() -> None:
+    assert Cs2.skinboard.description == "Rank everyone who linked CS2 stats by inventory worth"
+    assert Cs2.skinboard._params == {}

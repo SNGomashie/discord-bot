@@ -90,6 +90,7 @@ def test_command_infos_from_tree() -> None:
         "profile",
         "leaderboard",
         "inventory",
+        "skinboard",
         "help",
     }
     download = infos["download"]
