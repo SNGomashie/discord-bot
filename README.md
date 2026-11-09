@@ -8,7 +8,7 @@ It does five things:
 - **CS2 stats**: `/link`, `/unlink`, `/scoreboard`, `/profile` and `/leaderboard` show match scoreboards, profiles and a squad ranking from the [Leetify](https://leetify.com) public API. `/inventory` and `/skinboard` show what CS2 inventories are worth at Steam Market and Skinport prices.
 - **CS2 auto-posts**: when a linked friend finishes a match, the bot posts the scoreboard in a channel by itself.
 - **Voice activity**: the bot tracks time in voice channels (AFK excluded); `/activity` and `/myactivity` show a monthly leaderboard, wall of shame, awards and per-member stats (plus Toasty `;pokemon` catches when enabled).
-- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons. `/sessions` lists open polls and upcoming sessions, `/session_cancel` cancels one.
+- **Session polls**: `/session_poll` posts a poll with candidate dates for a game session; players join and vote with buttons. `/sessions` lists open polls and upcoming sessions, `/session_gm` hands one to another GM, `/session_cancel` cancels one, optionally starting a new poll for another date.
 
 `/help` explains every command inside Discord, and `/ping` checks that the bot is online.
 
@@ -49,7 +49,8 @@ All commands are slash commands. There are no prefix commands, and the bot reads
 | `/myactivity` | `user` (default you), `month` (`YYYY-MM`, default this month) | public (errors are private) | 10 s, shared with `/activity`; refunded unless an embed was posted |
 | `/session_poll` | `name`, `days`, `times`, `weeks` (1-8, default 2), `start` (`YYYY-MM-DD`, default tomorrow), `duration_hours` (1-12, default 4), `min_players` (2-25), `round_hours` (1-336), `exclude` (days to skip), `players` (mentions) | public poll (errors are private); Join/Leave/Vote and refused Close round/Confirm replies are private; round results and confirmed sessions are posted publicly | 30 s; refunded unless the poll was posted |
 | `/sessions` | none | public list (errors are private) | 10 s; refunded unless the list was posted |
-| `/session_cancel` | `item` (pick an open poll or upcoming session from the autocomplete) | public confirmation; refusals are private | none |
+| `/session_gm` | `item` (pick a voting poll or upcoming session), `gm` (a server member) | public confirmation (no pings); refusals are private | none |
+| `/session_cancel` | `item` (pick an open poll or upcoming session from the autocomplete), `reschedule`, `days`, `times`, `weeks`, `start` | public confirmation; refusals are private | none |
 | `/help` | `command` (a command name with autocomplete, default: overview of every command), `public` (default false) | private unless `public` is true (unknown names are always private) | 15 s, only for `public` replies; refunded if the reply could not be sent |
 
 Cooldowns live in memory and reset when the bot restarts. A throttled request gets a private reply with the seconds left ("Slow down!" for every command except `/help`, which suggests leaving out `public`).
@@ -447,7 +448,7 @@ Pokémon names are shown as plain text (markdown escaped) and cut at 32 characte
 
 ## Session polls
 
-A GM (whoever runs the command) starts a poll to find a date for a game session. The bot offers candidate slots, players join and vote with buttons, and the poll message keeps itself up to date. When a round closes, the GM confirms one of the fitting dates, or the poll moves on to the next weeks.
+Someone starts a poll (they are the GM unless they pick another member with `gm`) to find a date for a game session. The bot offers candidate slots, players join and vote with buttons, and the poll message keeps itself up to date. When a round closes, the GM confirms one of the fitting dates, or the poll moves on to the next weeks.
 
 ### /session_poll
 
@@ -464,6 +465,7 @@ A GM (whoever runs the command) starts a poll to find a date for a game session.
 | `min_players` | 2-25: players needed for a date to fit | every joined player |
 | `round_hours` | 1-336: how long each voting round stays open | no deadline |
 | `exclude` | days without slots: comma-separated `YYYY-MM-DD` dates or `first..last` ranges (both days included, at most 62 days per range), for example `2026-10-22..2026-10-24,2026-11-05`; at most 200 characters | none |
+| `gm` | the member who runs the game; a person, not a bot. The GM is auto-joined and must attend for a date to fit. Whoever ran the command (the creator) can still close rounds, confirm and cancel, but is only on the poll if they are the GM or listed | you |
 | `players` | the players, as mentions (`@Alice @Bob`), nothing else; the GM is added automatically; 2-25 players with the GM; at most 800 characters | anyone can join |
 
 - **Slots:** every chosen weekday at every chosen time from `start` for `weeks` weeks (start date included, the day `weeks` weeks later excluded), in `SESSIONS_TIMEZONE` (falls back to `ACTIVITY_TIMEZONE`, see [Configuration](#configuration)). Slots that already started are dropped. A time that doesn't exist on a daylight-saving change day is skipped; a time that happens twice uses the first one. A poll offers at most 25 slots (Discord select menus hold 25 options).
@@ -472,7 +474,7 @@ A GM (whoever runs the command) starts a poll to find a date for a game session.
 - **Fixed player list (`players`):** the listed players and the GM are on the poll from the start, and the post pings the listed players once. A poll with a list has no **Join** / **Leave** buttons (an old Join or Leave button gets "This poll has a fixed player list, so nobody can join or leave. Ask the GM."), the footer drops the "Press Join" hint, and anyone not on the list who presses **Vote** gets "You're not on this poll's player list. Ask the GM." privately. Leaving it out keeps manual joining. A list must name at least one player besides the GM, at most 25 in all, and `min_players` can't be higher than the number of players on it. Everyone on the list has to vote before the round closes by itself.
 - **Excluded days (`exclude`):** days inside an excluded date or range never get a slot, in any round: later rounds skip them too. They are removed before the 25-slot limit is counted, and a window where every slot is excluded gives the "no slots" error.
 - **Vote button:** opens a private form (it works for 10 minutes) with two multi-selects over the current round's slots, **✅ Works for me** and **🤔 Only if needed**, already filled in with your saved votes. The options read like `Fri 6 Nov 19:00` in `SESSIONS_TIMEZONE` (select menus can't show times in your own zone; the prompt names the zone). **Save** replaces all your votes for the round: a slot picked in both lists counts as works, a slot in neither as a no. **Save** with nothing picked in either list is refused privately with "Pick at least one slot, or press **None of these work** if none of them suit you." and the form stays open, so an early Save never counts as a no for everything. **None of these work** saves a no for every slot. Either way the form closes with "Your votes are saved." and the poll message updates its counts and `Waiting for`. If the poll message can't be edited (deleted, missing permissions), your vote still counts. You must press **Join** first ("You haven't joined this poll. Press **Join** first."); on a poll that no longer takes votes you get "This poll isn't taking votes any more.", also when you press Save after the poll closed.
-- **Close round button:** only the GM or someone with **Manage Events** can press it; anyone else gets "Only the GM or someone with **Manage Events** can do that." privately. A round also closes on its own as soon as every joined player has saved a vote (None of these counts), but only once at least two players (the GM and one more) have joined, so the GM's own vote never closes the round alone; or it closes when its `round_hours` deadline passes (see Deadlines). Pressing Close round on a round that is already closed says "This round is already closed." privately and changes nothing.
+- **Close round button:** only the GM or someone with **Manage Events** can press it; anyone else gets "Only the GM, whoever started the poll or someone with **Manage Events** can do that." privately. A round also closes on its own as soon as every joined player has saved a vote (None of these counts), but only once at least two players (the GM and one more) have joined, so the GM's own vote never closes the round alone; or it closes when its `round_hours` deadline passes (see Deadlines). Pressing Close round on a round that is already closed says "This round is already closed." privately and changes nothing.
 - **When a round closes:** the old poll message keeps its last counts, loses its buttons and says "**Round N is closed.**". Then one of three things is posted in the channel:
   - **A date fits:** a slot fits when the players who picked it (✅ plus 🤔) reach `min_players` (or every joined player when `min_players` isn't set) **and** the GM picked it too: the GM must attend. Up to 3 fitting slots are shown, most ✅ first, then fewest 🤔, then earliest, each with who can't make it. The message pings only the GM ("pick the date with a **Confirm** button") and has one **Confirm N: Fri 6 Nov 19:00** button per slot.
   - **Nothing fits, rounds left:** a new round opens with the same days and times over the next `weeks` weeks (a poll has at most 6 rounds). A new poll message with Join/Leave/Vote/Close round is posted, together with a summary of the new window and who still hadn't voted, and only those players are pinged. Votes don't carry over; everyone votes again on the new slots.
@@ -498,13 +500,22 @@ A GM (whoever runs the command) starts a poll to find a date for a game session.
 - With neither: "No open polls or upcoming sessions. Start one with `/session_poll`."
 - Mentions in the list never ping. Cooldown: 10 s per user, refunded unless the list was posted. Anything unexpected gives "Something went wrong with the session poll. Please try again later." privately (logged).
 
+### /session_gm
+
+`/session_gm item gm` makes `gm` the GM of a voting poll or an upcoming session of this server. Only the current GM, whoever started the poll or someone with **Manage Events** can use it; anyone else gets the usual private refusal. `item` autocompletes like `/session_cancel`; a bot as `gm` is refused privately.
+
+- **A poll:** only while it is voting (a poll waiting for Confirm was evaluated with the old GM: "The GM of a poll can only be changed while it is voting. Cancel it or confirm a date first."). The new GM joins the poll (at most 25 players), the old GM stays a player and can now leave. The poll message is re-rendered with the new GM, and the fit rule (the GM must attend) uses the new GM from the next evaluation on.
+- **A session:** the session shows the new GM in `/sessions`, reminders and later cancels; the new GM is added to its roster if they weren't on it. The roster pings and the old announcement are not edited.
+- The bot replies publicly ("🎲 <you> made <gm> the GM of the poll **<name>**.", mentions don't ping). The creator keeps their manage rights.
+
 ### /session_cancel
 
-`/session_cancel item` cancels an open poll or an upcoming session of this server. Only the GM or someone with **Manage Events** can cancel; anyone else gets "Only the GM or someone with **Manage Events** can do that." privately.
+`/session_cancel item` cancels an open poll or an upcoming session of this server. Only the GM, whoever started the poll or someone with **Manage Events** can cancel; anyone else gets "Only the GM, whoever started the poll or someone with **Manage Events** can do that." privately.
 
 - **`item`** autocompletes this server's open polls (`Poll: <name> (from Tue 3 Nov)`, the first day of the current round's window) and upcoming sessions (`Session: <name> (Fri 6 Nov 19:00)`), with dates in `SESSIONS_TIMEZONE`. Typing filters the list (case-insensitive, anywhere in the label); at most 25 suggestions. Pick a suggestion: text typed by hand that isn't one gets "Pick an open poll or upcoming session from the list; it may be finished or cancelled." privately.
 - **A poll:** the poll stops (no more votes, deadline closes or nudges; it no longer counts towards the 5 open polls). Its current poll message gets "🚫 **Cancelled.** This poll no longer takes votes." and loses its buttons; a result message that was still waiting for Confirm gets the same text and loses its Confirm buttons.
 - **A session:** it disappears from `/sessions` and gets no more reminders; the poll message it came from gets "🚫 **Cancelled.** This session won't take place.". Sessions that already started can't be cancelled.
+- **Rescheduling (`reschedule:true`, sessions only):** after the cancellation the bot posts a new poll in the poll's channel and pings everyone who joined the old poll (not only those who could make the cancelled date). It keeps the name, GM, creator, session length, `min_players`, `round_hours`, excluded days and fixed or open player list. `days`, `times` and `weeks` default to the old poll's values and `start` to tomorrow; give any of them to offer different dates. The new poll is made first: if the input is invalid, no slot is left or the server already has 5 open polls, the user gets the reason privately and the session stays. With `reschedule` on a poll the reply is "Only an upcoming session can be rescheduled, not a poll." and nothing changes. The new poll counts towards the 5 open polls.
 - The bot then replies publicly, for example "🚫 The session poll **<name>** was cancelled by <you>." (mentions don't ping). If the poll message can't be edited (deleted, missing permissions) the error is logged and the cancel still counts.
 - An item that is finished, already cancelled or from another server gets "There's no open poll with that id; it may be finished or cancelled." or "There's no upcoming session with that id; it may have started or been cancelled." privately.
 
@@ -545,7 +556,7 @@ The session poll database at `<DATA_DIR>/sessions.sqlite3` holds these tables:
 
 | Table | Columns | Purpose |
 |---|---|---|
-| `polls` | `id` (primary key), `guild_id`, `channel_id`, `message_id`, `name`, `gm_id`, `days` (weekdays, Mon=0, comma-separated), `times` (`HH:MM`, comma-separated), `weeks`, `duration_hours`, `min_players`, `round_hours`, `round_number`, `window_start` (`YYYY-MM-DD`), `status` (`voting`, `awaiting_confirm`, `confirmed`, `failed` or `cancelled`), `created_at`, `round_started_at`, `result_message_id`, `excluded` (days without slots, `first..last` ISO dates, comma-separated), `fixed_roster` (1 when the GM listed the players) | One row per session poll. `message_id` is the current round's poll message and stays empty until that message is sent (also after a new round starts). `result_message_id` is the result message with the Confirm buttons, empty until it is sent. Never pruned. |
+| `polls` | `id` (primary key), `guild_id`, `channel_id`, `message_id`, `name`, `gm_id`, `days` (weekdays, Mon=0, comma-separated), `times` (`HH:MM`, comma-separated), `weeks`, `duration_hours`, `min_players`, `round_hours`, `round_number`, `window_start` (`YYYY-MM-DD`), `status` (`voting`, `awaiting_confirm`, `confirmed`, `failed` or `cancelled`), `created_at`, `round_started_at`, `result_message_id`, `excluded` (days without slots, `first..last` ISO dates, comma-separated), `fixed_roster` (1 when the GM listed the players), `creator_id` (who ran the command; 0 for polls from before the column existed) | One row per session poll. `message_id` is the current round's poll message and stays empty until that message is sent (also after a new round starts). `result_message_id` is the result message with the Confirm buttons, empty until it is sent. Never pruned. |
 | `poll_slots` | `id` (primary key), `poll_id`, `round_number`, `start`, `end` | The candidate slots of each round (Unix timestamps). Earlier rounds' slots are kept. |
 | `poll_players` | `poll_id`, `user_id` (primary key together) | Who joined each poll (the GM joins automatically). |
 | `poll_votes` | `poll_id`, `user_id`, `slot_id` (primary key together), `vote` (`yes`, `if_needed` or `no`) | Each player's vote per slot. Leaving a poll deletes that player's votes. Votes of earlier rounds are kept, but only the current round's slots count. |
@@ -609,7 +620,7 @@ src/ninja_bot/
   posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
                   help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener),
-                  sessions.py (/session_poll, /sessions, /session_cancel, poll buttons)
+                  sessions.py (/session_poll, /sessions, /session_gm, /session_cancel, poll buttons)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (Steam name lookups),

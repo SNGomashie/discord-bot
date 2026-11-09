@@ -7,10 +7,10 @@ BLANK_NAME_MESSAGE = "Give the poll a name."
 NAME_TOO_LONG_MESSAGE = "The poll name can be at most {max} characters."
 INVALID_WEEKS_MESSAGE = "`weeks` must be between 1 and {max}."
 INVALID_DURATION_MESSAGE = "`duration_hours` must be between 1 and {max}."
-PLAYERS_ONLY_GM_MESSAGE = "Mention at least one player besides yourself, or leave `players` out."
-TOO_MANY_PLAYERS_MESSAGE = "That list has {count} players (max {max}, you included)."
+PLAYERS_ONLY_GM_MESSAGE = "Mention at least one player besides the GM, or leave `players` out."
+TOO_MANY_PLAYERS_MESSAGE = "That list has {count} players (max {max}, the GM included)."
 MIN_PLAYERS_ABOVE_LIST_MESSAGE = (
-    "`min_players` is {min} but only {count} players are on the list (you included)."
+    "`min_players` is {min} but only {count} players are on the list (the GM included)."
 )
 INVALID_MIN_PLAYERS_MESSAGE = "`min_players` must be between 2 and {max}."
 INVALID_ROUND_HOURS_MESSAGE = "`round_hours` must be between 1 and {max}."
@@ -34,7 +34,9 @@ VOTE_RECORDED_MESSAGE = "Your votes are saved."
 UNKNOWN_SLOT_MESSAGE = "Those slots aren't part of the current round; open the vote again."
 
 # Close round / confirm / cancel.
-NOT_ALLOWED_MESSAGE = "Only the GM or someone with **Manage Events** can do that."
+NOT_ALLOWED_MESSAGE = (
+    "Only the GM, whoever started the poll or someone with **Manage Events** can do that."
+)
 ROUND_ALREADY_CLOSED_MESSAGE = "This round is already closed."
 NOT_AWAITING_CONFIRM_MESSAGE = "This poll isn't waiting for a date to be confirmed."
 SLOT_NOT_OFFERED_MESSAGE = "That slot isn't one of the offered dates."
@@ -106,6 +108,16 @@ UNKNOWN_CANCEL_ITEM_MESSAGE = (
     "Pick an open poll or upcoming session from the list; it may be finished or cancelled."
 )
 POLL_CANCELLED_MESSAGE = "🚫 The session poll **{name}** was cancelled by {user}."
+GM_ONLY_VOTING_MESSAGE = (
+    "The GM of a poll can only be changed while it is voting. Cancel it or confirm a date first."
+)
+GM_CHANGED_POLL_MESSAGE = "🎲 {user} made {gm} the GM of the poll **{name}**."
+GM_CHANGED_SESSION_MESSAGE = "🎲 {user} made {gm} the GM of the session **{name}** on {start}."
+GM_UNCHANGED_MESSAGE = "{gm} is already the GM."
+RESCHEDULE_SESSIONS_ONLY_MESSAGE = "Only an upcoming session can be rescheduled, not a poll."
+RESCHEDULE_REPLY_SUFFIX = " A new poll to find another date follows."
+RESCHEDULE_PING = "{players} the session was cancelled. Please vote on the new dates."
+BOT_GM_MESSAGE = "A bot can't be the GM. Pick a person."
 SESSION_CANCELLED_MESSAGE = "🚫 The session **{name}** on {start} was cancelled by {user}."
 CANCELLED_POLL_EDIT = "🚫 **Cancelled.** This poll no longer takes votes."
 CANCELLED_SESSION_EDIT = "🚫 **Cancelled.** This session won't take place."

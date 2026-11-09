@@ -264,7 +264,8 @@ COMMANDS: tuple[CommandHelp, ...] = (
         summary="Start a poll to find a date for a game session.",
         details=(
             "Posts a poll in this channel with one slot per chosen day and start time "
-            "in the coming weeks. You run it as the GM. Players press Join and Leave, "
+            "in the coming weeks. You are the GM unless you set gm:. "
+            "Players press Join and Leave, "
             "or you list them with players: and the list is fixed. "
             "Vote opens a private form: pick the slots that work and the ones that "
             "only work if needed, then Save. When everyone voted (or the GM presses "
@@ -282,7 +283,7 @@ COMMANDS: tuple[CommandHelp, ...] = (
         notes=(
             "A poll offers at most 25 slots; use fewer days, times or weeks if it says more.",
             "A server can have at most 5 open polls at a time.",
-            "Only the GM or someone with Manage Events can close a round or confirm a date.",
+            "Only the GM, the starter or Manage Events can close a round or confirm a date.",
             "Errors are only visible to you, and they don't use up your cooldown.",
         ),
         parameter_notes={
@@ -294,14 +295,9 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "start": "A date like 2026-11-06 (YYYY-MM-DD), not in the past. Default: tomorrow.",
             "min_players": "Without it, a date only fits when every joined player can make it.",
             "round_hours": "Hours each voting round stays open. Leave it empty for no deadline.",
-            "exclude": (
-                "Days you can't play: dates or ranges like 2026-11-05,2026-11-13..2026-11-15. "
-                "No slots are offered on them."
-            ),
-            "players": (
-                "Mention the players, like @Alice @Bob. They are pinged and Join / Leave is "
-                "turned off. Leave it empty to let anyone join."
-            ),
+            "exclude": "Days to skip: dates or ranges like 2026-11-05,2026-11-13..2026-11-15.",
+            "players": "Mention the players, like @Alice @Bob. They get pinged; no one else joins.",
+            "gm": "Who runs the game. Default: you.",
         },
     ),
     CommandHelp(
@@ -328,15 +324,47 @@ COMMANDS: tuple[CommandHelp, ...] = (
             "Pick an open poll or an upcoming session from the list that appears while you "
             "type. The poll message is marked as cancelled and loses its buttons, and the "
             "cancellation is announced in the channel. A cancelled poll gets no more nudges "
-            "and a cancelled session no reminders."
+            "and a cancelled session no reminders. For a session, reschedule:true also "
+            "starts a new poll for another date with the same GM and players."
         ),
-        examples=("/session_cancel item:Poll: Curse of Strahd (from Fri 6 Nov)",),
+        examples=(
+            "/session_cancel item:Poll: Curse of Strahd (from Fri 6 Nov)",
+            "/session_cancel item:Session: Strahd (Fri 6 Nov 19:00) reschedule:true days:sat",
+        ),
         notes=(
-            "Only the GM or someone with Manage Events can cancel.",
+            "Only the GM, whoever started the poll or someone with Manage Events can cancel.",
+            "reschedule only works for sessions. If the new poll can't be made (for example "
+            "no slots), nothing is cancelled.",
             "Sessions that already started can't be cancelled.",
         ),
         parameter_notes={
             "item": "Choose from the suggestions; typed text only filters them.",
+            "reschedule": "Also start a new poll in this channel, inviting everyone who joined.",
+            "days": "With reschedule: weekdays to offer. Default: the old poll's days.",
+            "times": "With reschedule: 24-hour start times. Default: the old poll's times.",
+            "weeks": "With reschedule: how many weeks to offer. Default: the old poll's.",
+            "start": "With reschedule: first day to offer, YYYY-MM-DD. Default: tomorrow.",
+        },
+    ),
+    CommandHelp(
+        name="session_gm",
+        group=SESSIONS,
+        summary="Hand a session poll or upcoming session to another GM.",
+        details=(
+            "Pick a voting poll or an upcoming session and the member who is the GM from "
+            "now on. The change is announced in the channel. The new GM is added to the "
+            "poll or the session's players; the old GM stays a player. A poll's message "
+            "shows the new GM right away."
+        ),
+        examples=("/session_gm item:Session: Strahd (Fri 6 Nov 19:00) gm:@Alice",),
+        notes=(
+            "Only the GM, whoever started the poll or someone with Manage Events can do this.",
+            "A poll waiting for Confirm can't change GM: confirm or cancel it first.",
+            "A bot can't be the GM.",
+        ),
+        parameter_notes={
+            "item": "Choose from the suggestions; typed text only filters them.",
+            "gm": "The new GM, a server member.",
         },
     ),
     CommandHelp(

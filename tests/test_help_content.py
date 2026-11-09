@@ -27,6 +27,7 @@ EXPECTED_NAMES = {
     "session_poll",
     "sessions",
     "session_cancel",
+    "session_gm",
     "help",
 }
 

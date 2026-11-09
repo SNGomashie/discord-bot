@@ -173,7 +173,11 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 - [ ] `/session_cancel item:` suggests open polls and upcoming sessions with dates, and narrows as you type
 - [ ] `/session_cancel` by a player (no Manage Events) is refused privately; by the GM it posts the public confirmation (no ping), the poll message says "Cancelled" without buttons, and the item is gone from `/sessions` and the suggestions
 - [ ] Cancel a confirmed session: no reminder follows, and it is gone from `/sessions`
+- [ ] `/session_gm` on a voting poll: the announcement is public without pings, the poll message shows the new GM and lists them under Joined; on an upcoming session: `/sessions` shows the new GM. A player without Manage Events is refused privately; a poll waiting for Confirm is refused
 - [ ] Typing a random `item` (not a suggestion) gives a private "Pick an open poll or upcoming session from the list" reply
+- [ ] `/session_poll gm:@Someone`: the poll shows them as GM and they are joined; you (the creator, not the GM) can still close the round, confirm and `/session_cancel`; a third player gets the private refusal. `gm:` a bot is refused privately
+- [ ] `/session_cancel item:<session> reschedule:true`: the old session is marked cancelled, a new poll appears in the channel pinging everyone who joined, with the same GM and name; `days:`/`start:` change the offered dates
+- [ ] `/session_cancel reschedule:true days:funday` on a session is refused privately and the session stays upcoming; `reschedule:true` on a poll is refused privately
 
 ## /help
 

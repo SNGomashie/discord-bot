@@ -304,6 +304,7 @@ class Sessions(commands.Cog):
         round_hours=f"Close each round after this many hours (1-{MAX_ROUND_HOURS}, optional)",
         exclude="Days to skip: dates or ranges, e.g. 2026-11-05,2026-11-13..2026-11-15",
         players="Mention the players to fix the list (then nobody can join or leave)",
+        gm="Who runs the game (default you); you can still manage the poll",
     )
     async def session_poll(
         self,
@@ -318,6 +319,7 @@ class Sessions(commands.Cog):
         round_hours: app_commands.Range[int, 1, MAX_ROUND_HOURS] | None = None,
         exclude: app_commands.Range[str, 1, MAX_EXCLUDE_LENGTH] | None = None,
         players: app_commands.Range[str, 1, MAX_PLAYERS_TEXT_LENGTH] | None = None,
+        gm: discord.Member | None = None,
     ) -> None:
         await self.handle_session_poll(
             interaction,
@@ -331,6 +333,7 @@ class Sessions(commands.Cog):
             round_hours,
             exclude,
             players,
+            gm,
         )
 
     async def handle_session_poll(
@@ -346,6 +349,7 @@ class Sessions(commands.Cog):
         round_hours: int | None = None,
         exclude: str | None = None,
         players: str | None = None,
+        gm: discord.Member | discord.User | None = None,
     ) -> None:
         guild = interaction.guild
         channel = interaction.channel
@@ -358,6 +362,11 @@ class Sessions(commands.Cog):
         if channel_problem(channel, guild.me) is not None:
             await _send_safely(
                 interaction.response.send_message(content.CHANNEL_PROBLEM_MESSAGE, ephemeral=True)
+            )
+            return
+        if gm is not None and gm.bot:
+            await _send_safely(
+                interaction.response.send_message(content.BOT_GM_MESSAGE, ephemeral=True)
             )
             return
         user_id = interaction.user.id
@@ -383,6 +392,7 @@ class Sessions(commands.Cog):
                 round_hours=round_hours,
                 exclude=exclude or "",
                 players=players or "",
+                gm_id=gm.id if gm is not None else user_id,
             )
             if poll is not None:
                 posted = await self._post_poll(interaction, poll)
@@ -406,13 +416,14 @@ class Sessions(commands.Cog):
         round_hours: int | None,
         exclude: str,
         players: str,
+        gm_id: int,
     ) -> Poll | None:
         """The new poll, or None after replying with the (ephemeral) reason."""
         try:
             return await self.service.create_poll(
                 guild_id,
                 channel_id,
-                interaction.user.id,
+                gm_id,
                 name,
                 days,
                 times,
@@ -423,6 +434,7 @@ class Sessions(commands.Cog):
                 round_hours=round_hours,
                 exclude_text=exclude,
                 players_text=players,
+                creator_id=interaction.user.id,
             )
         except InvalidSessionInput as exc:
             await _send_safely(interaction.response.send_message(exc.message, ephemeral=True))
@@ -547,9 +559,25 @@ class Sessions(commands.Cog):
         name="session_cancel", description="Cancel a session poll or an upcoming session"
     )
     @app_commands.guild_only()
-    @app_commands.describe(item="The open poll or upcoming session to cancel (pick from the list)")
-    async def session_cancel(self, interaction: discord.Interaction, item: str) -> None:
-        await self.handle_session_cancel(interaction, item)
+    @app_commands.describe(
+        item="The open poll or upcoming session to cancel (pick from the list)",
+        reschedule="For a session: also start a new poll to find another date",
+        days="Reschedule: weekdays to offer (default: the old poll's)",
+        times="Reschedule: start times, 24-hour (default: the old poll's)",
+        weeks=f"Reschedule: weeks to offer (1-{MAX_WEEKS}, default: the old poll's)",
+        start="Reschedule: first day to offer, as YYYY-MM-DD (default tomorrow)",
+    )
+    async def session_cancel(
+        self,
+        interaction: discord.Interaction,
+        item: str,
+        reschedule: bool = False,
+        days: app_commands.Range[str, 1, MAX_DAYS_LENGTH] | None = None,
+        times: app_commands.Range[str, 1, MAX_TIMES_LENGTH] | None = None,
+        weeks: app_commands.Range[int, 1, MAX_WEEKS] | None = None,
+        start: app_commands.Range[str, 1, MAX_START_LENGTH] | None = None,
+    ) -> None:
+        await self.handle_session_cancel(interaction, item, reschedule, days, times, weeks, start)
 
     @session_cancel.autocomplete("item")
     async def _session_cancel_item(
@@ -576,8 +604,18 @@ class Sessions(commands.Cog):
             return []
         return cancel_choices(polls, sessions, self.service.tz, current)
 
-    async def handle_session_cancel(self, interaction: discord.Interaction, item: str) -> None:
-        """Cancel a poll or session (GM or Manage Events), mark its message, confirm publicly."""
+    async def handle_session_cancel(
+        self,
+        interaction: discord.Interaction,
+        item: str,
+        reschedule: bool = False,
+        days: str | None = None,
+        times: str | None = None,
+        weeks: int | None = None,
+        start: str | None = None,
+    ) -> None:
+        """Cancel a poll or session (GM, creator or Manage Events), mark its message, confirm
+        publicly. With `reschedule` a session is replaced by a new poll for another date."""
         guild = interaction.guild
         target = parse_cancel_item(item)
         if guild is None or target is None:
@@ -587,6 +625,14 @@ class Sessions(commands.Cog):
             await _send_safely(interaction.response.send_message(message, ephemeral=True))
             return
         user_id = interaction.user.id
+        if reschedule and target.kind != "session":
+            await _send_safely(
+                interaction.response.send_message(
+                    content.RESCHEDULE_SESSIONS_ONLY_MESSAGE, ephemeral=True
+                )
+            )
+            return
+        new_poll: Poll | None = None
         try:
             if target.kind == "poll":
                 poll = await self.service.cancel_poll(
@@ -599,9 +645,21 @@ class Sessions(commands.Cog):
                     name=escape_name(poll.name, MAX_NAME_LENGTH), user=mention(user_id)
                 )
             else:
-                session = await self.service.cancel_session(
-                    target.id, user_id, _is_manager(interaction), guild.id
-                )
+                if reschedule:
+                    session, new_poll = await self.service.reschedule(
+                        target.id,
+                        user_id,
+                        _is_manager(interaction),
+                        guild.id,
+                        days_text=days or "",
+                        times_text=times or "",
+                        weeks=weeks,
+                        start_text=start or "",
+                    )
+                else:
+                    session = await self.service.cancel_session(
+                        target.id, user_id, _is_manager(interaction), guild.id
+                    )
                 name, channel_id = session.name, session.channel_id
                 message_ids = [session.message_id]
                 edit = content.CANCELLED_SESSION_EDIT
@@ -610,7 +668,9 @@ class Sessions(commands.Cog):
                     start=timestamp(session.start, "F"),
                     user=mention(user_id),
                 )
-        except SessionRefused as exc:
+                if new_poll is not None:
+                    reply += content.RESCHEDULE_REPLY_SUFFIX
+        except (SessionRefused, InvalidSessionInput) as exc:
             await _send_safely(interaction.response.send_message(exc.message, ephemeral=True))
             return
         log.info("Session %s %d (%s) cancelled by %d", target.kind, target.id, name, user_id)
@@ -628,6 +688,115 @@ class Sessions(commands.Cog):
                 view=None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
+        if new_poll is not None:
+            await self._post_rescheduled_poll(new_poll)
+
+    async def _post_rescheduled_poll(self, poll: Poll) -> None:
+        """Post the replacement poll, pinging everyone on it; an unposted poll is cancelled."""
+        try:
+            embed, view = await self.poll_message(poll)
+            invited = [
+                user_id
+                for user_id in await self.service.store.players(poll.id)
+                if user_id != poll.gm_id
+            ]
+        except Exception:
+            log.exception("Unexpected error rendering rescheduled poll %d", poll.id)
+            await self._discard(poll)
+            return
+        message = await self._post(
+            poll.channel_id,
+            f"rescheduled session poll {poll.id}",
+            content=content.RESCHEDULE_PING.format(
+                players=" ".join(mention(user_id) for user_id in invited)
+            )
+            if invited
+            else None,
+            embed=embed,
+            view=view,
+            allowed_mentions=_pinging(invited) if invited else discord.AllowedMentions.none(),
+        )
+        if message is None:
+            await self._discard(poll)
+            return
+        try:
+            await self.service.store.set_poll_message(poll.id, message.id)
+        except Exception:
+            log.exception("Could not store the message id of session poll %d", poll.id)
+
+    @app_commands.command(
+        name="session_gm", description="Hand a session poll or upcoming session to another GM"
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(
+        item="The voting poll or upcoming session (pick from the list)",
+        gm="The member who is the GM from now on",
+    )
+    async def session_gm(
+        self, interaction: discord.Interaction, item: str, gm: discord.Member
+    ) -> None:
+        await self.handle_session_gm(interaction, item, gm)
+
+    @session_gm.autocomplete("item")
+    async def _session_gm_item(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        return [
+            app_commands.Choice(name=label, value=value)
+            for label, value in await self.cancel_choices(interaction, current)
+        ]
+
+    async def handle_session_gm(
+        self, interaction: discord.Interaction, item: str, gm: discord.Member | discord.User
+    ) -> None:
+        """Change the GM of a voting poll or an upcoming session (GM, creator or Manage
+        Events) and announce it publicly (no pings)."""
+        guild = interaction.guild
+        target = parse_cancel_item(item)
+        if guild is None or target is None:
+            message = (
+                content.GUILD_ONLY_MESSAGE if guild is None else content.UNKNOWN_CANCEL_ITEM_MESSAGE
+            )
+            await _send_safely(interaction.response.send_message(message, ephemeral=True))
+            return
+        if gm.bot:
+            await _send_safely(
+                interaction.response.send_message(content.BOT_GM_MESSAGE, ephemeral=True)
+            )
+            return
+        user_id = interaction.user.id
+        poll: Poll | None = None
+        try:
+            if target.kind == "poll":
+                poll = await self.service.change_poll_gm(
+                    target.id, gm.id, user_id, _is_manager(interaction), guild.id
+                )
+                reply = content.GM_CHANGED_POLL_MESSAGE.format(
+                    user=mention(user_id),
+                    gm=mention(gm.id),
+                    name=escape_name(poll.name, MAX_NAME_LENGTH),
+                )
+            else:
+                session = await self.service.change_session_gm(
+                    target.id, gm.id, user_id, _is_manager(interaction), guild.id
+                )
+                reply = content.GM_CHANGED_SESSION_MESSAGE.format(
+                    user=mention(user_id),
+                    gm=mention(gm.id),
+                    name=escape_name(session.name, MAX_NAME_LENGTH),
+                    start=timestamp(session.start, "F"),
+                )
+        except SessionRefused as exc:
+            await _send_safely(interaction.response.send_message(exc.message, ephemeral=True))
+            return
+        log.info("GM of session %s %d changed to %d by %d", target.kind, target.id, gm.id, user_id)
+        await _send_safely(
+            interaction.response.send_message(
+                reply, allowed_mentions=discord.AllowedMentions.none()
+            )
+        )
+        if poll is not None:
+            await self.refresh_poll_message(poll.id)
 
     async def handle_poll_action(
         self, interaction: discord.Interaction, poll_id: int, action: str, arg: int | None

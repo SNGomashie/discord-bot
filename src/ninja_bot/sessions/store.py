@@ -35,7 +35,7 @@ _SCHEMA = (
     " round_hours REAL NOT NULL, round_number INTEGER NOT NULL, window_start TEXT NOT NULL,"
     " status TEXT NOT NULL, created_at REAL NOT NULL, round_started_at REAL NOT NULL,"
     " result_message_id INTEGER NULL, excluded TEXT NOT NULL DEFAULT '',"
-    " fixed_roster INTEGER NOT NULL DEFAULT 0)",
+    " fixed_roster INTEGER NOT NULL DEFAULT 0, creator_id INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX IF NOT EXISTS polls_guild_status ON polls (guild_id, status)",
     "CREATE TABLE IF NOT EXISTS poll_slots (id INTEGER PRIMARY KEY,"
     " poll_id INTEGER NOT NULL, round_number INTEGER NOT NULL,"
@@ -64,12 +64,13 @@ _ADDED_POLL_COLUMNS = (
     ("result_message_id", "INTEGER NULL"),
     ("excluded", "TEXT NOT NULL DEFAULT ''"),
     ("fixed_roster", "INTEGER NOT NULL DEFAULT 0"),
+    ("creator_id", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 _POLL_COLUMNS = (
     "id, guild_id, channel_id, message_id, name, gm_id, days, times, weeks, duration_hours,"
     " min_players, round_hours, round_number, window_start, status, created_at, round_started_at,"
-    " result_message_id, excluded, fixed_roster"
+    " result_message_id, excluded, fixed_roster, creator_id"
 )
 _SLOT_COLUMNS = 'id, poll_id, round_number, start, "end"'
 _SESSION_COLUMNS = (
@@ -107,6 +108,9 @@ class Poll:
     excluded: tuple[DateRange, ...] = ()
     # True when the GM listed the players: nobody can join or leave.
     fixed_roster: bool = False
+    # Who ran the command; may manage the poll even when someone else is the GM (0 = unknown,
+    # polls from before this column existed).
+    creator_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,7 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         result_message_id,
         excluded,
         fixed_roster,
+        creator_id,
     ) = row
     return Poll(
         id=int(poll_id),
@@ -209,6 +214,7 @@ def _poll(row: tuple[Any, ...]) -> Poll:
         result_message_id=None if result_message_id is None else int(result_message_id),
         excluded=_split_excluded(str(excluded)),
         fixed_roster=bool(fixed_roster),
+        creator_id=int(creator_id),
     )
 
 
@@ -311,9 +317,12 @@ class SessionStore(Protocol):
         now: float,
         excluded: Sequence[DateRange] = (),
         player_ids: Sequence[int] = (),
+        creator_id: int = 0,
+        fixed_roster: bool | None = None,
     ) -> Poll:
-        """Insert a `voting` poll in round 1 with its slots, the GM and `player_ids` joined
-        (a non-empty list makes the roster fixed), atomically."""
+        """Insert a `voting` poll in round 1 with its slots, the GM and `player_ids` joined,
+        atomically. A non-empty `player_ids` makes the roster fixed unless `fixed_roster`
+        says otherwise."""
         ...
 
     async def get_poll(self, poll_id: int) -> Poll | None:
@@ -425,6 +434,14 @@ class SessionStore(Protocol):
         """Mark the session cancelled (it stays stored)."""
         ...
 
+    async def set_poll_gm(self, poll_id: int, gm_id: int) -> None:
+        """Make `gm_id` the poll's GM and join them (the old GM stays a player)."""
+        ...
+
+    async def set_session_gm(self, session_id: int, gm_id: int) -> None:
+        """Make `gm_id` the session's GM and put them on its roster if they aren't."""
+        ...
+
     async def mark_reminder(self, session_id: int, offset_seconds: int) -> None:
         """Remember that the reminder at that offset was handled; idempotent."""
         ...
@@ -490,13 +507,15 @@ class SqliteSessionStore:
         now: float,
         excluded: Sequence[DateRange] = (),
         player_ids: Sequence[int] = (),
+        creator_id: int = 0,
+        fixed_roster: bool | None = None,
     ) -> Poll:
         with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 "INSERT INTO polls (guild_id, channel_id, message_id, name, gm_id, days, times,"
                 " weeks, duration_hours, min_players, round_hours, round_number, window_start,"
-                " status, created_at, round_started_at, excluded, fixed_roster)"
-                " VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                " status, created_at, round_started_at, excluded, fixed_roster, creator_id)"
+                " VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     guild_id,
                     channel_id,
@@ -513,7 +532,8 @@ class SqliteSessionStore:
                     now,
                     now,
                     _join_excluded(excluded),
-                    1 if player_ids else 0,
+                    1 if (bool(player_ids) if fixed_roster is None else fixed_roster) else 0,
+                    creator_id,
                 ),
             )
             poll_id = cursor.lastrowid
@@ -746,6 +766,27 @@ class SqliteSessionStore:
             ).fetchall()
         return [_session(row) for row in rows]
 
+    def _set_poll_gm(self, poll_id: int, gm_id: int) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE polls SET gm_id = ? WHERE id = ?", (gm_id, poll_id))
+            conn.execute(
+                "INSERT OR IGNORE INTO poll_players (poll_id, user_id) VALUES (?, ?)",
+                (poll_id, gm_id),
+            )
+
+    def _set_session_gm(self, session_id: int, gm_id: int) -> None:
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute("SELECT roster FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return
+            roster = _split_ids(str(row[0]))
+            if gm_id not in roster:
+                roster = (*roster, gm_id)
+            conn.execute(
+                "UPDATE sessions SET gm_id = ?, roster = ? WHERE id = ?",
+                (gm_id, _join_ids(roster), session_id),
+            )
+
     def _cancel_session(self, session_id: int) -> None:
         with closing(self._connect()) as conn, conn:
             conn.execute("UPDATE sessions SET cancelled = 1 WHERE id = ?", (session_id,))
@@ -800,6 +841,8 @@ class SqliteSessionStore:
         now: float,
         excluded: Sequence[DateRange] = (),
         player_ids: Sequence[int] = (),
+        creator_id: int = 0,
+        fixed_roster: bool | None = None,
     ) -> Poll:
         return await asyncio.to_thread(
             self._create_poll,
@@ -818,6 +861,8 @@ class SqliteSessionStore:
             now,
             excluded,
             player_ids,
+            creator_id,
+            fixed_roster,
         )
 
     async def get_poll(self, poll_id: int) -> Poll | None:
@@ -893,6 +938,12 @@ class SqliteSessionStore:
 
     async def cancel_session(self, session_id: int) -> None:
         await asyncio.to_thread(self._cancel_session, session_id)
+
+    async def set_poll_gm(self, poll_id: int, gm_id: int) -> None:
+        await asyncio.to_thread(self._set_poll_gm, poll_id, gm_id)
+
+    async def set_session_gm(self, session_id: int, gm_id: int) -> None:
+        await asyncio.to_thread(self._set_session_gm, session_id, gm_id)
 
     async def mark_reminder(self, session_id: int, offset_seconds: int) -> None:
         await asyncio.to_thread(self._mark_reminder, session_id, offset_seconds)

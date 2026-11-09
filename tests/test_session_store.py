@@ -559,5 +559,6 @@ async def test_an_older_polls_table_gets_the_new_columns(tmp_path: Path) -> None
     old = await store.get_poll(1)
     assert old is not None
     assert (old.excluded, old.fixed_roster, old.result_message_id) == ((), False, None)
+    assert old.creator_id == 0
     new = await _create(store)
     assert new.id == 2

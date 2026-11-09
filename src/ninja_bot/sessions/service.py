@@ -193,8 +193,9 @@ def should_auto_close(
     return None
 
 
-def _may_manage(poll_gm_id: int, user_id: int, is_manager: bool) -> bool:
-    return is_manager or user_id == poll_gm_id
+def _may_manage(poll: Poll, user_id: int, is_manager: bool) -> bool:
+    """The GM, whoever created the poll, or a member with Manage Events."""
+    return is_manager or user_id in (poll.gm_id, poll.creator_id)
 
 
 def _evaluate(
@@ -256,11 +257,13 @@ class SessionService:
         round_hours: int | None = None,
         exclude_text: str = "",
         players_text: str = "",
+        creator_id: int | None = None,
     ) -> Poll:
         """Validate the input and store a new poll in round 1; raises `InvalidSessionInput`.
 
         `exclude_text` lists days without slots; `players_text` (mentions) fixes the player
-        list, so nobody can join or leave, and the GM is added to it.
+        list, so nobody can join or leave, and the GM is added to it. `creator_id` (default:
+        the GM) is who ran the command; they may manage the poll like the GM.
         """
         name = name.strip()
         if not name:
@@ -280,9 +283,7 @@ class SessionService:
         now = self.clock()
         start = parse_start_date(start_text, self.tz, now)
         slots = generate_slots(start, weeks, days, times, self.tz, duration_hours, now, excluded)
-        if len(await self.store.open_polls(guild_id)) >= MAX_OPEN_POLLS:
-            message = content.TOO_MANY_OPEN_POLLS_MESSAGE.format(max=MAX_OPEN_POLLS)
-            raise InvalidSessionInput(message)
+        await self._check_open_polls(guild_id)
         return await self.store.create_poll(
             guild_id=guild_id,
             channel_id=channel_id,
@@ -299,7 +300,13 @@ class SessionService:
             now=now,
             excluded=excluded,
             player_ids=invited,
+            creator_id=gm_id if creator_id is None else creator_id,
         )
+
+    async def _check_open_polls(self, guild_id: int) -> None:
+        if len(await self.store.open_polls(guild_id)) >= MAX_OPEN_POLLS:
+            message = content.TOO_MANY_OPEN_POLLS_MESSAGE.format(max=MAX_OPEN_POLLS)
+            raise InvalidSessionInput(message)
 
     @staticmethod
     def _invited(gm_id: int, players_text: str, min_players: int | None) -> tuple[int, ...]:
@@ -416,7 +423,7 @@ class SessionService:
             poll = await self._voting_poll(poll_id)
             if poll is None:
                 return NotVoting(await self.store.get_poll(poll_id))
-            if reason == "manual" and not _may_manage(poll.gm_id, by_user_id, is_manager):
+            if reason == "manual" and not _may_manage(poll, by_user_id, is_manager):
                 return NotAllowed(poll)
             players, slots, votes = await self.round_state(poll)
             slot_ids = [slot.id for slot in slots]
@@ -520,7 +527,7 @@ class SessionService:
             poll = await self.store.get_poll(poll_id)
             if poll is None or poll.status not in OPEN_STATUSES:
                 raise SessionRefused(content.UNKNOWN_POLL_MESSAGE)
-            if not _may_manage(poll.gm_id, by_user_id, is_manager):
+            if not _may_manage(poll, by_user_id, is_manager):
                 raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
             if poll.status != STATUS_AWAITING_CONFIRM:
                 raise SessionRefused(content.NOT_AWAITING_CONFIRM_MESSAGE)
@@ -550,16 +557,15 @@ class SessionService:
                 or (guild_id is not None and poll.guild_id != guild_id)
             ):
                 raise SessionRefused(content.UNKNOWN_POLL_MESSAGE)
-            if not _may_manage(poll.gm_id, by_user_id, is_manager):
+            if not _may_manage(poll, by_user_id, is_manager):
                 raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
             await self.store.cancel_poll(poll.id)
             return await self._reload(poll)
 
-    async def cancel_session(
-        self, session_id: int, by_user_id: int, is_manager: bool, guild_id: int | None = None
-    ) -> Session:
-        """Cancel a session that hasn't started (GM or manager; in `guild_id` when given);
-        raises `SessionRefused`."""
+    async def _manageable_session(
+        self, session_id: int, by_user_id: int, is_manager: bool, guild_id: int | None
+    ) -> tuple[Session, Poll]:
+        """A session that hasn't started, with its poll, if the user may manage it."""
         session = await self.store.get_session(session_id)
         if (
             session is None
@@ -568,7 +574,119 @@ class SessionService:
             or (guild_id is not None and session.guild_id != guild_id)
         ):
             raise SessionRefused(content.UNKNOWN_SESSION_MESSAGE)
-        if not _may_manage(session.gm_id, by_user_id, is_manager):
+        poll = await self.store.get_poll(session.poll_id)
+        assert poll is not None
+        if not _may_manage(poll, by_user_id, is_manager):
             raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
+        return session, poll
+
+    async def cancel_session(
+        self, session_id: int, by_user_id: int, is_manager: bool, guild_id: int | None = None
+    ) -> Session:
+        """Cancel a session that hasn't started (GM, creator or manager; in `guild_id` when
+        given); raises `SessionRefused`."""
+        session, _ = await self._manageable_session(session_id, by_user_id, is_manager, guild_id)
         await self.store.cancel_session(session.id)
         return replace(session, cancelled=True)
+
+    async def change_poll_gm(
+        self,
+        poll_id: int,
+        new_gm_id: int,
+        by_user_id: int,
+        is_manager: bool,
+        guild_id: int | None = None,
+    ) -> Poll:
+        """Hand a voting poll to another GM (GM, creator or manager; raises `SessionRefused`).
+
+        The new GM joins the poll; the old one stays a player. Only while voting, since a
+        round waiting for Confirm was evaluated with the old GM.
+        """
+        async with self._lock:
+            poll = await self.store.get_poll(poll_id)
+            if (
+                poll is None
+                or poll.status not in OPEN_STATUSES
+                or (guild_id is not None and poll.guild_id != guild_id)
+            ):
+                raise SessionRefused(content.UNKNOWN_POLL_MESSAGE)
+            if not _may_manage(poll, by_user_id, is_manager):
+                raise SessionRefused(content.NOT_ALLOWED_MESSAGE)
+            if poll.status != STATUS_VOTING:
+                raise SessionRefused(content.GM_ONLY_VOTING_MESSAGE)
+            if poll.gm_id != new_gm_id:
+                if new_gm_id not in await self.store.players(poll.id) and (
+                    len(await self.store.players(poll.id)) >= MAX_PLAYERS
+                ):
+                    raise SessionRefused(content.POLL_FULL_MESSAGE.format(max=MAX_PLAYERS))
+                await self.store.set_poll_gm(poll.id, new_gm_id)
+            return await self._reload(poll)
+
+    async def change_session_gm(
+        self,
+        session_id: int,
+        new_gm_id: int,
+        by_user_id: int,
+        is_manager: bool,
+        guild_id: int | None = None,
+    ) -> Session:
+        """Hand an upcoming session to another GM (GM, creator or manager); the new GM is
+        added to its roster. Raises `SessionRefused`."""
+        session, _ = await self._manageable_session(session_id, by_user_id, is_manager, guild_id)
+        if session.gm_id != new_gm_id:
+            await self.store.set_session_gm(session.id, new_gm_id)
+        stored = await self.store.get_session(session.id)
+        assert stored is not None
+        return stored
+
+    async def reschedule(
+        self,
+        session_id: int,
+        by_user_id: int,
+        is_manager: bool,
+        guild_id: int | None = None,
+        days_text: str = "",
+        times_text: str = "",
+        weeks: int | None = None,
+        start_text: str = "",
+    ) -> tuple[Session, Poll]:
+        """Cancel a session and open a new poll for another date.
+
+        The new poll keeps the old one's name, GM, creator, duration, minimum, round length,
+        excluded days and everyone who joined; blank days/times/weeks reuse the old values.
+        The poll is stored first, so invalid input or too many open polls leave the session
+        as it was. Raises `SessionRefused` or `InvalidSessionInput`.
+        """
+        session, old = await self._manageable_session(session_id, by_user_id, is_manager, guild_id)
+        weeks = old.weeks if weeks is None else weeks
+        _check_range(weeks, 1, MAX_WEEKS, content.INVALID_WEEKS_MESSAGE)
+        days = parse_days(days_text) if days_text.strip() else old.days
+        times = parse_times(times_text) if times_text.strip() else old.times
+        now = self.clock()
+        start = parse_start_date(start_text, self.tz, now)
+        slots = generate_slots(
+            start, weeks, days, times, self.tz, old.duration_hours, now, old.excluded
+        )
+        await self._check_open_polls(old.guild_id)
+        players = [p for p in await self.store.players(old.id) if p != old.gm_id]
+        poll = await self.store.create_poll(
+            guild_id=old.guild_id,
+            channel_id=old.channel_id,
+            name=old.name,
+            gm_id=old.gm_id,
+            days=days,
+            times=times,
+            weeks=weeks,
+            duration_hours=old.duration_hours,
+            min_players=old.min_players,
+            round_hours=old.round_hours,
+            window_start=start,
+            slots=slots,
+            now=now,
+            excluded=old.excluded,
+            player_ids=players,
+            creator_id=old.creator_id,
+            fixed_roster=old.fixed_roster,
+        )
+        await self.store.cancel_session(session.id)
+        return replace(session, cancelled=True), poll

@@ -311,6 +311,7 @@ def test_command_is_guild_only_with_described_parameters() -> None:
         "round_hours",
         "exclude",
         "players",
+        "gm",
     ]
     assert all(str(param.description).strip() for param in params.values())
     assert command._params["name"].to_dict()["max_length"] == MAX_NAME_LENGTH

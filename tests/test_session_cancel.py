@@ -27,7 +27,7 @@ from ninja_bot.sessions.cancel import (
     cancel_choices,
     parse_cancel_item,
 )
-from ninja_bot.sessions.service import NoPrefill, RoundFits, SessionService
+from ninja_bot.sessions.service import NoPrefill, NotAllowed, RoundFits, SessionService
 from ninja_bot.sessions.store import (
     STATUS_CANCELLED,
     Poll,
@@ -425,5 +425,126 @@ def test_commands_are_guild_only_with_descriptions() -> None:
         assert command.description
         for parameter in command.parameters:
             assert parameter.description and parameter.description != "…"
-    (item,) = Sessions.session_cancel.parameters
+    item, *options = Sessions.session_cancel.parameters
     assert item.name == "item" and item.required and item.autocomplete
+    assert [o.name for o in options] == ["reschedule", "days", "times", "weeks", "start"]
+    assert not any(option.required for option in options)
+
+
+# GM and creator, reschedule
+
+
+async def test_creator_manages_a_poll_with_another_gm(cog: Sessions) -> None:
+    creator, gm = 7, 8
+    poll = await cog.service.create_poll(
+        GUILD, CHANNEL, gm, "Strahd", "fri,sat", "19:00", creator_id=creator
+    )
+    assert (poll.gm_id, poll.creator_id) == (gm, creator)
+    for user_id in (creator, gm):
+        again = await cog.service.cancel_poll(poll.id, user_id, False, GUILD)
+        assert again.status == STATUS_CANCELLED
+        poll = await cog.service.create_poll(
+            GUILD, CHANNEL, gm, "Strahd", "fri,sat", "19:00", creator_id=creator
+        )
+    interaction = make_interaction(user_id=PLAYER)
+    await cog.handle_session_cancel(interaction, f"poll:{poll.id}")
+    assert reply(interaction) == (content.NOT_ALLOWED_MESSAGE, {"ephemeral": True})
+
+
+async def test_reschedule_cancels_and_posts_a_new_poll(cog: Sessions) -> None:
+    session = await confirmed_session(cog)
+    bot: Any = cog.bot
+    sent = MagicMock()
+    sent.id = 777
+    bot.get_partial_messageable.return_value.send = AsyncMock(return_value=sent)
+    interaction = make_interaction()
+    await cog.handle_session_cancel(interaction, f"session:{session.id}", reschedule=True)
+    text, _ = reply(interaction)
+    assert text.endswith(content.RESCHEDULE_REPLY_SUFFIX)
+    stored = await cog.service.store.get_session(session.id)
+    assert stored is not None and stored.cancelled
+    (new,) = await cog.service.store.open_polls(GUILD)
+    assert (new.name, new.gm_id, new.message_id) == ("One-shot", GM, 777)
+    assert await cog.service.store.players(new.id) == [GM, PLAYER]
+    sent_kwargs = bot.get_partial_messageable.return_value.send.await_args.kwargs
+    assert f"<@{PLAYER}>" in sent_kwargs["content"]
+
+
+async def test_reschedule_with_bad_input_keeps_the_session(cog: Sessions) -> None:
+    session = await confirmed_session(cog)
+    interaction = make_interaction()
+    await cog.handle_session_cancel(
+        interaction, f"session:{session.id}", reschedule=True, days="funday"
+    )
+    assert reply(interaction)[1] == {"ephemeral": True}
+    stored = await cog.service.store.get_session(session.id)
+    assert stored is not None and not stored.cancelled
+    assert await cog.service.store.open_polls(GUILD) == []
+
+
+async def test_reschedule_is_for_sessions_only(cog: Sessions) -> None:
+    poll = await open_poll(cog)
+    interaction = make_interaction()
+    await cog.handle_session_cancel(interaction, f"poll:{poll.id}", reschedule=True)
+    assert reply(interaction) == (content.RESCHEDULE_SESSIONS_ONLY_MESSAGE, {"ephemeral": True})
+    assert len(await cog.service.store.open_polls(GUILD)) == 1
+
+
+async def test_player_cannot_reschedule(cog: Sessions) -> None:
+    session = await confirmed_session(cog)
+    interaction = make_interaction(user_id=PLAYER)
+    await cog.handle_session_cancel(interaction, f"session:{session.id}", reschedule=True)
+    assert reply(interaction) == (content.NOT_ALLOWED_MESSAGE, {"ephemeral": True})
+
+
+async def test_gm_can_be_handed_over_on_a_poll(cog: Sessions) -> None:
+    poll = await open_poll(cog)
+    new_gm = MagicMock()
+    new_gm.id = 9
+    new_gm.bot = False
+    interaction = make_interaction()
+    await cog.handle_session_gm(interaction, f"poll:{poll.id}", new_gm)
+    text, kwargs = reply(interaction)
+    assert text == content.GM_CHANGED_POLL_MESSAGE.format(user=f"<@{GM}>", gm="<@9>", name="Strahd")
+    assert kwargs["allowed_mentions"].to_dict()["parse"] == []
+    stored = await cog.service.store.get_poll(poll.id)
+    assert stored is not None and stored.gm_id == 9
+    assert 9 in await cog.service.store.players(poll.id)
+    assert GM in await cog.service.store.players(poll.id)
+    # A plain player still can't close the round; the creator (the old GM here) can.
+    assert isinstance(await cog.service.close_round(poll.id, PLAYER, False, "manual"), NotAllowed)
+
+
+async def test_gm_change_on_a_session_and_permissions(cog: Sessions) -> None:
+    session = await confirmed_session(cog)
+    new_gm = MagicMock()
+    new_gm.id = 9
+    new_gm.bot = False
+    denied = make_interaction(user_id=PLAYER)
+    await cog.handle_session_gm(denied, f"session:{session.id}", new_gm)
+    assert reply(denied) == (content.NOT_ALLOWED_MESSAGE, {"ephemeral": True})
+    interaction = make_interaction()
+    await cog.handle_session_gm(interaction, f"session:{session.id}", new_gm)
+    stored = await cog.service.store.get_session(session.id)
+    assert stored is not None and stored.gm_id == 9 and 9 in stored.roster
+
+
+async def test_gm_change_refusals(cog: Sessions) -> None:
+    bot_gm = MagicMock()
+    bot_gm.id = 9
+    bot_gm.bot = True
+    poll = await open_poll(cog)
+    interaction = make_interaction()
+    await cog.handle_session_gm(interaction, f"poll:{poll.id}", bot_gm)
+    assert reply(interaction) == (content.BOT_GM_MESSAGE, {"ephemeral": True})
+    # Waiting for Confirm: refused.
+    slots = [slot.id for slot in await cog.service.store.poll_slots(poll.id, 1)]
+    await cog.service.submit_vote(poll.id, GM, slots, [])
+    await cog.service.submit_vote(poll.id, PLAYER, slots, [])
+    assert isinstance(await cog.service.close_round(poll.id, GM, False, "manual"), RoundFits)
+    human = MagicMock()
+    human.id = 9
+    human.bot = False
+    interaction = make_interaction()
+    await cog.handle_session_gm(interaction, f"poll:{poll.id}", human)
+    assert reply(interaction) == (content.GM_ONLY_VOTING_MESSAGE, {"ephemeral": True})
