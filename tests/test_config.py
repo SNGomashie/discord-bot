@@ -150,9 +150,17 @@ def test_sessions_timezone_invalid_raises(value: str) -> None:
         load_config({**PROD, "SESSIONS_TIMEZONE": value})
 
 
-@pytest.mark.parametrize(("toasty", "expected"), [(None, False), ("42", True)])
-def test_message_content_intent_only_with_toasty(toasty: str | None, expected: bool) -> None:
-    env = dict(PROD) if toasty is None else {**PROD, "TOASTY_BOT_ID": toasty}
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({}, False),
+        ({"TOASTY_BOT_ID": "42"}, True),
+        ({"CLANKER_REPLIES": "true"}, True),
+        ({"CLANKER_REPLIES": "false"}, False),
+    ],
+)
+def test_message_content_intent_only_when_needed(extra: dict[str, str], expected: bool) -> None:
+    env = {**PROD, **extra}
     bot = NinjaBot(load_config(env))
     assert bot.intents.message_content is expected
     default = discord.Intents.default()
@@ -174,3 +182,28 @@ def test_skin_currency_is_case_insensitive(value: str, expected: str) -> None:
 def test_skin_currency_invalid_raises(value: str) -> None:
     with pytest.raises(ConfigError, match="SKIN_CURRENCY"):
         load_config({**PROD, "SKIN_CURRENCY": value})
+
+
+def test_clanker_replies_default_off() -> None:
+    assert load_config(dict(PROD)).clanker_replies is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("true", True),
+        (" Yes ", True),
+        ("1", True),
+        ("on", True),
+        ("false", False),
+        ("0", False),
+        ("", False),
+    ],
+)
+def test_clanker_replies_parsed(value: str, expected: bool) -> None:
+    assert load_config({**PROD, "CLANKER_REPLIES": value}).clanker_replies is expected
+
+
+def test_clanker_replies_invalid_raises() -> None:
+    with pytest.raises(ConfigError, match="CLANKER_REPLIES"):
+        load_config({**PROD, "CLANKER_REPLIES": "maybe"})

@@ -93,6 +93,8 @@ async def test_posts_ended_month_once(tmp_path: Path) -> None:
     kwargs: Any = channel.send.await_args.kwargs
     assert "October 2026" in str(kwargs["embed"].title)
     assert kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert "overview of the month" in kwargs["content"].lower()
+    assert f"<@{USER}>" in kwargs["content"]
     assert await store.report_posted("2026-10") is True
 
 

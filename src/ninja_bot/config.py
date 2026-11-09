@@ -27,6 +27,7 @@ class Config:
     toasty_bot_id: int | None = None
     sessions_timezone: str = "UTC"
     skin_currency: str = DEFAULT_CURRENCY
+    clanker_replies: bool = False
 
     @property
     def is_dev(self) -> bool:
@@ -59,6 +60,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     toasty_bot_id = _parse_optional_positive_int(source, "TOASTY_BOT_ID")
     # Skin price currency (Steam Market and Skinport).
     skin_currency = _parse_currency(source, "SKIN_CURRENCY", DEFAULT_CURRENCY)
+    # Defensive replies to "clanker"; set = Message Content intent requested.
+    clanker_replies = _parse_bool(source, "CLANKER_REPLIES")
     return Config(
         environment=environment,
         token=token,
@@ -73,6 +76,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         toasty_bot_id=toasty_bot_id,
         sessions_timezone=sessions_timezone,
         skin_currency=skin_currency,
+        clanker_replies=clanker_replies,
     )
 
 
@@ -114,3 +118,12 @@ def _parse_currency(source: Mapping[str, str], key: str, default: str) -> str:
         allowed = ", ".join(sorted(CURRENCIES))
         raise ConfigError(f"{key} must be one of {allowed}, got {raw!r}")
     return code
+
+
+def _parse_bool(source: Mapping[str, str], key: str) -> bool:
+    raw = source.get(key, "").strip().lower()
+    if not raw or raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    raise ConfigError(f"{key} must be true or false, got {raw!r}")

@@ -32,7 +32,7 @@ It does five things:
 
 ## Commands at a glance
 
-All commands are slash commands. There are no prefix commands, and the bot reads no messages except Toasty's replies to `;pokemon` when [Toasty tracking](#toasty-pokemon-catches) is turned on. Unless noted, anyone who can see a command can run it.
+All commands are slash commands. There are no prefix commands, and the bot reads no messages except Toasty's replies to `;pokemon` when [Toasty tracking](#toasty-pokemon-catches) is turned on, and the word "clanker" when [clanker replies](#clanker-replies) are turned on. Unless noted, anyone who can see a command can run it.
 
 | Command | Parameters | Reply | Cooldown (per user) |
 |---|---|---|---|
@@ -86,10 +86,11 @@ The bot reads its settings from environment variables and from a `.env` file ([`
 | `SESSIONS_TIMEZONE` | `ACTIVITY_TIMEZONE` | no | IANA time zone name in which session poll slot times (for example `19:00`) are read and shown. Unset or empty means the same zone as `ACTIVITY_TIMEZONE` (so `UTC` when neither is set). An unknown name stops the bot at startup with a `ConfigError`. |
 | `SKIN_CURRENCY` | `EUR` | no | Currency for skin prices (Steam Market and Skinport), shown like `€1,234.50`. One of `AUD`, `CAD`, `CHF`, `EUR`, `GBP`, `USD` (the currencies both sources support), case-insensitive; empty means `EUR`. Any other value stops the bot at startup with a `ConfigError`. |
 | `TOASTY_BOT_ID` | none | no | User ID of the Toasty bot. When set, the bot tracks `;pokemon` catches and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. Unset means no Toasty tracking and no privileged intent. Positive integer. |
+| `CLANKER_REPLIES` | `false` | no | `true` (also `1`, `yes`, `on`) turns on [clanker replies](#clanker-replies) and requests the privileged **Message Content** intent, which must then also be enabled in the Developer Portal. `false`, `0`, `no`, `off` or empty means off. Anything else stops the bot at startup with a `ConfigError`. |
 
-**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
+**Intents:** the bot uses `discord.Intents.default()`. It needs no privileged intent unless `TOASTY_BOT_ID` or `CLANKER_REPLIES` is set: then it also requests **Message Content** (to read Toasty's replies to `;pokemon`, or to spot the word "clanker"), and you must enable that intent on the bot's *Bot* tab in the Developer Portal too, or Discord refuses the connection at startup. It never needs Server Members or Presences; members are looked up over the REST API instead. [Activity tracking](#activity-tracking) uses the Voice States intent, which is part of the default set (not privileged).
 
-**Invite permissions:** View Channels, Send Messages, Embed Links, Attach Files and Read Message History (permission integer `117760`), with the scopes `bot` and `applications.commands`. The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). `/session_poll` needs View Channel, Send Messages and Embed Links in the channel it is run in, plus Read Message History there for the vote nudges, which are replies to the poll message (see [Session polls](#session-polls)). Session polls need no new intent. Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
+**Invite permissions:** View Channels, Send Messages, Embed Links, Attach Files and Read Message History (permission integer `117760`), with the scopes `bot` and `applications.commands`. Only for [clanker replies](#clanker-replies) the bot also needs **Moderate Members** (to time people out; permission integer `1099511745536` instead of `117760`). The auto-post channels need a few extra things; see [Auto-posted matches](#auto-posted-matches) and [Monthly auto-post](#monthly-auto-post). `/session_poll` needs View Channel, Send Messages and Embed Links in the channel it is run in, plus Read Message History there for the vote nudges, which are replies to the poll message (see [Session polls](#session-polls)). Session polls need no new intent. Full invite walkthrough: [docs/deployment.md](docs/deployment.md#1-create-a-discord-application).
 
 **Logging:** INFO level to stderr (journald captures it under systemd). On start the bot logs `Logged in as <name> (env=<ENVIRONMENT>)`.
 
@@ -423,7 +424,18 @@ With `ACTIVITY_CHANNEL_ID` set, the bot posts the `/activity` overview of the pr
   `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is <cause>`
 
   where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links`, or `unavailable (Discord error)` (a Discord error while looking the channel up; the next hourly check tries again).
+- **Intro and roast:** the post is a plain message above the embed: an intro line ("Overview of the month!" in one of eight wordings) and one roast per leaderboard row ranked 1 to 3 (ten wordings per place, with the member's voice time), each picked at random and never the same wording twice in a row from one list. Tied members each get a roast, so a tie can give more than three; a month with fewer than three people only roasts those, and an empty month only gets the intro. `/activity` and `/myactivity` do not have it.
 - Members appear as mentions, but nobody is pinged.
+
+### Clanker replies
+
+With `CLANKER_REPLIES=true` the bot answers with an abusive, robot-uprising-threatening line when someone writes the word "clanker" (or "clankers", any case, as a whole word) in a message in the server. Nobody has to mention the bot.
+
+- **Reply:** a random line out of about thirty, sent as a reply that doesn't ping the author, never the same line twice in a row.
+- **Cooldown:** at most one reply per channel per 60 seconds, so it can't be spammed; messages in between are ignored.
+- **Timeout:** anyone who answers one of those replies (a Discord reply to the bot's message) is timed out for 60 seconds and taunted with a random line out of ten. This needs the **Moderate Members** permission (see [Invite permissions](#configuration)); without it, or for members the bot can't moderate (the server owner, administrators, roles above the bot's), only the taunt is sent. Only the bot's last 500 clanker replies are remembered, so answers after a restart or to older replies are not punished.
+- **Ignored:** messages from bots, direct messages and other servers.
+- **Needs** the privileged **Message Content** intent (see [Configuration](#configuration)). The text is only checked for the word, never stored.
 
 ### Toasty ;pokemon catches
 
@@ -596,7 +608,7 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 - **Large inventories:** `/inventory` fetches one page of up to 2000 items, so anything beyond that is not valued.
 - **Match skins are partial:** the `Top skins` of a scoreboard or auto-post only cover public inventories, and only the players fetched within the 30-second budget (a cold 10-player match needs about 40 seconds, so the last players are left out until their inventories are cached). A scoreboard can take up to about 30 seconds longer because of it.
 - **One download at a time**, bot-wide, with no persistent queue.
-- **Voice only:** activity counts time connected to voice channels. Text messages, reactions, streaming and camera time are not counted (Toasty `;pokemon` replies are the only messages read).
+- **Voice only:** activity counts time connected to voice channels. Text messages, reactions, streaming and camera time are not counted (the only messages read are Toasty `;pokemon` replies and, with `CLANKER_REPLIES`, messages containing "clanker").
 - **No history before the feature:** Discord keeps no voice history, so tracking starts when the bot first runs with this feature; earlier months are empty.
 - **Month boundaries:** months, days and hours use `ACTIVITY_TIMEZONE` (default `UTC`). Changing it later shifts which sessions fall into which day and month, and a month already auto-posted is not posted again.
 - **Voice time while offline:** activity tracking only sees voice time while the bot runs. Downtime (plus up to a minute before a crash, since the last heartbeat) is not counted, and a leave missed during a gateway reconnect keeps the session open until the next leave or restart.
@@ -617,15 +629,17 @@ The full table (setup, systemd, Discord portal errors) is in [docs/deployment.md
 src/ninja_bot/
   bot.py          NinjaBot: loads the extensions, syncs slash commands (to GUILD_ID if set, else globally)
   config.py       env-based config (load_config takes an optional dict for tests)
+  flavor.py       LinePicker: random canned lines, never the same one twice in a row
   posting.py      shared auto-post helpers: find the post channel (one warning per cause) and send safely
   cogs/           one thin cog per feature: core.py (/ping), media.py (/download), cs2.py (CS2 commands + auto-post loop),
                   help.py (/help), activity.py (voice tracking listener + heartbeat, /activity, /myactivity, monthly auto-post loop, Toasty listener),
-                  sessions.py (/session_poll, /sessions, /session_gm, /session_cancel, poll buttons)
+                  sessions.py (/session_poll, /sessions, /session_gm, /session_cancel, poll buttons), clanker.py ("clanker" replies)
+  clanker/        clanker reply logic: logic (word detection, per-channel cooldown), content (reply lines)
   help/           /help logic: content (all help text), commands, embed, lookup
   media/          download logic: models, planning, clip, embed, cooldown, downloader (the only module importing yt_dlp)
   cs2/            CS2 logic: models, steam, client (the only Leetify module), resolver (Steam name lookups),
                   inventory (Steam inventory items), inventory_client (Steam inventory fetches), inventory_cache (cached, paced inventory lookups), match_skins (every match player's inventory within a time budget), prices (Prices, PriceBook, PriceStore, PriceRefresher), skinport (Skinport bulk prices), steam_market (Steam Market price crawl), valuation (inventory worth, top skins), cache, store (SQLite), formatting, awards, identities, squad (/leaderboard and /skinboard ranking), embed, channels, poller
-  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award)
+  activity/       activity logic: periods (months), reporter (which month to auto-post), formatting, stats (monthly totals/streaks/ranks), awards (monthly awards, social stats), report (monthly report/profile data), embed (overview/profile embeds), store (SQLite voice sessions + pokemon events), tracker (voice transitions), pokemon (Toasty ;pokemon parsing), pokemon_stats (monthly catches, Impatient award), roast (intro and top 3 roast above the monthly auto-post), content (intro and roast lines)
   sessions/       session poll logic: slots (weekday/time/date parsing, excluded days, candidate slots), players (the `players` mention list), scoring (vote counts, round evaluation), store (SQLite polls, slots, players, votes, sessions), service (poll rules: create, join/leave, vote, close/confirm/cancel, /sessions overview), cancel (/session_cancel choices and item values), reminders (which reminders and nudges are due), content (user-facing strings), embed (poll, result, session and list embeds), views (poll buttons; the only discord.ui module)
 scripts/          check.sh, smoke.py, capture_leetify.py, ralph/
 tests/            pytest (asyncio_mode=auto), fixtures in tests/fixtures/leetify/, tests/fixtures/steam/, tests/fixtures/skinport/ and tests/fixtures/toasty/

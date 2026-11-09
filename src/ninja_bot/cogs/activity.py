@@ -29,11 +29,13 @@ from ninja_bot.activity.report import (
     without_departed,
 )
 from ninja_bot.activity.reporter import MonthlyReporter
+from ninja_bot.activity.roast import monthly_message
 from ninja_bot.activity.store import ActivityStore, SqliteActivityStore
 from ninja_bot.activity.tracker import Close, Move, Nothing, Open, plan_transition
 from ninja_bot.cogs.cs2 import MemberCache, member_lookup
 from ninja_bot.cs2.channels import PostChannel
 from ninja_bot.cs2.formatting import escape_name
+from ninja_bot.flavor import LinePicker
 from ninja_bot.media.cooldown import UserCooldown
 from ninja_bot.posting import PostChannelResolver, send_safely
 
@@ -108,6 +110,7 @@ class Activity(commands.Cog):
         cooldown: UserCooldown | None = None,
         channel_id: int | None = None,
         members: MemberCache | None = None,
+        picker: LinePicker | None = None,
     ) -> None:
         self.bot = bot
         self.store = store
@@ -127,6 +130,8 @@ class Activity(commands.Cog):
         )
         # Guild membership answers for the wall of shame (REST-backed, no members intent).
         self.members = members if members is not None else MemberCache()
+        # Intro and roast lines above the monthly auto-post.
+        self.picker = picker if picker is not None else LinePicker()
 
     async def cog_load(self) -> None:
         if self.channel_id is None:
@@ -230,13 +235,18 @@ class Activity(commands.Cog):
         try:
             report = await self.monthly_report(month, channel.guild)
             embed = build_monthly_embed(report)
+            content = monthly_message(report, self.picker)
         except Exception:
             log.exception("Could not build the activity overview for %s; retrying", month.key)
             return
         try:
             # Leaderboard lines are mentions; render them, but never ping anyone.
             sent = await _send_safely(
-                channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                channel.send(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             )
             if sent:
                 log.info("Posted the activity overview for %s", month.key)

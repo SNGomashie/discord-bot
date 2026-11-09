@@ -27,12 +27,12 @@ Do this once for dev and once for prod.
    - Click **Reset Token** and copy it right away. It is shown once. This is `DISCORD_TOKEN`. If it ever leaks, reset it here and update `.env`.
    - Turn **Public Bot** off so nobody else can add your bot to their servers. Discord refuses to save this while the app has a default install link, with the error *"A private application cannot have a default authorization link. Make sure the default authorization link is set to None on the Installation tab."* So first open the **Installation** tab, set **Install Link** to **None**, save, and then turn Public Bot off on the Bot tab. You then add the bot with the manual [invite link](#invite-link) below, which works for you as the server owner.
    - Leave **Requires OAuth2 Code Grant** off.
-   - Leave the **Privileged Gateway Intents** off, except **Message Content Intent** when you set `TOASTY_BOT_ID` (see below).
+   - Leave the **Privileged Gateway Intents** off, except **Message Content Intent** when you set `TOASTY_BOT_ID` or `CLANKER_REPLIES` (see below).
 4. Optionally set the name, avatar and banner. Prod and dev should look different so you never mix them up.
 
 ### Intents
 
-The bot uses `discord.Intents.default()`, which only needs the non-privileged intents. It never reads member lists or presences. It reads message content only when `TOASTY_BOT_ID` is set: then it requests the privileged **Message Content** intent (to read Toasty's replies to `;pokemon`), and you must turn on **Message Content Intent** on the *Bot* tab of that application, or Discord refuses the connection at startup (`PrivilegedIntentsRequired`). Without `TOASTY_BOT_ID`, **no privileged intent has to be enabled**. `/scoreboard` shows linked friends by their server name by looking each one up over REST (`fetch_member`, at most ten per scoreboard), which needs neither the Server Members intent nor an extra permission. If you ever add a feature that needs another one, enable it in the portal *and* add it in [bot.py](../src/ninja_bot/bot.py). Request only what a feature needs.
+The bot uses `discord.Intents.default()`, which only needs the non-privileged intents. It never reads member lists or presences. It reads message content only when `TOASTY_BOT_ID` or `CLANKER_REPLIES` is set: then it requests the privileged **Message Content** intent (to read Toasty's replies to `;pokemon`, or to spot the word "clanker"), and you must turn on **Message Content Intent** on the *Bot* tab of that application, or Discord refuses the connection at startup (`PrivilegedIntentsRequired`). Without either, **no privileged intent has to be enabled**. `/scoreboard` shows linked friends by their server name by looking each one up over REST (`fetch_member`, at most ten per scoreboard), which needs neither the Server Members intent nor an extra permission. If you ever add a feature that needs another one, enable it in the portal *and* add it in [bot.py](../src/ninja_bot/bot.py). Request only what a feature needs.
 
 ### Permissions
 
@@ -45,8 +45,9 @@ All commands are slash commands, which Discord delivers as interactions, and rep
 | Embed Links | Show the info embeds |
 | Attach Files | Upload downloaded audio and video |
 | Read Message History | Reply to a session poll message with a vote nudge (Discord requires it for replies) |
+| Moderate Members | Only with `CLANKER_REPLIES`: time out people who answer a clanker reply. Optional; without it only the taunt is sent |
 
-Permission integer: **117760** (`1024 + 2048 + 16384 + 32768 + 65536`). A bot invited earlier with `52224` lacks Read Message History; grant it to the bot's role (or in the poll channels) instead of re-inviting. No administrator, no role or member management.
+Permission integer: **117760** (`1024 + 2048 + 16384 + 32768 + 65536`). A bot invited earlier with `52224` lacks Read Message History; grant it to the bot's role (or in the poll channels) instead of re-inviting. If you use `CLANKER_REPLIES` and want the timeouts, add **Moderate Members** (`1 << 40`), giving **1099511745536**, or grant it to the bot's role. The bot's role must also be above the members it should time out; the owner and administrators can never be timed out. No administrator, no role management.
 
 **Announcement channel (`CS2_CHANNEL_ID`):** automatic CS2 match posts are normal messages, not interaction replies, so here the channel permissions really matter. The bot needs **View Channel, Send Messages and Embed Links in the announcement channel** (Send Messages in Threads if it is a thread). The channel can be a text channel, a thread or a voice channel's text chat. Check the channel's permission overrides, not just the server role. Without them the bot logs one warning, `Not posting CS2 matches: the CS2_CHANNEL_ID channel is <cause>`, where the cause is `missing`, `not a text channel`, `missing View Channel, Send Messages or Embed Links` or `unavailable (Discord error)` (a temporary Discord failure; retried next cycle), and posts nothing. What the auto-posts do is described in the [README](../README.md#auto-posted-matches).
 
@@ -168,6 +169,8 @@ LEETIFY_API_KEY=<leetify api key>
 # SKIN_CURRENCY=EUR
 # Optional: track Toasty ;pokemon catches (enable Message Content Intent in the portal first).
 # TOASTY_BOT_ID=<toasty user id>
+# Optional: reply defensively to the word "clanker" (enable Message Content Intent in the portal first).
+# CLANKER_REPLIES=true
 ```
 
 Use the **prod** token only here, never in the dev container or on your workstation.
@@ -275,6 +278,7 @@ Read from the environment (and `.env`; real environment variables win). See [con
 | `SESSIONS_TIMEZONE` | optional | optional | IANA time zone name for session poll slot times. Default: the value of `ACTIVITY_TIMEZONE`; an unknown name is a `ConfigError` at startup |
 | `SKIN_CURRENCY` | optional | optional | Currency for skin prices: `AUD`, `CAD`, `CHF`, `EUR`, `GBP` or `USD` (case-insensitive). Default `EUR`; any other value is a `ConfigError` at startup |
 | `TOASTY_BOT_ID` | optional | optional | User ID of the Toasty bot. Set = track `;pokemon` catches and request the Message Content intent, which must also be enabled in the Developer Portal. Unset = no Toasty tracking |
+| `CLANKER_REPLIES` | optional | optional | `true` = reply defensively to the word "clanker" and request the Message Content intent, which must also be enabled in the Developer Portal. Default `false`; a value other than true/false is a `ConfigError` at startup |
 
 ## 6. Troubleshooting
 
@@ -306,6 +310,6 @@ Read from the environment (and `.env`; real environment variables win). See [con
 - [ ] Prod token exists only in the prod `.env` (mode `600`, owner `ninja`)
 - [ ] Dev and prod are separate applications with separate tokens
 - [ ] **Public Bot** is off on both applications
-- [ ] No Administrator permission, and no privileged intents except Message Content when (and only when) `TOASTY_BOT_ID` is set
+- [ ] No Administrator permission, and no privileged intents except Message Content when (and only when) `TOASTY_BOT_ID` or `CLANKER_REPLIES` is set
 - [ ] `.env` is not in git (it is gitignored) and has never been pasted into chat, issues or logs
 - [ ] The service runs as the unprivileged `ninja` user

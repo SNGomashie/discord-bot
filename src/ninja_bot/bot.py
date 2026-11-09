@@ -16,14 +16,15 @@ EXTENSIONS = [
     "ninja_bot.cogs.activity",
     "ninja_bot.cogs.sessions",
     "ninja_bot.cogs.help",
+    "ninja_bot.cogs.clanker",
 ]
 
 
 class NinjaBot(commands.Bot):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
-        # Privileged; only needed to read Toasty replies to ;pokemon.
-        intents.message_content = config.toasty_bot_id is not None
+        # Privileged; only needed to read Toasty replies to ;pokemon and to spot "clanker".
+        intents.message_content = config.toasty_bot_id is not None or config.clanker_replies
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.config = config
 

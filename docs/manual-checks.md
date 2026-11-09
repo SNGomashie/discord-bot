@@ -121,6 +121,7 @@ sqlite3 data/activity.sqlite3 "DELETE FROM reports_posted WHERE month_key >= '20
 The inserted session makes January the first month with data, so every ended month from January on that has voice time is posted, one per hour (oldest first). Delete the row again afterwards (`DELETE FROM voice_sessions WHERE channel_id = 1`).
 
 - [ ] After the restart the overview for the oldest such month appears in the channel within a minute; nobody is pinged
+- [ ] Above the embed is an intro line ("Overview of the month!" or a variant) and a roast for each of the top 3 with their hours, mentions rendered but not pinging; a month posted again (clear `reports_posted`) uses different wordings
 - [ ] `SELECT * FROM reports_posted` now lists that month; another restart does not post it again
 - [ ] Remove the bot's Send Messages (or Embed Links) in the channel and repeat: one warning `Not posting the monthly activity overview: the ACTIVITY_CHANNEL_ID channel is missing ...` in the log, nothing posted, and the month is not in `reports_posted`; restoring the permission posts it within an hour (or on restart)
 - [ ] Without `ACTIVITY_CHANNEL_ID` nothing is posted
@@ -194,3 +195,14 @@ Enable **Message Content Intent** for the dev application first. Check the rows 
 
 - [ ] Run `uv run python scripts/capture_leetify.py <steam64_id>` with a real key, read the `Result:` line, and compare field names and units in `data/leetify-capture/` with `tests/fixtures/leetify/` (the fixtures are hand-written from the API spec)
 - [ ] Check the custom URL endpoint still returns the expected ID tag and doesn't redirect
+
+## Clanker replies (with `CLANKER_REPLIES=true`)
+
+Needs **Message Content Intent** enabled on the dev application, or the bot refuses to connect.
+
+- [ ] Writing "clanker" (or "You CLANKER!") in a channel makes the bot reply to that message with a defensive line, without pinging you
+- [ ] A second "clanker" within 60 seconds in the same channel gets no reply; another channel does; after 60 seconds it replies again with a different line
+- [ ] Replying (Discord reply) to the bot's clanker answer times you out for 60 seconds and gets a taunt; replying to some other message of the bot does nothing
+- [ ] With a role above the bot's (or without Moderate Members) the taunt is still sent and the log has one `Could not send a timeout` warning
+- [ ] "clankerous" and messages without the word get no reply; another bot saying it gets no reply
+- [ ] Without `CLANKER_REPLIES` the bot never answers and starts with no privileged intent enabled
